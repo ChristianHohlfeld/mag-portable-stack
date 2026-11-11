@@ -189,6 +189,36 @@ public:
     cv_.notify_all();
   }
 
+  // Where in a picture of the chat is the thing with this name? A bot that
+  // sees looks (a short branch off its prompt log, never appended to it) and
+  // says the place: x across and y down, 0..1. Returns "" or why not, in words.
+  std::string locate(const std::string &stored, const std::string &name, double &x, double &y) {
+    std::string what = trim(name);
+    for (auto &c : what) if (c == '\n' || c == '\r' || c == '"') c = ' ';
+    what = clip(what, 80);
+    if (what.empty()) return "Wie heißt das Objekt?";
+    auto look = std::make_shared<Look>();
+    look->file = stored;
+    look->name = what;
+    Bot *eye = nullptr;
+    for (auto &b : bots_) {
+      const Val me = room_.bot(b->id);
+      if (!eye && me.isObj() && jbool(me, "enabled", true) && sees(b->id) && model_state(b->id) == "ready") eye = b.get();
+    }
+    if (!eye) return "Gerade ist kein Bot da, der Bilder sieht. Tippe das Objekt im Foto an.";
+    std::unique_lock<std::mutex> lk(mu_);
+    eye->looks.push_back(look);
+    cv_.notify_all();
+    if (!cv_.wait_for(lk, std::chrono::seconds(600), [&] { return stop_ || look->done; }) || !look->done) {
+      look->done = true; // nobody waits any more
+      return "Das hat zu lange gedauert. Tippe das Objekt im Foto an.";
+    }
+    if (!look->found) return look->error.empty() ? "»" + what + "« ist im Foto nicht zu finden. Tippe es an." : look->error;
+    x = look->x;
+    y = look->y;
+    return "";
+  }
+
   // The owner asks for a fresh look at a picture (its description was wrong):
   // what was written down about it goes, for every copy of the picture in the
   // chat, and a bot with eyes describes it anew. The bots without eyes are
@@ -350,6 +380,12 @@ public:
   }
 
 private:
+  // A thing in a picture that is asked for by its name (locate()).
+  struct Look {
+    std::string file, name, error;
+    double x = 0, y = 0;
+    bool found = false, done = false;
+  };
   struct Bot {
     std::string id;
     llm::Backend backend;
@@ -377,6 +413,7 @@ private:
     bool read_at_work = false;   // a message of Chris's was handed to the bot in the middle of its last turn
     int cut_off = 0;             // > 0: a restart of the room cut this bot's answer off before any of it could be seen (how often)
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
+    std::vector<std::shared_ptr<Look>> looks; // things Chris named in a photo: where are they?
     // --- owned by the worker thread ---
     Val wire;                    // {prefix, cursor, pending[], pushed[], messages[], model_since}
     std::string last_tool_sig;
@@ -1425,6 +1462,60 @@ private:
     }
   }
 
+  // Chris named a thing in a photo: the bot looks at the photo and says where
+  // it is. Asked on a branch off the log, with the image itself in front of
+  // the question; nothing of it is appended.
+  void look_for(Bot &b, Look &look) {
+    const Val me = room_.bot(b.id);
+    if (!me.isObj() || !jbool(me, "enabled", true) || model_state(b.id) != "ready" || !sees(b.id)) return;
+    const Val image = image_part(look.file);
+    if (!image.isObj()) { look.error = "Das Bild lässt sich nicht lesen."; return; }
+    ensure_wire(b, me, false);
+    set_phase(b, "tool", "Sucht " + look.name + " im Foto");
+    CancelPtr cancel;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      cancel = b.cancel;
+    }
+    Cancel never;
+    const std::string ask = "(Notiz des Raums, nicht von Chris: Im Bild direkt vor dieser Notiz, und nur in diesem: Wo ist \"" + look.name +
+                            "\"? Antworte nur mit zwei ganzen Zahlen zwischen 0 und 1000, durch ein Komma getrennt: zuerst, wie weit von links "
+                            "die Mitte davon liegt, dann, wie weit von oben (0,0 ist die Ecke oben links, 1000,1000 die unten rechts). "
+                            "Ist es im Bild nicht zu sehen, antworte nur mit: nein. Ohne Werkzeug.)";
+    Val msgs = request_messages(b, b.wire["messages"]);
+    Val user = Val::object(), parts = Val::array();
+    parts.push(image);
+    parts.push(text_part(ask));
+    user["role"] = "user";
+    user["content"] = parts;
+    msgs.push(user);
+    Val body = Val::object();
+    body["messages"] = msgs;
+    const Val tools = tools_for(me);
+    if (!tools.asArr().empty()) body["tools"] = tools;
+    body["chat_template_kwargs"] = template_kwargs(me);
+    body["max_tokens"] = jbool(me, "thinking", false) ? 1200 : 40;
+    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
+    if (!res.ok()) {
+      logf("engine: " + b.id + " could not look for a thing: " + (res.cancelled ? "cancelled" : res.error));
+      look.error = "Der Bot konnte gerade nicht hinsehen. Tippe das Objekt im Foto an.";
+      return;
+    }
+    // Two numbers, and nothing that says no.
+    const std::string said = res.calls.empty() ? res.content : "";
+    std::vector<double> numbers;
+    for (size_t i = 0; i < said.size() && numbers.size() < 2;) {
+      if (!isdigit((unsigned char)said[i])) { ++i; continue; }
+      double n = 0;
+      for (; i < said.size() && isdigit((unsigned char)said[i]); ++i) n = std::min(1e6, n * 10 + (said[i] - '0'));
+      numbers.push_back(n);
+    }
+    if (numbers.size() < 2 || numbers[0] > 1000 || numbers[1] > 1000) return;
+    look.x = numbers[0] / 1000;
+    look.y = numbers[1] / 1000;
+    look.found = true;
+  }
+
   // Runs when another bot waits for a description and this one has no turn of
   // its own: read what is new (it becomes part of the log) and describe it.
   void see_pass(Bot &b) {
@@ -1551,9 +1642,10 @@ private:
       std::string reason;
       uint64_t reset_epoch = 0;
       bool warm = false, see = false;
+      std::vector<std::shared_ptr<Look>> looks;
       {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&] { return stop_ || b.want || b.reset_pending || b.warm_pending || b.see_pending || !b.forget.empty(); });
+        cv_.wait(lk, [&] { return stop_ || b.want || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
         if (stop_) return;
         if (b.reset_pending) {
           b.reset_pending = false;
@@ -1581,6 +1673,9 @@ private:
         } else if (b.see_pending) {
           b.see_pending = false;
           see = true;
+          b.cancel = std::make_shared<Cancel>();
+        } else if (!b.looks.empty()) {
+          looks.swap(b.looks);
           b.cancel = std::make_shared<Cancel>();
         }
       }
@@ -1622,6 +1717,19 @@ private:
         } catch (const std::exception &e) {
           logf("engine: " + b.id + " see pass failed: " + e.what());
         }
+      } else if (!looks.empty()) {
+        apply_forget(b);
+        for (auto &look : looks) {
+          try {
+            look_for(b, *look);
+          } catch (const std::exception &e) {
+            logf("engine: " + b.id + " look failed: " + e.what());
+          }
+          std::lock_guard<std::mutex> lk(mu_);
+          look->done = true;
+        }
+        cv_.notify_all();
+        set_phase(b, "idle");
       } else {
         apply_forget(b);
       }

@@ -149,10 +149,14 @@
     const base = (photo.att.name || 'foto').replace(/\.[a-z0-9]+$/i, '');
     MAG.sheet('Objekt wählen', async (content, _, close) => {
       const view = el('div', { class: 'choose' }), img = el('img', { src: photo.url, alt: '' }), over = el('div', { class: 'cut' });
-      const hint = el('p', { class: 'hint', text: 'Tippe auf das Objekt, aus dem das Modell werden soll.' });
+      const hint = el('p', { class: 'hint', text: 'Tippe auf das Objekt, aus dem das Modell werden soll, oder nenne es.' });
       const bar = el('div', { class: 'row' }), list = el('div', { class: 'objects' });
+      // Or its name: a bot that sees finds it in the photo.
+      const named = el('input', { type: 'text', placeholder: 'oder nennen: z. B. Waschbecken', enterkeyhint: 'search', autocomplete: 'off' });
+      const byName = el('form', { class: 'name', onsubmit: (e) => { e.preventDefault(); if (named.value.trim() && !busy) { named.blur(); find({ name: named.value.trim() }, '»' + named.value.trim() + '« wird im Foto gesucht …'); } } },
+        named, el('button', { class: 'pill', type: 'submit' }, el('b', { text: 'Suchen' })));
       view.append(img, over);
-      content.append(hint, view, bar, list);
+      content.append(hint, view, byName, bar, list);
       let busy = false, one = null, many = [];
       const say = (text) => { hint.textContent = text; };
       const paint = () => {
@@ -170,17 +174,20 @@
         finally { busy = false; paint(); }
       };
       const masks = (found) => found.masks.map((m) => Object.assign(m, { width: found.width }));
-      img.addEventListener('click', async (e) => {
-        if (busy) return;
-        const box = img.getBoundingClientRect();
-        const found = await ask({ x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height }, 'Das Objekt wird gesucht …');
+      async function find(where, wait) {
+        const found = await ask(where, wait);
         if (!found) return;
         if (!found.masks.length) return say('Dort ist kein Objekt zu erkennen. Tippe noch einmal.');
         one = await cutOut(await picture(photo.url), masks(found)[0]);
-        over.replaceChildren(el('img', { src: one.toDataURL(), alt: '', style: place(masks(found)[0], found) }));
+        over.replaceChildren(el('img', { src: one.toDataURL(), alt: '', style: place(found.masks[0], found) }));
         view.classList.add('picked');
         say('Das wird das Modell. Tippe woanders hin, wenn etwas anderes gemeint ist.');
         paint();
+      }
+      img.addEventListener('click', (e) => {
+        if (busy) return;
+        const box = img.getBoundingClientRect();
+        find({ x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height }, 'Das Objekt wird gesucht …');
       });
       // Where the cut lies on the photo, in per cent of it.
       function place(mask, found) {

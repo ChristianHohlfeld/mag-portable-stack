@@ -84,10 +84,13 @@ public:
       return http::send_ok(fd);
     }
     if (r.method == "POST" && p == "/api/3d/select") {
-      // Which object of a photo is meant: the one at a place, or every one by itself.
+      // Which object of a photo is meant: the one at a place, the one with a name, or every one by itself.
       const Val in = jparse(r.body);
       Val found;
-      const std::string why = idol_.select(jstr(in, "file"), in.find("x") ? jnum(in, "x") : -1, jnum(in, "y"), found);
+      double x = in.find("x") ? jnum(in, "x") : -1, y = jnum(in, "y");
+      // Named instead of tapped: a bot that sees says where it is.
+      std::string why = jstr(in, "name").empty() ? "" : engine_.locate(jstr(in, "file"), jstr(in, "name"), x, y);
+      if (why.empty()) why = idol_.select(jstr(in, "file"), x, y, found);
       return why.empty() ? http::send_json(fd, 200, found) : http::send_error(fd, 409, why);
     }
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {

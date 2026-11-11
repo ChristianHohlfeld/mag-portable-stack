@@ -284,7 +284,10 @@ object is meant ("Objekt wählen": `POST /api/3d/select`, the worker's
 `/api/idol/select`). `objects.py` runs SAM 2 (`facebook/sam2.1-hiera-small`,
 pinned in `install.sh`) on the CPU, cores 28-55, never the MI50: the object
 at the place Chris tapped, or every object by itself (a grid of places, no
-background, nothing twice). The page shows the mask, cuts the photo with it
+background, nothing twice). A thing Chris names instead is found by a bot
+that sees (`Engine::locate`: the image in front of the question, on a branch
+off its prompt log, answered with a place in per mille), then SAM 2 takes
+that place. The page shows the mask, cuts the photo with it
 (a PNG with alpha) and orders with that: Idol takes the alpha as the
 foreground and does not guess one. "Alle einzeln" orders one normal job per
 object Chris leaves marked. Nothing of a selection is kept on the worker.

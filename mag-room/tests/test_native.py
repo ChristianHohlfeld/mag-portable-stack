@@ -1273,6 +1273,26 @@ class RoomContract(unittest.TestCase):
         daemon.wait()
         self.assertEqual(use(("s23_tap", {"x": 1, "y": 2})), [("S23: tippt auf 1, 2", "error", "Fehler: Die S23-Steuerung ist nicht erreichbar. Chris startet sie selbst.")])
 
+    def test_an_object_named_in_a_photo_is_found_by_the_bot_that_sees(self):
+        r = Room(MAG_ROOM_VISION="lena", MAG_ROOM_SIGHT_WAIT_S="30")
+        self.addCleanup(r.close)
+        r.lena.reply = lambda body: "250, 500" if "Wo ist \"Waschbecken\"?" in text_of(body["messages"][-1]["content"]) else "nein"
+        photo = r.api("POST", "/api/upload?name=bad.png", raw=PNG)[1]
+        before = len(r.lena.chats())
+        code, found = r.api("POST", "/api/3d/select", {"file": photo["file"], "name": "Waschbecken"})
+        self.assertEqual((code, len(found["masks"]), r.idol.selected), (200, 1, ["x=0.250000&y=0.500000"]))
+        # Lena was asked with the image itself in front of the question, off her log: nothing of it stays.
+        asked = r.lena.chats()[before:]
+        self.assertEqual(len(asked), 1)
+        parts = asked[0]["messages"][-1]["content"]
+        self.assertEqual([part["type"] for part in parts], ["image_url", "text"])
+        r.idle()
+        self.assertNotIn("Waschbecken", json.dumps(r.lena.chats()[-1]["messages"][:-1]))
+        self.assertEqual([m["from"] for m in r.messages()], [])
+        # What is not in the photo is not guessed, and the worker is not asked.
+        self.assertEqual(r.api("POST", "/api/3d/select", {"file": photo["file"], "name": "Elefant"}), (409, {"error": "»Elefant« ist im Foto nicht zu finden. Tippe es an."}))
+        self.assertEqual(len(r.idol.selected), 1)
+
     def test_bots_read_the_whole_chat_images_files_and_3d_jobs(self):
         # Lena's model takes images, Noah's does not.
         r = Room(MAG_ROOM_VISION="lena", MAG_ROOM_SIGHT_WAIT_S="30")

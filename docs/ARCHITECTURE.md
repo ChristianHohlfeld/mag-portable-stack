@@ -372,7 +372,9 @@ only) and uses it when at least half of the splat's points lie on it (a splat ha
 the shape stands where the photo's camera (found from the splat) saw it, and
 only without that camera the splat's own shell is used. TripoSG sees its
 picture straight from +z without perspective, a little smaller than its
--1..1 square (`front_of` finds how much smaller from the outlines), so the
+-1..1 square (`front_of` finds how much smaller from the outlines; some
+things TripoSG turns its own way, so `facing` tries the four turns about
+the upright axis and keeps the one whose outline covers the picture), so the
 shape lies exactly under the picture it was made from: the side the photo
 shows takes the photo's own colours (`shape_photo.png`, the cut-out as fine
 as the photo was taken, up to 4096 px), not the splat's blur with a little

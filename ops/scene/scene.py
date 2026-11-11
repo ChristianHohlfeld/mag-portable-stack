@@ -1111,6 +1111,63 @@ def seam(co, d, size):
     return lo + span * ((at + 0.5) / 60 if at is not None else 0.8)
 
 
+def inside(mesh, bm, plane, d, near, name):
+    """The look of what a cut opens: the colours of the surface along the
+    seam, darker as an inside in shadow is, with a little grain and deeper
+    towards the middle; painted as a small texture of its own. Returns the
+    material (made once per figure and side)."""
+    colour = None
+    layer = bm.loops.layers.uv.active
+    image = next((n.image for m in mesh.materials if m and m.use_nodes for n in m.node_tree.nodes if n.type == "TEX_IMAGE" and n.image), None)
+    if layer is not None and image is not None and image.size[0] > 0:
+        small = image.copy()
+        small.scale(32, 32)
+        px = np.array(small.pixels[:], dtype=float).reshape(32, 32, -1)[:, :, :3]
+        bpy.data.images.remove(small)
+        uvs = [loop[layer].uv[:] for v in bm.verts if abs((v.co - plane).dot(d)) < 20 * near for loop in v.link_loops]
+        if uvs:
+            uv = np.clip(np.array(uvs), 0.0, 0.999)
+            colour = px[(uv[:, 1] * 32).astype(int), (uv[:, 0] * 32).astype(int)].mean(axis=0)
+    if colour is None:                                   # no texture: its own colour
+        shader = next((n for m in mesh.materials if m and m.use_nodes for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        colour = np.array(shader.inputs["Base Color"].default_value[:3]) ** (1 / 2.2) if shader else np.array([0.5, 0.45, 0.4])
+    size = 128
+    yy, xx = np.mgrid[0:size, 0:size] / (size - 1) - 0.5
+    deep = 1.0 - 0.35 * np.clip(1.0 - 2.0 * np.hypot(xx, yy), 0.0, 1.0)              # darker towards the middle
+    grain = 1.0 + 0.06 * np.random.default_rng(7).standard_normal((size, size))
+    shade = (np.clip(colour, 0.0, 1.0) * 0.62)[None, None, :] * (deep * grain)[:, :, None]
+    picture = bpy.data.images.new(name, size, size)
+    picture.pixels.foreach_set(np.concatenate([np.clip(shade, 0.0, 1.0), np.ones((size, size, 1))], axis=2).ravel().astype(np.float32))
+    picture.pack()
+    material = bpy.data.materials.new(name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    shader = nodes.get("Principled BSDF")
+    shader.inputs["Roughness"].default_value = 0.85
+    texture = nodes.new("ShaderNodeTexImage")
+    texture.image = picture
+    material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+    return material
+
+
+def cover(bm, faces, d, index):
+    """Gives the faces that close a cut the inside's material and a flat
+    mapping of it across the cut."""
+    if not faces:
+        return
+    layer = bm.loops.layers.uv.verify()
+    u = d.orthogonal().normalized()
+    v = d.cross(u).normalized()
+    spots = [loop.vert.co for f in faces for loop in f.loops]
+    us, vs = [p.dot(u) for p in spots], [p.dot(v) for p in spots]
+    lo_u, lo_v = min(us), min(vs)
+    span = max(max(us) - lo_u, max(vs) - lo_v, 1e-6)
+    for f in faces:
+        f.material_index = index
+        for loop in f.loops:
+            loop[layer].uv = ((loop.vert.co.dot(u) - lo_u) / span, (loop.vert.co.dot(v) - lo_v) / span)
+
+
 def piece(actor, side):
     """Cuts the part of a thing on one side (a lid on top, a door in front,
     at the back or a side) out of its surface at its seam, closes both cuts,
@@ -1138,15 +1195,24 @@ def piece(actor, side):
     bm.from_mesh(mesh)
     rest = bm.copy()
     # The part: what is beyond the seam; the rest keeps what is before it. Both cuts are closed.
+    near = 1e-4 * max(actor.size)
     bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=plane, plane_no=d, clear_inner=True)
-    bmesh.ops.holes_fill(bm, edges=bm.edges[:], sides=0)
     bmesh.ops.bisect_plane(rest, geom=rest.verts[:] + rest.edges[:] + rest.faces[:], plane_co=plane, plane_no=d, clear_outer=True)
-    bmesh.ops.holes_fill(rest, edges=rest.edges[:], sides=0)
+    # What the cut opens is not the surface's paint stretched over it: an inside of its own.
+    try:
+        lining = inside(mesh, rest, plane, d, near, actor.name + " innen " + side)
+    except Exception as exc:
+        print("MAG-NOTE %s: no inside (%s)" % (actor.name, type(exc).__name__), flush=True)
+        lining = None
+    index = len(mesh.materials)
+    for one in (bm, rest):
+        caps = bmesh.ops.holes_fill(one, edges=one.edges[:], sides=0).get("faces", [])
+        if lining is not None:
+            cover(one, caps, d, index)
     if len(bm.verts) < 8 or len(rest.verts) < 8:
         bm.free()
         rest.free()
         fail(actor.name + " hat " + {"top": "oben", "front": "vorn", "back": "hinten", "left": "links", "right": "rechts"}[side] + " kein Teil, das sich lösen lässt.")
-    near = 1e-4 * max(actor.size)
     rim = np.array([v.co[:] for v in bm.verts if abs((v.co - plane).dot(d)) < near] or [v.co[:] for v in bm.verts])
     # The hinge: along the edge of the seam the part turns away from.
     edge, axis = {"top": (-front, front.cross(up)), "front": (left, up), "back": (up, d.cross(up)),
@@ -1160,6 +1226,8 @@ def piece(actor, side):
     bm.free()
     rest.to_mesh(mesh)
     rest.free()
+    if lining is not None:
+        mesh.materials.append(lining)
     for material in mesh.materials:
         data.materials.append(material)
     data.shade_smooth()

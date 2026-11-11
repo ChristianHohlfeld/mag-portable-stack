@@ -482,6 +482,7 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
            "open, close, turn_part (a thing or vehicle: part top/front/back/left/right, degrees); "
            "say (text: its mouth speaks the words), face (expression: smile/laugh/sad/frown/angry/surprised/blink); "
            "climb (onto the target, hand over hand up a high one), vault (over the target, parkour), jump_down (from what it stands on); "
+           "shake_hands, high_five, hug (with the target, both on two legs); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 SPOKEN = []     # what is said in the scene, for the voices of its film: {actor, text, start, seconds}
@@ -994,6 +995,57 @@ def perform(actor, action, actors, fps, start):
                     aside = Vector((-heading.y, heading.x)) * off * actor.height
                     p.reach_to(side, lambda f, a=aside: (edge.x + a.x, edge.y + a.y, other.height), now, now + int(0.35 * fps))
                 end = p.drop_to((far.x, far.y), 0.0, over=other.height)
+    elif kind in ("shake_hands", "high_five", "hug") and not beast:
+        # Two together: it goes up to the other, both turn to each other and
+        # their hands meet (right hand in right hand, or high up), or their
+        # arms go round each other. The other waits for it and does the same.
+        if not other or not isinstance(other.performer, motion.Performer):
+            fail("Aktion " + kind + " von " + actor.name + ": target ist ein anderer Darsteller auf zwei Beinen.")
+        q = other.performer
+        way = other.pos - actor.pos
+        if way.length < 1e-6:
+            fail(actor.name + " steht auf " + other.name + ".")
+        heading = way.normalized()
+        tall = min(actor.height, other.height)
+        apart = across(other, heading) + (0.15 if kind == "hug" else 0.45) * tall
+        start = max(len(p.frames), len(q.frames))
+        p.wait(start)
+        q.wait(start)
+        if way.length > apart + 0.05 * tall:
+            from_afar(other.pos, heading, apart)
+            p.go("walk", lambda frame: (other.pos.x, other.pos.y), stop=apart)
+        meet = max(len(p.frames), len(q.frames))
+        p.wait(meet)
+        q.wait(meet)
+        me, you = Vector((p.xy[0], p.xy[1])), Vector((q.xy[0], q.xy[1]))
+        p.face(math.atan2((you - me).y, (you - me).x))
+        q.face(math.atan2((me - you).y, (me - you).x))
+        first = max(len(p.frames), len(q.frames))
+        frames = max(8, int(round(seconds(2.0 if kind != "high_five" else 0.9, 0.4, 10.0) * fps)))
+        mid = (me + you) / 2
+
+        def hold(f, side, who, mine):
+            """Where a hand is to be: at the middle (it shakes a little), high up, or round the other's back."""
+            if kind == "shake_hands":
+                return (mid.x, mid.y, 0.5 * tall + 0.03 * tall * math.sin(2 * math.pi * 2.5 * (f - first) / fps))
+            if kind == "high_five":
+                return (mid.x, mid.y, 1.12 * tall)
+            other_xy = you if mine else me
+            toward = (other_xy - (me if mine else you)).normalized()
+            aside = Vector((-toward.y, toward.x)) * (0.18 if side == "l" else -0.18) * tall
+            back = other_xy + toward * 0.12 * tall + aside
+            return (back.x, back.y, 0.68 * tall)
+        for performer, mine in ((p, True), (q, False)):
+            sides = ("l", "r") if kind == "hug" else ("r",)
+            for side in sides:
+                performer.reach_to(side, lambda f, side=side, mine=mine: hold(f, side, None, mine), first, first + frames)
+                performer.grip(side, first, first + frames + int(0.3 * fps), "open" if kind != "shake_hands" else "relaxed")
+            performer.look(eyes(other if mine else actor), first, first + frames, 0.9)
+        end = p.wait(first + frames + int(0.3 * fps))
+        q.wait(end)
+        o = q.origin
+        other.pos, other.yaw = Vector((o[0], o[1])), q.heading - q.body.facing
+        other.clock = max(other.clock, end / fps)
     elif kind == "pose" and beast:
         # An animal's free pose: a fore paw lifted (to somebody, or up) or its head turned to it, held for a while.
         part = str(action.get("part") or "").lower()

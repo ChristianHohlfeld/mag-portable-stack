@@ -83,7 +83,7 @@ public:
       std::string provider = jstr(in, "provider"), line = "tts:";
       if (provider.size() > 12 || provider.find_first_not_of("abcdefghijklmnopqrstuvwxyz") != std::string::npos) provider = "?";
       if (!provider.empty()) line += " provider=" + provider;
-      for (const char *key : {"threads", "isolated", "steps", "warm_ms", "first_ms", "synth_ms", "audio_ms"})
+      for (const char *key : {"threads", "isolated", "steps", "load_pct", "warm_ms", "first_ms", "synth_ms", "audio_ms"})
         if (in.find(key)) line += " " + std::string(key) + "=" + std::to_string((long)std::min(1e9, std::max(0.0, jnum(in, key))));
       logf(line);
       return http::send_ok(fd);

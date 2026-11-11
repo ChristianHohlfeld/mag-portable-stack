@@ -35,6 +35,16 @@ const styles = new Map();     // voice file -> promise of {ttl, dp}
 // The voices of the reader before this one are not needed any more.
 if (inWorker) { try { caches.delete('mag-tts-v1'); } catch (e) { /* no Cache Storage */ } }
 
+// A file from Cache Storage, or fetched and kept there. A large one (the
+// networks are up to 256 MB) is fetched in pieces of 8 MB, each kept as soon
+// as it is there: a download that breaks off (a phone that sleeps, a weak
+// connection, the page reloaded by a deploy) goes on where it stopped, the
+// next time, instead of starting from nothing. A piece that fails is asked
+// for again after a pause, for as long as the page is open.
+const PIECE = 8 << 20;
+// (A piece is kept under an address of its own: Cache Storage does not tell addresses apart by their #part.)
+const pieceKey = (url, n) => url + (url.includes('?') ? '&' : '?') + 'piece=' + n;
+const pause = (ms) => new Promise((go) => setTimeout(go, ms));
 async function cachedFetch(url, progress) {
   let cache = null;
   try { cache = await caches.open(CACHE); } catch (e) { /* private mode / quota */ }
@@ -42,24 +52,54 @@ async function cachedFetch(url, progress) {
     const hit = await cache.match(url);
     if (hit) return hit;
   }
-  const net = await fetch(url);
-  if (!net.ok) throw new Error('HTTP ' + net.status + ' ' + url);
-  const total = +net.headers.get('content-length') || 0;
-  const store = async (response) => {
-    if (!cache) return;
-    try { await cache.put(url, response.clone()); } catch (e) { /* still play from memory */ }
+  if (!progress || !cache) {
+    const net = await fetch(url);
+    if (!net.ok) throw new Error('HTTP ' + net.status + ' ' + url);
+    if (cache) { try { await cache.put(url, net.clone()); } catch (e) { /* still use it from memory */ } }
+    return net;
+  }
+  const piece = async (n) => {
+    const key = pieceKey(url, n);
+    const kept = await cache.match(key);
+    if (kept) return {bytes: await kept.arrayBuffer(), total: +kept.headers.get('x-total') || 0};
+    for (let tries = 0; ; tries++) {
+      try {
+        const net = await fetch(url, {headers: {Range: 'bytes=' + n * PIECE + '-' + ((n + 1) * PIECE - 1)}});
+        if (net.status !== 206 && net.status !== 200) throw new Error('HTTP ' + net.status);
+        const bytes = await net.arrayBuffer();
+        const total = net.status === 200 ? bytes.byteLength : +((net.headers.get('content-range') || '').split('/')[1]) || 0;
+        if (net.status === 200) return {bytes, total, whole: true};
+        try { await cache.put(key, new Response(bytes, {headers: {'x-total': String(total)}})); } catch (e) { /* kept in memory only */ }
+        return {bytes, total};
+      } catch (e) {
+        await pause(Math.min(30000, 1000 * 2 ** Math.min(tries, 5)));
+      }
+    }
   };
-  if (!progress || !net.body || !total) { await store(net); return net; }
-  const reader = net.body.getReader(), parts = [];
-  let got = 0;
-  for (;;) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    parts.push(value); got += value.length;
+  const first = await piece(0);
+  if (first.whole) {
+    const r = new Response(first.bytes, {headers: {'content-type': 'application/octet-stream'}});
+    try { await cache.put(url, r.clone()); } catch (e) { /* still use it */ }
+    return r;
+  }
+  const total = first.total, count = Math.max(1, Math.ceil(total / PIECE)), parts = [first.bytes];
+  let got = first.bytes.byteLength;
+  progress(got, total);
+  for (let n = 1; n < count; n++) {
+    const next = await piece(n);
+    parts.push(next.bytes); got += next.bytes.byteLength;
     progress(got, total);
   }
-  const r = new Response(new Blob(parts), {headers: {'content-type': net.headers.get('content-type') || 'application/octet-stream'}});
-  await store(r);
+  const whole = new Blob(parts, {type: 'application/octet-stream'});
+  if (whole.size !== total) {             // a piece came back short: ask for all of it again next time
+    for (let n = 0; n < count; n++) { try { await cache.delete(pieceKey(url, n)); } catch (e) { /* gone */ } }
+    throw new Error('incomplete ' + url);
+  }
+  const r = new Response(whole, {headers: {'content-type': 'application/octet-stream'}});
+  try {
+    await cache.put(url, r.clone());
+    for (let n = 0; n < count; n++) await cache.delete(pieceKey(url, n));
+  } catch (e) { /* the pieces stay; they are found next time */ }
   return r;
 }
 

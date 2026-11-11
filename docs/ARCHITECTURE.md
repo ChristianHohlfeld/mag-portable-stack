@@ -279,14 +279,34 @@ einmal" at its message (`POST /api/3d/<id>/retry`, the worker's
 `/api/idol/jobs/<id>/retry`) queues it again, and it goes on at the first
 stage whose result is missing, like after a reboot.
 
-The mesh stage (`mesh.py`, CPU) has a time limit, and no step in it may take
-all of it. The UVs for the texture come from xatlas, which is done within a
-minute on most models; on a rough, porous surface it does not come to an end
-(a job once failed in it at the stage's limit, after half an hour of work).
-So xatlas runs in a process of its own for a limited time (`unwrap.py`), and
-when that is over the surface is unwrapped the plain way: faces that look the
-same way and hang together are laid flat as one chart, the charts side by
-side. That takes a second, and every job gets its texture.
+No stage has a time limit. The worker ends a stage only when it stands
+still (for ten minutes it neither writes to its log nor uses the processor)
+and starts it again; after three standstills the job fails in words and can
+be taken up again like any failed job.
+
+The mesh stage (`mesh.py`, CPU) makes the model from the splat, a cloud of
+small flat Gaussians lying on what the photo showed:
+
+1. `surface.opacity_field`: every Gaussian, none left out, is written into a
+   grid with its own three widths and its own turn. A cell is as opaque as
+   the Gaussians in it together (1 minus the product of what each lets
+   through), so the shell is where that is one half, wherever many or few
+   Gaussians lie.
+2. `surface.body_of`: pores of a cell or two are closed, the grid is flooded
+   from outside, and what the flood does not reach is the body: closed, with
+   no shells or bubbles inside. Loose bits fall away; a piece that is big
+   enough is a figure of its own and stays (one photo may show a gnome and a
+   fox).
+3. The surface is taken anew from that body by marching cubes (uniform
+   triangles, no holes), smoothed, and decimated twice: to the faces a
+   printed model may have (the STL), and to the far fewer a shown model
+   needs (the GLB).
+4. The small mesh is unwrapped (`unwrap.py`): xatlas in a process of its own
+   for a limited time, and if it is not done by then the plain way (faces
+   that look the same way and hang together are one chart, laid flat, the
+   charts side by side; a second of work). The texture is baked from the
+   splat at every texel, so the colours are as fine as the atlas however few
+   faces the model has.
 
 ## Reading aloud (`ops/tts`)
 

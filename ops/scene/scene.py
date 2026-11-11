@@ -474,6 +474,7 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
            "fly_to, fly (up into the air and round), flap, peck (birds; anything can fly); drive_to (a vehicle; it also drives on walk_to/run_to); roll_to (a thing rolls like a ball); "
            "open, close, turn_part (a thing or vehicle: part top/front/back/left/right, degrees); "
            "say (text: its mouth speaks the words), face (expression: smile/laugh/sad/frown/angry/surprised/blink); "
+           "climb (onto the target, hand over hand up a high one), vault (over the target, parkour), jump_down (from what it stands on); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 SPOKEN = []     # what is said in the scene, for the voices of its film: {actor, text, start, seconds}
@@ -949,6 +950,43 @@ def perform(actor, action, actors, fps, start):
         if other:
             p.look(eyes(other), first, first + frames, 0.85)
         end = p.wait(first + frames)
+    elif kind in ("climb", "vault", "jump_down") and not beast:
+        # Climbing and parkour: up onto something (a box, a rock, a wall: hand over
+        # hand when it is high), over it with the hands on top, or down from it.
+        if kind == "jump_down":
+            me = Vector((p.xy[0], p.xy[1]))
+            if other:
+                way = other.pos - me
+                goal = other.pos - way.normalized() * (other.radius + 0.6 * actor.length) if way.length > 1e-6 else me
+            elif pair(action.get("target")):
+                goal = Vector(pair(action.get("target")))
+            else:
+                goal = me + Vector((math.cos(p.heading), math.sin(p.heading))) * (0.8 * actor.height + 0.4 * actor.length)
+            end = p.drop_to((goal.x, goal.y), 0.0)
+        else:
+            if not other:
+                fail("Aktion " + kind + " von " + actor.name + ": target ist das, worauf oder worüber es klettert (ein Darsteller).")
+            way = other.pos - actor.pos
+            if way.length < 1e-6:
+                fail(actor.name + " steht schon auf " + other.name + ".")
+            heading = way.normalized()
+            room = across(other, heading)
+            edge = other.pos - heading * room
+            if kind == "climb":
+                from_afar(other.pos, heading, room + 0.3 * actor.length)
+                p.go("walk", lambda frame: (other.pos.x, other.pos.y), stop=room + 0.3 * actor.length)
+                p.face(math.atan2(heading.y, heading.x))
+                top = other.pos - heading * max(0.0, room - 0.4 * actor.length)
+                end = p.climb((edge.x, edge.y), (top.x, top.y), other.height)
+            else:
+                from_afar(other.pos, heading, room + 2.0 * actor.length)
+                p.go("run", lambda frame: (other.pos.x, other.pos.y), stop=room + 0.45 * actor.length, on=True)
+                far = other.pos + heading * (room + 0.7 * actor.length)
+                now = len(p.frames)
+                for side, off in (("l", 0.12), ("r", -0.12)):   # both hands on top as it goes over
+                    aside = Vector((-heading.y, heading.x)) * off * actor.height
+                    p.reach_to(side, lambda f, a=aside: (edge.x + a.x, edge.y + a.y, other.height), now, now + int(0.35 * fps))
+                end = p.drop_to((far.x, far.y), 0.0, over=other.height)
     elif kind == "pose" and not beast:
         # A free pose: a hand (or both) to a place, held for a while: points at
         # somebody, touches its head, holds its arms up. Worked out with IK on

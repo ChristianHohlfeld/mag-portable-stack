@@ -90,7 +90,9 @@ nearest the one before; a free `pose` puts a hand somewhere (up, to the
 head, pointing at or touching another) with IK on the figure's own arm. A
 fight is told with kick, punch or
 attack and a target: the one who is hit flies away in an arc, lands, lies
-and gets up again (`knock` in `scene.py`). This repository is
+and gets up again (`knock` in `scene.py`). Somebody on two legs climbs onto a thing
+(`climb`; up a high one hand over hand), vaults over it (`vault`) and jumps
+down (`jump_down`): its feet stand on what it stands on. This repository is
 public: never add motion data whose terms forbid commercial use or passing
 it on. A scene is described, never
 scripted: no code of a bot or a request runs in Blender. The scene is a normal

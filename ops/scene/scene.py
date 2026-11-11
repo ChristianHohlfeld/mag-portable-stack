@@ -987,6 +987,22 @@ def perform(actor, action, actors, fps, start):
                     aside = Vector((-heading.y, heading.x)) * off * actor.height
                     p.reach_to(side, lambda f, a=aside: (edge.x + a.x, edge.y + a.y, other.height), now, now + int(0.35 * fps))
                 end = p.drop_to((far.x, far.y), 0.0, over=other.height)
+    elif kind == "pose" and beast:
+        # An animal's free pose: a fore paw lifted (to somebody, or up) or its head turned to it, held for a while.
+        part = str(action.get("part") or "").lower()
+        frames = max(6, int(round(seconds(1.5, 0.3, 12.0) * fps)))
+        if other:
+            way = other.pos - actor.pos
+            if way.length > 1e-6 and abs(motion.wrap(math.atan2(way.y, way.x) - p.heading)) > 0.6:
+                first = p.face(math.atan2(way.y, way.x))
+            p.look(eyes(other), first, first + frames, 0.9)
+        where = str(action.get("where") or "").lower()
+        if "head" in part or where in ("head", "kopf") and not part:
+            end = p.wait(first + frames)
+        elif where == "up" and not other:
+            end = p.ease("beg", frames / fps)
+        else:
+            end = p.greet(frames / fps)
     elif kind == "pose" and not beast:
         # A free pose: a hand (or both) to a place, held for a while: points at
         # somebody, touches its head, holds its arms up. Worked out with IK on

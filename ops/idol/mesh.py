@@ -19,9 +19,10 @@ The model is made from them the way they are:
    stays a solid through that: closed, every edge between two faces, faces
    outwards, no bubble inside, no corner where two sheets only touch.
 4. That small mesh is unwrapped, and the texture is baked for it from the
-   splat itself: the colours are as fine as the atlas, whatever the
-   faces. The side the photo shows takes its colours from the photo, which
-   is finer still (photo.py finds the photo's camera again). The STL keeps
+   splat itself, every Gaussian with its own footprint: the colours are
+   as sharp as the splat, whatever the faces. The side the photo shows
+   takes its fine detail from the photo, which is finer still (photo.py
+   finds the photo's camera again). The STL keeps
    the finer mesh.
 
 The original splat.ply is never modified.
@@ -63,30 +64,45 @@ def opacity_colors(vertices, names, indices):
     return np.full((len(indices), 3), 185.0/255.0, np.float32)
 
 
-def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighbors):
-    """Gather multiple nearby splats per surface sample; opacity * Gaussian weight.
+def gaussian_albedo(points, tree, colors, alpha, shapes, spacing, neighbors):
+    """The colour of the splat at points of the surface, the way a splat is
+    drawn: every Gaussian near a point counts by how much of it lies there,
+    with its own three widths and its own turn (`shapes`: for each Gaussian
+    the matrix that says how many of its widths a step is). A flat disc
+    colours its own plane and not what lies before or behind it, a long
+    stroke colours along itself. So the texture is as sharp as the splat.
 
     Chunking is handled by the caller, including 4K UV texel baking.
     """
-    distances, ids = tree.query(points, k=min(neighbors, len(centers)), workers=8)
+    distances, ids = tree.query(points, k=min(neighbors, len(colors)), workers=8)
     if np.ndim(ids) == 1:
         ids, distances = ids[:, None], distances[:, None]
-    width = np.maximum(radii[ids]*1.5, spacing * 1.25)
-    weight = alpha[ids] * np.exp(
-        -0.5 * np.minimum((distances / width)**2, 80.0))
-    # Prefer high-confidence near splats while blending neighbours.
-    weight = np.maximum(weight, 0.0) ** 1.5
+    off = points[:, None, :] - tree.data[ids].astype(np.float32)
+    apart = np.einsum("nki,nkij,nkj->nk", off, shapes[ids], off)
+    weight = alpha[ids] * np.exp(-0.5 * np.minimum(apart, 80.0))
     total = weight.sum(axis=1)
     rgb = (weight[..., None] * colors[ids]).sum(axis=1)
     rgb /= np.maximum(total[:, None], 1e-12)
-    weak = total < 1e-10
+    weak = total < 1e-6
     if np.any(weak):
-        # Never turn weak areas into nearest-neighbour vertex colours.
-        # Far from every Gaussian (an underside that was closed, a filled room): the colours around it, softly.
+        # Far from every Gaussian (a side that was closed, a filled room): the colours around it, softly.
         fallback = alpha[ids[weak]] / np.maximum(distances[weak], spacing*0.25)**2
         fallback /= np.maximum(fallback.sum(axis=1, keepdims=True), 1e-12)
         rgb[weak] = (fallback[..., None] * colors[ids[weak]]).sum(axis=1)
     return np.clip(rgb, 0.0, 1.0)
+
+
+def footprints(scales, turns, least):
+    """For every Gaussian the matrix M with d' M d = how many of its own
+    widths a step d is, squared. No width counts as less than `least`: a
+    Gaussian thinner than that would colour nothing but its own middle."""
+    widths = np.maximum(scales, least).astype(np.float32)
+    q = turns / np.maximum(np.linalg.norm(turns, axis=1, keepdims=True), 1e-12)
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    turn = np.stack([np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], axis=1),
+                     np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], axis=1),
+                     np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], axis=1)], axis=1).astype(np.float32)
+    return np.einsum("nij,nj,nkj->nik", turn, 1.0 / (widths * widths), turn).astype(np.float32)
 
 
 SEEN = {}   # "from": the direction from the model to the photo's camera, once it was found
@@ -119,12 +135,21 @@ def the_photo(job):
         hint = job / "outputs" / "input_camera.json"
         if hint.is_file():
             distance = float(json.loads(hint.read_text()).get("radius", 0)) or None
-        return {"prepared": prepared, "fine": fine, "outline": outline, "distance": distance}
+        # What the photo has that the splat has not is its fine detail. The splat
+        # keeps its own colours (they are all of one piece, around the whole
+        # thing); the photo gives what is finer than a fiftieth of the thing.
+        ys, xs = np.nonzero(outline)
+        across = max(xs.max() - xs.min(), ys.max() - ys.min(), 8) * fine.shape[0] / prepared.shape[0]
+        # (Blurred within the thing only: the black around it is no colour of it.)
+        inside = np.asarray(Image.fromarray(outline).resize((fine.shape[1], fine.shape[0]), Image.NEAREST), np.float32)[..., None]
+        sigma = (0.02 * across, 0.02 * across, 0)
+        soft = gaussian_filter(fine * inside, sigma=sigma) / np.maximum(gaussian_filter(inside, sigma=sigma), 1e-3)
+        return {"prepared": prepared, "fine": np.concatenate([fine, soft], axis=2), "outline": outline, "distance": distance}
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
-def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbors, seconds, source=None):
+def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighbors, seconds, source=None):
     """Unwrap, rasterize UV triangle IDs and bake at each texel.
 
     UVs sample the actual 3D surface, not interpolated per-vertex colors.
@@ -192,8 +217,7 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
         tri_verts = verts[tri]
         positions = (w[:, None]*tri_verts[:, 0] + u[:, None]*tri_verts[:, 1]
                      + v[:, None]*tri_verts[:, 2])
-        rgb = gaussian_albedo(positions, tree, xyz, colors, alpha, radii,
-                              spacing, neighbors)
+        rgb = gaussian_albedo(positions, tree, colors, alpha, shapes, spacing, neighbors)
         tex_flat[samples] = np.rint(rgb*255).astype(np.uint8)
         if camera is not None:
             where[start:start+len(samples)] = positions
@@ -201,9 +225,9 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
     if camera is not None:
         rgb, trust = photo_of.colours(camera, where, facing, source["fine"], source["outline"])
         mixed = tex_flat[all_pixels].astype(np.float32) / 255.0
-        mixed += trust[:, None] * (rgb - mixed)
+        mixed += trust[:, None] * np.clip(rgb[:, :3] - rgb[:, 3:], -0.3, 0.3)      # the photo's detail on the splat's colours
         tex_flat[all_pixels] = np.rint(np.clip(mixed, 0, 1) * 255).astype(np.uint8)
-        print(f"Photo: {100.0 * float((trust > 0.5).mean()):.0f} % of the surface takes its colours from it", flush=True)
+        print(f"Photo: {100.0 * float((trust > 0.5).mean()):.0f} % of the surface takes its fine detail from it", flush=True)
         del where, facing, rgb, trust, mixed
     texture = tex_flat.reshape(size, size, 3)
     # Extend colors 8 pixels beyond UV islands to avoid bilinear seam bleed.
@@ -369,7 +393,8 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
         turns = np.column_stack([vertices["rot_" + str(i)][kept] for i in range(4)]).astype(np.float32)
     else:
         turns = np.tile(np.array([1.0, 0.0, 0.0, 0.0], np.float32), (len(xyz), 1))
-    gaussian_radius = np.exp(np.log(scales).mean(axis=1))   # for the colours: how far a Gaussian's colour reaches
+    # For the colours: no Gaussian is thinner than a third of the usual way to its neighbour.
+    gap = cKDTree(xyz).query(xyz[::max(1, len(xyz) // 20000)], k=2, workers=8)[0][:, 1]
 
     lo = np.percentile(xyz, settings["crop"], axis=0)
     hi = np.percentile(xyz, 100-settings["crop"], axis=0)
@@ -413,7 +438,7 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     # The worker reads the two MAG-STEP lines to show where the job is.
     print("MAG-STEP texture", flush=True)
     vmapping, uv_faces, uvs, texture = bake_texture(
-        shown.vertices, shown.faces, xyz, alpha, gaussian_radius, colors,
+        shown.vertices, shown.faces, xyz, alpha, footprints(scales, turns, 0.35 * float(np.median(gap))), colors,
         spacing, settings["texture"], settings["neighbors"],
         float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), the_photo(input_path.parent))
     print("MAG-STEP export", flush=True)

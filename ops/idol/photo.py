@@ -15,8 +15,8 @@ from scipy.ndimage import binary_dilation, binary_erosion
 from scipy.optimize import minimize
 
 SIDE = 160          # the photo and the views of the splat are compared this many pixels wide
-GOOD = 0.90         # the view must cover this much of the photo's outline (and little else) ...
-ALIKE = 0.08        # ... and its colours may differ by this much at most, or the photo is not used
+GOOD = 0.78         # the view must cover this much of the photo's outline (and little else) ...
+ALIKE = 0.13        # ... and its colours may differ by this much at most, or the photo is not used
 
 
 class Camera:
@@ -32,8 +32,8 @@ class Camera:
         off = points - self.eye
         depth = off @ self.forward
         safe = np.maximum(depth, 1e-6)
-        x = (off @ self.right) / safe * self.scale + self.shift[0]
-        y = -(off @ self.upward) / safe * self.scale + self.shift[1]
+        x = (off @ self.right) / safe * self.scale[0] + self.shift[0]
+        y = -(off @ self.upward) / safe * self.scale[1] + self.shift[1]
         return x, y, depth
 
 
@@ -73,7 +73,7 @@ def view(points, colours, cam, box, side):
     covered = np.zeros((side, side), bool)
     picture[py[inside][order], px[inside][order]] = colours[front][inside][order]
     covered[py[inside][order], px[inside][order]] = True
-    return picture, covered, Camera(eye, right, upward, forward, scale / side, (shift[0] / side, shift[1] / side))
+    return picture, covered, Camera(eye, right, upward, forward, (scale / side, scale / side), (shift[0] / side, shift[1] / side))
 
 
 def fit(points, colours, photo, up=(0.0, -1.0, 0.0), distance=None):
@@ -81,7 +81,17 @@ def fit(points, colours, photo, up=(0.0, -1.0, 0.0), distance=None):
     the photo (h x w x 3, 0..1, black where nothing is). None: no view of
     them looks like it."""
     from PIL import Image
-    small = np.asarray(Image.fromarray((np.clip(photo, 0, 1) * 255).astype(np.uint8)).resize((SIDE, SIDE), Image.BILINEAR), np.float32) / 255.0
+    # The thing may be small in its photo (two figures far apart, a wide margin). It is
+    # looked at as large as it is: the square around its outline, not the whole photo.
+    high, wide = photo.shape[:2]
+    there = photo.max(axis=2) > 0.04
+    if there.sum() < 64:
+        return None
+    ys, xs = np.nonzero(there)
+    span = max(xs.max() - xs.min(), ys.max() - ys.min()) * 1.16 + 2
+    left, top = (xs.max() + xs.min()) / 2 - span / 2, (ys.max() + ys.min()) / 2 - span / 2
+    window = Image.fromarray((np.clip(photo, 0, 1) * 255).astype(np.uint8)).crop((int(round(left)), int(round(top)), int(round(left + span)), int(round(top + span))))
+    small = np.asarray(window.resize((SIDE, SIDE), Image.BILINEAR), np.float32) / 255.0
     outline = small.max(axis=2) > 0.04
     if outline.sum() < 0.01 * SIDE * SIDE:
         return None
@@ -131,6 +141,9 @@ def fit(points, colours, photo, up=(0.0, -1.0, 0.0), distance=None):
     if best is None or best[1] is None:
         return None
     cover, colour, camera = best[1]
+    # Where a point lands in the window is where it lands in the whole photo.
+    camera.scale = (camera.scale[0] * span / wide, camera.scale[1] * span / high)
+    camera.shift = ((left + camera.shift[0] * span) / wide, (top + camera.shift[1] * span) / high)
     camera.cover, camera.colour = float(cover), float(colour)
     return camera if cover >= GOOD and colour <= ALIKE else None
 
@@ -147,11 +160,19 @@ def colours(camera, points, normals, photo, outline):
     towards = camera.eye - points
     towards /= np.maximum(np.linalg.norm(towards, axis=1, keepdims=True), 1e-9)
     facing = (normals * towards).sum(axis=1)
-    # What is nearest in every pixel: the surface points themselves, drawn small.
-    side = 1024
-    px = np.clip(np.rint(x * side).astype(np.int64), -1, side)
-    py = np.clip(np.rint(y * side).astype(np.int64), -1, side)
-    inside = (px >= 0) & (px < side) & (py >= 0) & (py < side) & (depth > 1e-3)
+    # What is nearest in every pixel: the surface points themselves, drawn small,
+    # on a sheet as large as the thing is in the photo (not as the photo is:
+    # a small thing would be a few pixels, and what hides what would be a guess).
+    # ... as fine as the points are many: a pixel with no point in it would hide nothing.
+    side = int(np.clip(math.sqrt(len(points) / 2.0) / 1.5, 64, 2048))
+    ahead = (depth > 1e-3) & (x > -0.5) & (x < 1.5) & (y > -0.5) & (y < 1.5)
+    if not ahead.any():
+        return np.zeros((len(points), photo.shape[2]), np.float32), np.zeros(len(points), np.float32)
+    x0, y0 = float(x[ahead].min()), float(y[ahead].min())
+    step = max(float(x[ahead].max()) - x0, float(y[ahead].max()) - y0, 1e-9) / (side - 1)
+    px = np.clip(np.rint((x - x0) / step), -1, side).astype(np.int64)
+    py = np.clip(np.rint((y - y0) / step), -1, side).astype(np.int64)
+    inside = ahead & (px >= 0) & (px < side) & (py >= 0) & (py < side)
     nearest = np.full(side * side, np.inf, np.float32)
     flat = py[inside] * side + px[inside]
     order = np.argsort(-depth[inside])
@@ -166,12 +187,14 @@ def colours(camera, points, normals, photo, outline):
         filled = grown
     reach = float(np.ptp(depth[inside])) if inside.any() else 1.0
     seen = inside.copy()
-    seen[inside] = depth[inside] <= filled[py[inside], px[inside]] + 0.02 * reach
+    # Hidden is what lies clearly behind the nearest: by more than a pixel of the sheet is wide out there.
+    wide = step / max(camera.scale[0], 1e-9) * depth[inside]
+    seen[inside] = depth[inside] <= filled[py[inside], px[inside]] + 0.006 * reach + 1.5 * wide
     # Not at the very rim of the outline: there the photo shows what is behind the thing.
     safe = binary_erosion(outline, iterations=max(1, outline.shape[0] // 256))
     oy = np.clip((y * outline.shape[0]).astype(np.int64), 0, outline.shape[0] - 1)
     ox = np.clip((x * outline.shape[1]).astype(np.int64), 0, outline.shape[1] - 1)
-    trust = np.clip((facing - 0.15) / 0.3, 0.0, 1.0)
+    trust = np.clip((facing - 0.3) / 0.3, 0.0, 1.0)               # seen straight enough: at a flat angle a photo smears
     trust = trust * trust * (3 - 2 * trust)
     trust = np.where(seen & safe[oy, ox], trust, 0.0).astype(np.float32)
     # The photo between its pixels.

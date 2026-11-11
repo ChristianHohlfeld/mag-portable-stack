@@ -437,6 +437,7 @@ class Rig:
 # Every action there is, for the message when one is asked for that is not among them.
 ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, shake_head, wag_tail, wobble, grow, shrink, wait; "
            "kick, punch (with target: the one who is hit flies away; force 0..1), attack, fly_away (from, far), fall; "
+           "pose (part: left_hand/right_hand/both_hands, where: at/touch/point/head/up/forward/side, target, seconds); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 # When in a recorded motion the blow lands (part of its length).
@@ -864,6 +865,43 @@ def perform(actor, action, actors, fps, start):
             end = BEAST[kind](p, seconds(0.0, 0.0, 12.0))
         else:
             end = p.ease(kind, seconds(1.5, 0.0, 20.0))
+    elif kind == "pose" and not beast:
+        # A free pose: a hand (or both) to a place, held for a while: points at
+        # somebody, touches its head, holds its arms up. Worked out with IK on
+        # the figure's own arm, laid over what it does meanwhile.
+        part = str(action.get("part") or "right_hand").lower()
+        sides = ["l", "r"] if part.startswith("both") else ["l"] if part.startswith("left") else ["r"]
+        frames = max(6, int(round(seconds(1.5, 0.3, 12.0) * fps)))
+        where = str(action.get("where") or ("at" if other else "up")).lower()
+        tall = actor.height
+
+        def place(side):
+            def at(frame):
+                hx, hy = math.cos(p.heading), math.sin(p.heading)
+                me = Vector((p.xy[0], p.xy[1]))
+                if other and where in ("at", "touch", "point"):
+                    o = other.pos
+                    far = (o - me).length
+                    if where == "touch" or far < 0.5 * tall + other.radius:
+                        return (o.x, o.y, max(0.3 * tall, min(other.height * 0.75, 0.9 * tall)))
+                    d = (o - me).normalized()                            # pointing: the arm stretched towards it
+                    return (me.x + d.x * tall, me.y + d.y * tall, 0.65 * tall)
+                left = 1.0 if side == "l" else -1.0
+                side_x, side_y = -hy * left, hx * left
+                if where in ("head", "kopf"):
+                    return (me.x + 0.08 * tall * hx, me.y + 0.08 * tall * hy, 0.95 * tall)
+                if where in ("forward", "vor", "ahead"):
+                    return (me.x + 0.8 * tall * hx + 0.15 * tall * side_x, me.y + 0.8 * tall * hy + 0.15 * tall * side_y, 0.6 * tall)
+                if where in ("side", "seite", "out"):
+                    return (me.x + 0.8 * tall * side_x, me.y + 0.8 * tall * side_y, 0.7 * tall)
+                return (me.x + 0.15 * tall * side_x, me.y + 0.15 * tall * side_y, 1.6 * tall)  # up
+            return at
+
+        for side in sides:
+            p.reach_to(side, place(side), first, first + frames)
+        if other:
+            p.look(eyes(other), first, first + frames, 0.8)
+        end = p.wait(first + frames)
     elif not beast and (kind == "motion" or p.lib.find(kind)):
         # One of the recorded motions, found by its description: "motion" with
         # a query ("boxing", "drunk walk", "tanzt Salsa"), or such words as

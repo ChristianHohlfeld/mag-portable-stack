@@ -71,7 +71,9 @@ worked out (`ops/scene/animal.py`): its feet take turns in the order of its
 gait and stand where they were put down, the body rides on the legs that
 carry it, and it sits, lies, leaps and lands on the same ground. About 150 recorded motions are
 found by their description (`do: motion`, `query`) and joined at the pose
-nearest the one before. A fight is told with kick, punch or
+nearest the one before; a free `pose` puts a hand somewhere (up, to the
+head, pointing at or touching another) with IK on the figure's own arm. A
+fight is told with kick, punch or
 attack and a target: the one who is hit flies away in an arc, lands, lies
 and gets up again (`knock` in `scene.py`). This repository is
 public: never add motion data whose terms forbid commercial use or passing

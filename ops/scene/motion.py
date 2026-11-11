@@ -560,6 +560,7 @@ class Performer:
         self.air = body.air                               # how much higher than recorded it leaves the ground
         self.gives = {}                                   # how much an arm that holds something has given its hold up for a gesture
         self.sways, self.looks, self.heads = [], [], []   # what is laid over the motion: swaying, looking at something, nodding
+        self.reaches = []                                 # a hand that is to be somewhere: (side, start, end, target)
         self.watch = False                                # keep the joints of every frame, to look at them
         self.frames = []                                  # per frame: where the model's origin is, where it looks, its pose
 
@@ -617,6 +618,21 @@ class Performer:
         heading = qz(self.heading)
         root = np.array([self.xy[0], self.xy[1], (pose.height + (self.air - 1.0) * pose.lift) * body.leg - self.drop])
         limbs = self._arms(pose.limbs.copy())
+        f = len(self.frames)
+        for side, start, end, target in self.reaches:
+            if not start <= f <= end + int(0.4 * self.fps):
+                continue
+            # In and out in a third of a second; meanwhile the hand is where it is to be.
+            part = fade(min((f - start) / (0.35 * self.fps), 1.0, (end + 0.4 * self.fps - f) / (0.4 * self.fps)))
+            upper, lower = body.arms[side]
+            k = 4 if side == "l" else 6
+            shoulder = root + qrot(heading, qrot(pose.chest, body.head[upper] - body.mid))
+            elbow = shoulder + qrot(heading, limbs[k]) * body.length[upper]
+            goal = np.asarray(target(f), dtype=float)
+            a, b = reach(shoulder, goal, elbow, body.length[upper], body.length[lower], np.array([0.0, 0.0, -1.0]), soft=0.97)
+            back = qz(-self.heading)
+            for j, want in ((0, qrot(back, a)), (1, qrot(back, b))):
+                limbs[k + j] = qrot(qpart(qarc(limbs[k + j], want), part), limbs[k + j])
         hip, knee, foot = [], [], []
         for k, (upper, shin) in enumerate(body.legs):
             h = root + qrot(heading, qrot(pose.hips, body.head[upper] - body.mid))
@@ -823,6 +839,13 @@ class Performer:
         n = max(6, int(round(seconds * self.fps)))
         self.sways.append((len(self.frames), n, lean))
         return self.wait(len(self.frames) + n)
+
+    def reach_to(self, side, target, start, end):
+        """A hand is to be at a place from frame to frame (a pose: points at,
+        touches, holds up). `target`: asked every frame for the place
+        (x, y, z). The arm comes there and goes back gently."""
+        if side in self.body.arms:
+            self.reaches.append((side, int(start), int(end), target))
 
     def look(self, target, start, end, part=1.0):
         """Looks at something from frame to frame. `target`: asked every frame for the place (x, y, z)."""

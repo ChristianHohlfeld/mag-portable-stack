@@ -41,6 +41,7 @@ jobs:
       - name: Scenes (figures get the right skeleton; films survive restarts)
         run: |
           python3 ops/scene/tests/test_rig.py
+          python3 ops/scene/tests/test_motion.py
           python3 ops/scene/tests/test_worker.py
       - name: Phone control daemon (not part of a release; the room's phone tools are tested against it)
         run: python3 devices/s23/tests/test_s23ctl.py

@@ -61,7 +61,14 @@ The bots build scenes from the 3D models in the chat (`models_3d`,
 `scene_3d`; every bot, with or without a VM): `mag-scene` runs the pinned
 Blender on the CPU (cores 28-55, no device access, never the MI50), reads
 what each figure is, gives animals and two-legged figures a skeleton and
-moves their limbs; only a thing moves as a whole. A scene is described, never
+moves their limbs; only a thing moves as a whole. A figure on two legs moves
+with recorded motions (`ops/scene/motions.npz`, made by
+`ops/scene/mocap/build.py` from motion capture that is free to use and to
+pass on, credited in `ops/scene/MOTIONS.md`): its bones take the recorded
+directions, its way follows its own legs, a foot that stands stays where it
+stands, and nobody in a scene stands like a statue. This repository is
+public: never add motion data whose terms forbid commercial use or passing
+it on. A scene is described, never
 scripted: no code of a bot or a request runs in Blender. The scene is a normal
 message that plays in the chat at once. Its film is rendered only when the
 owner asks for it at the scene ("Film rendern"), as a stage of its own that

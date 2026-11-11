@@ -1,0 +1,14 @@
+{
+ "neutral": "idle",
+ "clips": [
+  {"name": "idle", "trial": "113_21", "frames": [20, 260], "loop": true},
+  {"name": "walk", "trial": "82_08", "frames": [280, 420], "loop": "stride", "rounds": 2},
+  {"name": "run", "trial": "16_35", "frames": [0, 41], "loop": "stride"},
+  {"name": "sneak", "trial": "139_29", "frames": [0, 240], "loop": "stride", "rounds": 2},
+  {"name": "hop", "trial": "13_11", "frames": [39, 87], "loop": "travel"},
+  {"name": "leap", "trial": "127_25", "frames": [0, 56]},
+  {"name": "jump", "trial": "143_06", "frames": [26, 58]},
+  {"name": "wave", "trial": "143_25", "frames": [8, 96]},
+  {"name": "spin", "trial": "105_60", "frames": [18, 70]}
+ ]
+}

@@ -454,7 +454,7 @@ def create(spec):
     clean = {"title": str(spec.get("title") or "Szene")[:80], "actors": actors,
              "actions": [a for a in (spec.get("actions") or []) if isinstance(a, dict)][:40],
              "ground": spec.get("ground"), "light": spec.get("light"), "seconds": spec.get("seconds"),
-             "room": spec.get("room") if isinstance(spec.get("room"), dict) else None}
+             "room": spec.get("room") if isinstance(spec.get("room"), dict) else None, "camera": spec.get("camera")}
     at_once = spec.get("film") is not False
     with lock:
         if at_once and pending.qsize() >= MAX_PENDING:

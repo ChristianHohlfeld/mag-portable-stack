@@ -256,7 +256,7 @@ private:
   // A scene as its bot described it, without what the room added for the worker.
   static Val recipe_of(const Val &spec) {
     Val out = Val::object();
-    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds", "room"})
+    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds", "room", "camera"})
       if (const Val *v = spec.find(key); v && v->type != Val::NUL) out[key] = *v;
     if (Val *actors = out.find("actors"); actors && actors->isArr())
       for (auto &actor : *actors->arr)

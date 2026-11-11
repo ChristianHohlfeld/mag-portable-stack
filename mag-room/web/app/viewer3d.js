@@ -109,7 +109,9 @@
         duration = Math.max(duration, times[times.length - 1]);
       }
     for (const index of order) if (nodes[index].parent >= 0 && nodes[nodes[index].parent].moves) nodes[index].moves = true;
-    return { nodes, order, draws, clips, duration };
+    // How the scene wants to be seen (a camera move its maker asked for): orbit, high, low, wide, close.
+    const shot = String(json.scenes?.[json.scene ?? 0]?.extras?.mag_camera || '');
+    return { nodes, order, draws, clips, duration, shot };
   }
 
   // 4x4 matrices, column-major like WebGL.
@@ -290,9 +292,12 @@
     // photo was taken (-X); a model from the front quarter, as ever.
     let side = Math.hypot(...travel) * unit > 0.05 ? Math.atan2(travel[1], travel[0]) : Math.PI / 2;
     if (Math.sin(side) < -1e-6) side += Math.PI;
-    const home = playable ? { yaw: side + 0.3, pitch: 0.2, zoom: 1, panX: 0, panY: 0 } : { yaw: 0.6, pitch: 0.22, zoom: 1, panX: 0, panY: 0 };
+    const shot = playable ? scene.shot : '';
+    const home = playable ? { yaw: side + 0.3, pitch: shot === 'high' ? 0.8 : shot === 'low' ? 0.02 : 0.2, zoom: shot === 'wide' ? 1.5 : shot === 'close' ? 0.72 : 1, panX: 0, panY: 0 }
+      : { yaw: 0.6, pitch: 0.22, zoom: 1, panX: 0, panY: 0 };
     const cam = { ...home };
-    const turn = playable ? 0 : 0.35; // rad/s until the first touch
+    // rad/s until the first touch: a model turns; a scene that asked for it goes once round while it plays.
+    const turn = playable ? (shot === 'orbit' ? (2 * Math.PI) / Math.max(4, scene.duration) : 0) : 0.35;
     let spin = turn;
     let velYaw = 0, velPitch = 0, visible = true, frame = 0, last = 0, lost = false;
     let playing = playable, clock = 0;

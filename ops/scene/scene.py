@@ -479,7 +479,7 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
            "kick, punch (with target: the one who is hit flies away; force 0..1), attack, fly_away (from, far), fall; "
            "pose (part: left_hand/right_hand/both_hands, where: at/touch/point/head/up/forward/side, hand: fist/open/point, target, seconds); "
            "fly_to, fly (up into the air and round), flap, peck (birds; anything can fly); drive_to (a vehicle; it also drives on walk_to/run_to); roll_to (a thing rolls like a ball); "
-           "open, close, turn_part (a thing or vehicle: part top/front/back/left/right, degrees); "
+           "open, close, turn_part (a thing or vehicle: part top/front/back/left/right or by name: lid, door left, hood, trunk, drawer, turret; degrees, distance); "
            "say (text: its mouth speaks the words), face (expression: smile/laugh/sad/frown/angry/surprised/blink); "
            "climb (onto the target, hand over hand up a high one), vault (over the target, parkour), jump_down (from what it stands on); "
            "shake_hands, high_five, hug (with the target, both on two legs); "
@@ -573,7 +573,7 @@ class Actor:
         self.clock = 0.0                  # until when it is busy (seconds)
         self.placed = False               # put somewhere on purpose, or moved already
         self.keys = {}                    # frame -> (x, y, z, pitch, roll, yaw, squash, scale)
-        self.pieces = {}                  # a part that opens or turns: side -> its object, hinge and keys (see piece())
+        self.pieces = {}                  # a part that opens, slides or turns: side -> its object, hinge and keys (see piece())
         self.face = None                  # its face, when it shows one (face.py)
 
     @property
@@ -1158,13 +1158,40 @@ def perform(actor, action, actors, fps, start):
 
 # ---- moving parts ------------------------------------------------------------
 SIDES = ("top", "front", "back", "left", "right")
+# What a part is called, and where it is: side, how it moves (turns on a
+# hinge or slides out), and a seed moved forward (+1) or back (-1) along the
+# top (a bonnet lies in front, a boot behind). A side named with it wins.
+PART_WORDS = (
+    (("drawer", "schublade", "lade", "schubfach"), ("front", "slide", 0.0)),
+    (("hood", "bonnet", "motorhaube", "haube"), ("top", "hinge", 1.0)),
+    (("heckklappe", "tailgate", "hatch"), ("back", "hinge", 0.0)),
+    (("trunk", "boot", "kofferraum", "kofferraumdeckel"), ("top", "hinge", -1.0)),
+    (("lid", "deckel", "klappe", "turret", "turm", "kuppel", "dome", "cap", "kappe"), ("top", "hinge", 0.0)),
+    (("door", "tür", "türe", "tor", "gate"), ("front", "hinge", 0.0)),
+)
+SIDE_WORDS = {"top": ("top", "oben", "obere", "oberer", "oberes", "up"), "front": ("front", "vorn", "vorne", "vordere", "vorderer", "vorderes"),
+              "back": ("back", "hinten", "hintere", "hinterer", "hinteres", "heck", "rear"), "left": ("left", "links", "linke", "linker", "linkes"),
+              "right": ("right", "rechts", "rechte", "rechter", "rechtes")}
+
+
+def part_named(text):
+    """What `part` of an action names: (side, how, seed shift), or None.
+    "top" … "right" as before; or a name, with a side if it has one:
+    "Tür links", "door left", "Deckel", "Motorhaube", "Schublade"."""
+    words = [w.strip(".,;:!?()\"'") for w in str(text or "top").lower().replace("_", " ").replace("-", " ").split()]
+    side = next((s for w in words for s, names in SIDE_WORDS.items() if w in names), None)
+    for names, (where, how, toward) in PART_WORDS:
+        if any(w in names or any(w.startswith(n) for n in names if len(n) > 4) for w in words):
+            return (where, how, toward) if toward else (side or where, how, 0.0)   # a bonnet is on top, whatever else is said
+    return (side, "hinge", 0.0) if side else None
 
 
 def seam(co, d, size):
     """Where a part of a thing begins, seen along a direction from its middle
     out (`d`): at a groove or a step of its cross-section in the outer part
     (a lid sits on a box at its rim, a door in its frame), else a fifth of the
-    way in. Returns how far along `d` the cut is."""
+    way in. Returns how far along `d` the cut is. Used when no part is found
+    along the folds of the surface (see region())."""
     t = co @ d
     lo, hi = float(t.min()), float(t.max())
     span = max(hi - lo, 1e-6)
@@ -1179,7 +1206,100 @@ def seam(co, d, size):
     return lo + span * ((at + 0.5) / 60 if at is not None else 0.8)
 
 
-def inside(mesh, bm, plane, d, near, name):
+def region(mesh, bm, d, across, toward):
+    """The faces of the part on one side of a thing, found on its surface
+    alone (no model, no picture): a lid, a door or a turret is bounded by a
+    groove, a step or an inner crease, where the surface folds inwards. Two
+    floods grow over the faces at once, one from the middle of the side (a
+    ray from outside along -d hits it) and one from everything in the inner
+    half of the thing; a flood crosses a fold only when it has no lower way
+    round (a watershed), and on even ground the nearer one wins. Where they
+    meet is the part's edge. It is taken only when that edge runs along folds
+    for the most part, the part faces the side and is neither a speck nor
+    half of the thing; else None (the plane cut of seam() is used).
+    `across` are the two directions across the side, `toward` moves the
+    seed along the first of them (a bonnet, a boot). Returns a set of face
+    indices of bm."""
+    import heapq
+    from mathutils.bvhtree import BVHTree
+    count = len(mesh.polygons)
+    if count < 200 or count != len(bm.faces) or count > 700000:
+        return None
+    normal, centre, area = np.empty(count * 3), np.empty(count * 3), np.empty(count)
+    mesh.polygons.foreach_get("normal", normal)
+    mesh.polygons.foreach_get("center", centre)
+    mesh.polygons.foreach_get("area", area)
+    normal, centre = normal.reshape(-1, 3), centre.reshape(-1, 3)
+    bm.faces.index_update()
+    a, b, length = [], [], []
+    for e in bm.edges:
+        two = e.link_faces
+        if len(two) == 2:
+            a.append(two[0].index)
+            b.append(two[1].index)
+            length.append(e.calc_length())
+    if not a:
+        return None
+    a, b, length = np.array(a), np.array(b), np.array(length)
+    # How sharply the surface folds inwards at each edge (0 where it bends outwards).
+    angle = np.arccos(np.clip((normal[a] * normal[b]).sum(axis=1), -1.0, 1.0))
+    inward = ((centre[b] - centre[a]) * (normal[b] - normal[a])).sum(axis=1) < 0
+    fold = np.where(inward, angle, 0.0)
+    step = max(1.5 * float(np.percentile(angle, 70)), math.radians(6.0))   # above the grain of the surface
+    level = (fold / step).astype(int)
+    gap = np.linalg.norm(centre[b] - centre[a], axis=1)
+    ends = np.concatenate([a, b])
+    order = np.argsort(ends, kind="stable")
+    to = np.concatenate([b, a])[order].tolist()
+    over = np.concatenate([level, level])[order].tolist()
+    far = np.concatenate([gap, gap])[order].tolist()
+    start = np.searchsorted(ends[order], np.arange(count + 1)).tolist()
+    middle = (centre.min(axis=0) + centre.max(axis=0)) / 2
+    dn = np.array(d)
+    t = (centre - middle) @ dn
+    inner = np.nonzero(t < 0.0)[0].tolist()
+    if not inner:
+        return None
+    total = float(area.sum())
+    tree = BVHTree.FromBMesh(bm)
+    reach = float(t.max() - t.min()) + 1.0
+    spans = [float(np.abs((centre - middle) @ np.array(u)).max()) for u in across]
+    shifts = [(toward * 0.45, 0.0)] if toward else [(0.0, 0.0), (0.3, 0.0), (-0.3, 0.0), (0.0, 0.3), (0.0, -0.3)]
+    best = None
+    for one, two in shifts:
+        origin = Vector(middle) + d * reach + across[0] * (one * spans[0]) + across[1] * (two * spans[1])
+        seed = tree.ray_cast(origin, -d, 3 * reach)[2]
+        if seed is None or t[seed] <= 0.0 or normal[seed] @ dn < 0.2:
+            continue
+        label = [0] * count
+        heap = [(0, 0.0, f, 2) for f in inner] + [(0, 0.0, seed, 1)]
+        heapq.heapify(heap)
+        while heap:
+            lv, dist, f, mine = heapq.heappop(heap)
+            if label[f]:
+                continue
+            label[f] = mine
+            for k in range(start[f], start[f + 1]):
+                g = to[k]
+                if not label[g]:
+                    heapq.heappush(heap, (max(lv, over[k]), dist + far[k], g, mine))
+        part = np.array(label) == 1
+        share = float(area[part].sum()) / total
+        if not 0.004 < share < 0.45:
+            continue
+        facing = float((normal[part] * area[part, None]).sum(axis=0) @ dn) / max(float(area[part].sum()), 1e-12)
+        edge = part[a] != part[b]
+        folded = float(length[edge & (level >= 1)].sum()) / max(float(length[edge].sum()), 1e-12)
+        if facing < 0.3 or folded < 0.6:
+            continue
+        if best is None or folded > best[0]:
+            best = (folded, set(np.nonzero(part)[0].tolist()))
+        if folded > 0.85:
+            break
+    return best[1] if best else None
+
+
+def inside(mesh, bm, seam_verts, name):
     """The look of what a cut opens: the colours of the surface along the
     seam, darker as an inside in shadow is, with a little grain and deeper
     towards the middle; painted as a small texture of its own. Returns the
@@ -1192,7 +1312,7 @@ def inside(mesh, bm, plane, d, near, name):
         small.scale(32, 32)
         px = np.array(small.pixels[:], dtype=float).reshape(32, 32, -1)[:, :, :3]
         bpy.data.images.remove(small)
-        uvs = [loop[layer].uv[:] for v in bm.verts if abs((v.co - plane).dot(d)) < 20 * near for loop in v.link_loops]
+        uvs = [loop[layer].uv[:] for v in seam_verts for loop in v.link_loops]
         if uvs:
             uv = np.clip(np.array(uvs), 0.0, 0.999)
             colour = px[(uv[:, 1] * 32).astype(int), (uv[:, 0] * 32).astype(int)].mean(axis=0)
@@ -1236,14 +1356,25 @@ def cover(bm, faces, d, index):
             loop[layer].uv = ((loop.vert.co.dot(u) - lo_u) / span, (loop.vert.co.dot(v) - lo_v) / span)
 
 
-def piece(actor, side):
+def edged(bm):
+    """The vertices on the open edge of a surface (where a cut ran)."""
+    return [v for v in bm.verts if any(e.is_boundary for e in v.link_edges)]
+
+
+def piece(actor, side, how="hinge", toward=0.0):
     """Cuts the part of a thing on one side (a lid on top, a door in front,
-    at the back or a side) out of its surface at its seam, closes both cuts,
-    and hangs it on a hinge along the seam's edge (the back edge of a lid,
-    the left edge of a front door, the front edge of a side door, the top
-    edge at the back). Returns the part; it opens by turning about the hinge."""
-    if side in actor.pieces:
-        return actor.pieces[side]
+    at the back or a side, a drawer) out of its surface, closes both cuts,
+    and hangs it on a hinge along its edge (the back edge of a lid, the left
+    edge of a front door, the front edge of a side door, the top edge at the
+    back; a bonnet at its back edge, a boot at its front edge). The part is
+    what region() finds bounded by the folds of the surface; when it finds
+    none, what lies beyond the seam() plane. A drawer (`how` "slide") gets
+    walls of its own and leaves a pocket. Returns the part; it opens by
+    turning about the hinge or sliding out along its side, and turns about
+    the middle of its edge (a turret)."""
+    key = side + ("" if not toward else " vorn" if toward > 0 else " hinten")   # a bonnet and a lid are two parts on top
+    if key in actor.pieces:
+        return actor.pieces[key]
     if actor.rig is not None:
         fail(actor.name + " hat ein Skelett; Teile öffnen und drehen geht nur bei Dingen und Fahrzeugen (kind: object oder vehicle).")
     mesh = actor.part.data
@@ -1256,39 +1387,74 @@ def piece(actor, side):
     up = Vector((0.0, 0.0, 1.0))
     left = up.cross(front)
     d = {"top": up, "front": front, "back": -front, "left": left, "right": -left}[side]
+    across = {"top": (front, left), "front": (left, up), "back": (left, up), "left": (front, up), "right": (front, up)}[side]
     dn = np.array(d)
-    cut = seam(co - centre, dn, actor.size)
-    plane = Vector(centre) + d * cut
+    t = (co - centre) @ dn
+    depth = 0.6 * float(t.max() - t.min())                     # how far a drawer reaches in, and slides out
     bm = bmesh.new()
     bm.from_mesh(mesh)
-    rest = bm.copy()
-    # The part: what is beyond the seam; the rest keeps what is before it. Both cuts are closed.
     near = 1e-4 * max(actor.size)
-    bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=plane, plane_no=d, clear_inner=True)
-    bmesh.ops.bisect_plane(rest, geom=rest.verts[:] + rest.edges[:] + rest.faces[:], plane_co=plane, plane_no=d, clear_outer=True)
+    try:
+        found = region(mesh, bm, d, across, toward)
+    except Exception as exc:                                   # a surface it cannot read: the plane cut
+        print("MAG-NOTE %s: no part along the folds (%s)" % (actor.name, type(exc).__name__), flush=True)
+        found = None
+    plane = None
+    if found:
+        # The part: the faces found; the rest keeps the others. Both open edges are closed.
+        rest = bm.copy()
+        bm.faces.index_update()
+        rest.faces.index_update()
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.index not in found], context="FACES")
+        bmesh.ops.delete(rest, geom=[f for f in rest.faces if f.index in found], context="FACES")
+        seam_verts = edged(rest)
+        rim = np.array([v.co[:] for v in edged(bm)] or [v.co[:] for v in bm.verts])
+        print("MAG-NOTE %s: part %s found along the folds of its surface (%d faces)" % (actor.name, side, len(found)), flush=True)
+    else:
+        cut = seam(co - centre, dn, actor.size)
+        plane = Vector(centre) + d * cut
+        rest = bm.copy()
+        # The part: what is beyond the seam; the rest keeps what is before it. Both cuts are closed.
+        bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=plane, plane_no=d, clear_inner=True)
+        bmesh.ops.bisect_plane(rest, geom=rest.verts[:] + rest.edges[:] + rest.faces[:], plane_co=plane, plane_no=d, clear_outer=True)
+        seam_verts = [v for v in rest.verts if abs((v.co - plane).dot(d)) < 20 * near]
+        rim = None
+        print("MAG-NOTE %s: part %s cut by a plane (no folds around it)" % (actor.name, side), flush=True)
     # What the cut opens is not the surface's paint stretched over it: an inside of its own.
     try:
-        lining = inside(mesh, rest, plane, d, near, actor.name + " innen " + side)
+        lining = inside(mesh, rest, seam_verts, actor.name + " innen " + key)
     except Exception as exc:
         print("MAG-NOTE %s: no inside (%s)" % (actor.name, type(exc).__name__), flush=True)
         lining = None
     index = len(mesh.materials)
     for one in (bm, rest):
+        walls = []
+        if found and how == "slide":                          # a drawer has sides, and leaves a pocket as deep
+            made = bmesh.ops.extrude_edge_only(one, edges=[e for e in one.edges if e.is_boundary])["geom"]
+            bmesh.ops.translate(one, verts=[g for g in made if isinstance(g, bmesh.types.BMVert)], vec=-d * depth)
+            walls = [g for g in made if isinstance(g, bmesh.types.BMFace)]
         caps = bmesh.ops.holes_fill(one, edges=one.edges[:], sides=0).get("faces", [])
+        if found and caps:                                    # the edge of a region is not flat: in triangles
+            caps = bmesh.ops.triangulate(one, faces=caps, quad_method="BEAUTY", ngon_method="BEAUTY").get("faces", caps)
+        if walls:
+            bmesh.ops.recalc_face_normals(one, faces=one.faces[:])
         if lining is not None:
-            cover(one, caps, d, index)
+            cover(one, walls + list(caps), d, index)
     if len(bm.verts) < 8 or len(rest.verts) < 8:
         bm.free()
         rest.free()
         fail(actor.name + " hat " + {"top": "oben", "front": "vorn", "back": "hinten", "left": "links", "right": "rechts"}[side] + " kein Teil, das sich lösen lässt.")
-    rim = np.array([v.co[:] for v in bm.verts if abs((v.co - plane).dot(d)) < near] or [v.co[:] for v in bm.verts])
-    # The hinge: along the edge of the seam the part turns away from.
-    edge, axis = {"top": (-front, front.cross(up)), "front": (left, up), "back": (up, d.cross(up)),
-                  "left": (front, -up), "right": (front, up)}[side]
+    if rim is None:
+        rim = np.array([v.co[:] for v in bm.verts if abs((v.co - plane).dot(d)) < near] or [v.co[:] for v in bm.verts])
+    # The hinge: along the edge of the part it turns away from; it opens outwards (axis d x edge).
+    edge = {"top": -front, "front": left, "back": up, "left": front, "right": front}[side]
+    if side == "top" and toward:
+        edge = -front if toward > 0 else front                # a bonnet hinges at its back, a boot at its front
+    axis = d.cross(edge)
     middle = rim.mean(axis=0)
     reach = float(((rim - middle) @ np.array(edge)).max())
     hinge = Vector(middle) + edge * reach
-    data = bpy.data.meshes.new(actor.name + " " + side)
+    data = bpy.data.meshes.new(actor.name + " " + key)
     bmesh.ops.translate(bm, verts=bm.verts[:], vec=-hinge)    # the part turns about its hinge
     bm.to_mesh(data)
     bm.free()
@@ -1299,24 +1465,34 @@ def piece(actor, side):
     for material in mesh.materials:
         data.materials.append(material)
     data.shade_smooth()
-    obj = bpy.data.objects.new(actor.name + " Teil " + side, data)
+    obj = bpy.data.objects.new(actor.name + " Teil " + key, data)
     bpy.context.collection.objects.link(obj)
     obj.parent = actor.obj
     obj.matrix_parent_inverse = Matrix.Identity(4)
     obj.location = hinge
     obj.rotation_mode = "QUATERNION"
-    actor.pieces[side] = {"obj": obj, "axis": axis.normalized(), "keys": {0: 0.0}, "angle": 0.0}
-    return actor.pieces[side]
+    actor.pieces[key] = {"obj": obj, "axis": axis.normalized(), "hinge": hinge.copy(), "out": d.copy(),
+                          "pivot": Vector(middle) - hinge, "how": how, "depth": depth,
+                          "keys": {0: 0.0}, "angle": 0.0, "spins": {0: 0.0}, "spin": 0.0, "slides": {0: 0.0}, "slide": 0.0}
+    return actor.pieces[key]
 
 
 def pieces(actor, last):
-    """Writes how the parts of an actor are turned, frame by frame."""
-    for side, p in actor.pieces.items():
-        known = sorted(p["keys"])
-        values = np.interp(np.arange(last + 1), known, [p["keys"][k] for k in known])
+    """Writes how the parts of an actor move, frame by frame: turned about
+    the hinge, spun about the middle of its edge along its side (a turret),
+    slid out along its side (a drawer)."""
+    def series(keys):
+        known = sorted(keys)
+        return np.interp(np.arange(last + 1), known, [keys[k] for k in known])
+
+    for p in actor.pieces.values():
+        turned, spun, slid = series(p["keys"]), series(p["spins"]), series(p["slides"])
         for frame in range(last + 1):
-            p["obj"].rotation_quaternion = Quaternion(p["axis"], float(values[frame]))
+            spin = Quaternion(p["out"], float(spun[frame]))
+            p["obj"].rotation_quaternion = spin @ Quaternion(p["axis"], float(turned[frame]))
+            p["obj"].location = p["hinge"] + p["out"] * float(slid[frame]) + p["pivot"] - spin @ p["pivot"]
             p["obj"].keyframe_insert(data_path="rotation_quaternion", frame=frame)
+            p["obj"].keyframe_insert(data_path="location", frame=frame)
         linear(p["obj"])
 
 
@@ -1358,28 +1534,30 @@ def play(actor, action, actors, fps, start):
         return Vector((heading.x * math.cos(actor.yaw) + heading.y * math.sin(actor.yaw), heading.y * math.cos(actor.yaw) - heading.x * math.sin(actor.yaw)))
 
     if kind in ("open", "close", "turn_part"):
-        # A part of a thing moves on its own: a lid opens, a door, a turret turns.
-        side = str(action.get("part") or "top").lower()
-        side = {"lid": "top", "deckel": "top", "door": "front", "tür": "front", "oben": "top", "vorn": "front", "hinten": "back",
-                "links": "left", "rechts": "right", "trunk": "back", "kofferraum": "back", "hood": "front", "motorhaube": "front"}.get(side, side)
-        if side not in SIDES:
-            fail("Aktion " + kind + ": part ist eine Seite (" + ", ".join(SIDES) + ").")
-        p = piece(actor, side)
+        # A part of a thing moves on its own: a lid or a door opens, a drawer slides out, a turret turns.
+        named = part_named(action.get("part"))
+        if named is None:
+            fail("Aktion " + kind + ": part ist eine Seite (" + ", ".join(SIDES) + ") oder ein Teil mit Seite (Deckel, Tür links, Motorhaube, Kofferraum, Schublade, Turm).")
+        p = piece(actor, *named)
         frames = max(4, int(round(number(action, "seconds", 1.0 if kind != "turn_part" else 2.0, 0.2, 20.0) * fps)))
-        was = p["angle"]
-        if kind == "open":
-            goal = math.radians(number(action, "degrees", 100.0, -180.0, 180.0))
-        elif kind == "close":
-            goal = 0.0
+        # Each move has its own course: turned about the hinge, slid out, spun about its middle.
+        if kind == "turn_part":
+            keys, now = "spins", "spin"
+            goal = p["spin"] + math.radians(number(action, "degrees", 360.0 * number(action, "times", 1, 1, 12), -3600.0, 3600.0))
+        elif p["how"] == "slide":
+            keys, now = "slides", "slide"
+            goal = number(action, "distance", 0.8 * p["depth"], 0.0, p["depth"]) if kind == "open" else 0.0
         else:
-            goal = was + math.radians(number(action, "degrees", 360.0 * number(action, "times", 1, 1, 12), -3600.0, 3600.0))
-        p["keys"][first] = was
+            keys, now = "keys", "angle"
+            goal = math.radians(number(action, "degrees", 100.0, -180.0, 180.0)) if kind == "open" else 0.0
+        was = p[now]
+        p[keys][first] = was
         for i in range(1, frames + 1):
             u = i / frames
-            # A lid or door swings and settles; a part that turns starts and stops gently.
-            shape = ease(u) if kind == "turn_part" else 1.0 - (1.0 - u) ** 3 + (0.06 * math.sin(math.pi * u) if kind == "open" else 0.0)
-            p["keys"][first + i] = was + (goal - was) * shape
-        p["angle"] = goal
+            # A lid or door swings and settles; a part that turns or slides starts and stops gently.
+            shape = ease(u) if kind == "turn_part" or keys == "slides" else 1.0 - (1.0 - u) ** 3 + (0.06 * math.sin(math.pi * u) if kind == "open" else 0.0)
+            p[keys][first + i] = was + (goal - was) * shape
+        p[now] = goal
         end = first + frames
     elif kind == "drive_to" or (actor.kind == "vehicle" and kind in ("walk_to", "run_to", "sneak_to", "hop_to")):
         # A vehicle drives: it sets off and brakes gently, turns along a curve

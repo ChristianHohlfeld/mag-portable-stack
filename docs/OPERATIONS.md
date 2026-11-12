@@ -168,6 +168,32 @@ sudo /usr/local/lib/mag-backup/restore.sh --part room --apply
 sudo systemctl start mag-120
 ```
 
+## The whole system (new hardware)
+
+`ops/backup/system.sh` backs up all of mag for a restore on another machine:
+the root file system (configuration, services, `/usr/local`, `/opt`,
+`/var/lib`, `/home` with venvs and runtimes, `/root`), the golden image, the
+VM archive and a fresh save of every bot VM, plus a description of the host
+in `/var/lib/mag-backup/system-meta` (packages, disks, users, libvirt
+definitions, a consistent Gitea database, the model manifest). Models and
+weights only with `--with-models`, and never onto mag's own disk.
+
+- When: weekly, Sunday 05:00 (`mag-backup-system.timer`); "Gesamtsystem
+  sichern" in the settings; a bot's `backup` tool with scope `system`.
+- Where, the first that applies: `MAG_SYSTEM_REPO` in
+  `/etc/mag-backup/system.env` (any restic repository; a remote one with
+  `RESTIC_PASSWORD_FILE`), a disk mounted at `/mnt/mag-backup`, else
+  `/var/backups/mag-system` (two states, only with 170 GiB free for the
+  first; this protects against mistakes, not against a broken disk).
+- State: `/var/lib/mag-backup/system-status.json`, `journalctl -u mag-backup-system`.
+- Restore on a fresh Ubuntu 24.04 from a checkout of this repository:
+  `sudo bash ops/backup/system-restore.sh --repo REPO` (dry run), then with
+  `--apply`, then reboot. Packages from the backup's list, the files without
+  what belongs to the new machine (fstab, netplan, boot loader, apt/dpkg
+  state), every VM from its newest save, models by their manifest.
+- Without any backup, a fresh server is installed with `sudo ./install.sh`
+  ([INSTALL.md](INSTALL.md)).
+
 ## Health and logs
 
 ```bash

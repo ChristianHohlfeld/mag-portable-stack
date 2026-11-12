@@ -94,6 +94,15 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  "types his login into a safe form that the room fills into your browser (you never see it), or he takes over your browser "
                  "himself. You wait; then you see the page and go on. The login stays in your browser for next time. No consent is needed for it.",
                  R"({"type":"object","properties":{"site":{"type":"string","description":"the site, e.g. amazon.de"},"reason":{"type":"string","description":"why, in German, one sentence"}},"required":["site"]})"));
+    list.push(fn("browser_pay",
+                 "At a checkout, when the page asks for a payment card: never type card data yourself. Call this with the shop, the price and "
+                 "what is bought; Chris approves the purchase (by his rules) and picks a saved card, and the room types it into the page "
+                 "(you never see it). Give the card number field: its number n from browser_look (a field, or the frame it sits in) or its "
+                 "point x/y. Afterwards check the page and finish the order yourself. PayPal and the like: browser_login.",
+                 R"j({"type":"object","properties":{"shop":{"type":"string"},"amount_eur":{"type":"number"},"what":{"type":"string","description":"what is bought, in German"},)j"
+                 R"j("n":{"type":"integer","description":"card number field (or its frame) from browser_look"},"x":{"type":"number"},"y":{"type":"number"},)j"
+                 R"j("order":{"type":"array","items":{"type":"string","enum":["exp","cvc","name"]},"description":"the fields after the number in the order the form has them (Tab), default exp, cvc, name"}},)j"
+                 R"j("required":["shop","amount_eur","what"]})j"));
     list.push(fn("browser_wait", "Wait until the page has loaded and, if given, a text is on it (at most 15 s). Then shows the page.",
                  R"({"type":"object","properties":{"text":{"type":"string"},"seconds":{"type":"number"}}})"));
     list.push(fn("browser_scroll", "Scroll the page vertically; positive dy scrolls down.",
@@ -248,6 +257,7 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "browser_type") return "Tippt " + one(jstr(args, "text"), 60) + (args.find("n") ? " in Feld " + std::to_string((long)jnum(args, "n")) : "");
   if (name == "browser_key") return "Taste " + one(jstr(args, "key"), 30);
   if (name == "browser_login") return "Braucht eine Anmeldung bei " + one(jstr(args, "site"), 60);
+  if (name == "browser_pay") return "Bezahlung bei " + one(jstr(args, "shop"), 60);
   if (name == "browser_wait") return "Wartet" + (jstr(args, "text").empty() ? std::string() : " auf " + one(jstr(args, "text"), 60));
   if (name == "browser_scroll") return "Scrollt";
   if (name == "browser_back") return "Zurück";
@@ -507,7 +517,15 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     // After every action the page as it is now: numbered elements for the
     // model, a picture for the step in the chat.
     const auto acted = [&](const http::ClientResult &r) -> Result {
-      if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+      if (!r.error.empty() || r.status != 200) {
+        // A miss is no end: the page as it is now goes along, so the next try picks a number from it.
+        Result miss = browser_result(r, 1500);
+        if (r.error.empty()) {
+          const Result now = look(ctx, vm);
+          if (now.ok) miss.text += "\nDie Seite jetzt; nimm ein Element daraus oder versuche einen anderen Weg:\n" + now.text;
+        }
+        return miss;
+      }
       usleep(350000); // what the click or key set off
       return look(ctx, vm);
     };

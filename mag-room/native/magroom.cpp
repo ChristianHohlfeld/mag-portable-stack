@@ -57,7 +57,8 @@ int main() {
     const Val stored = room.add(m);
     engine.on_human(stored, {bot}, true);
   };
-  Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist);
+  Vault vault(room);
+  Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist, vault);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);
   engine.on_answer = [&](const std::string &bot, const std::string &text, int64_t seconds, bool failed) {

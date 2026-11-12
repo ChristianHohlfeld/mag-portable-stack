@@ -37,6 +37,41 @@
 
 namespace mag {
 
+// One text sealed with AES-256-GCM: base64 of nonce (12), ciphertext and tag (16).
+inline std::string gcm_seal(const std::string &key, const std::string &plain) {
+  const std::string nonce = random_bytes(12);
+  std::string out(plain.size() + 16, '\0');
+  int len = 0, fin = 0;
+  EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
+  bool ok = c && EVP_EncryptInit_ex(c, EVP_aes_256_gcm(), nullptr, (const unsigned char *)key.data(), (const unsigned char *)nonce.data()) == 1 &&
+            EVP_EncryptUpdate(c, (unsigned char *)&out[0], &len, (const unsigned char *)plain.data(), (int)plain.size()) == 1 &&
+            EVP_EncryptFinal_ex(c, (unsigned char *)&out[0] + len, &fin) == 1 &&
+            EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_GET_TAG, 16, (unsigned char *)&out[0] + len + fin) == 1;
+  if (c) EVP_CIPHER_CTX_free(c);
+  if (!ok) return "";
+  out.resize(len + fin + 16);
+  return b64_encode(nonce + out);
+}
+
+// A sealed text opened, or "" when it is not one of ours or was changed.
+inline std::string gcm_open(const std::string &key, const std::string &line) {
+  const std::string raw = b64_decode(line);
+  if (raw.size() < 12 + 16) return "";
+  const std::string nonce = raw.substr(0, 12), body = raw.substr(12, raw.size() - 28), tag = raw.substr(raw.size() - 16);
+  std::string out(body.size() + 16, '\0');
+  int len = 0, fin = 0;
+  EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
+  bool ok = c && EVP_DecryptInit_ex(c, EVP_aes_256_gcm(), nullptr, (const unsigned char *)key.data(), (const unsigned char *)nonce.data()) == 1 &&
+            EVP_DecryptUpdate(c, (unsigned char *)&out[0], &len, (const unsigned char *)body.data(), (int)body.size()) == 1 &&
+            EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag.data()) == 1 &&
+            EVP_DecryptFinal_ex(c, (unsigned char *)&out[0] + len, &fin) == 1;
+  if (c) EVP_CIPHER_CTX_free(c);
+  if (!ok) return "";
+  out.resize(len + fin);
+  return out;
+}
+
+
 class Assist {
 public:
   // A field of a constant object, or null.
@@ -361,45 +396,14 @@ private:
     return key_;
   }
 
-  // One line sealed: base64 of nonce (12), ciphertext and tag (16).
-  std::string seal(const std::string &plain) {
-    const std::string nonce = random_bytes(12);
-    std::string out(plain.size() + 16, '\0');
-    int len = 0, fin = 0;
-    EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
-    bool ok = c && EVP_EncryptInit_ex(c, EVP_aes_256_gcm(), nullptr, (const unsigned char *)key().data(), (const unsigned char *)nonce.data()) == 1 &&
-              EVP_EncryptUpdate(c, (unsigned char *)&out[0], &len, (const unsigned char *)plain.data(), (int)plain.size()) == 1 &&
-              EVP_EncryptFinal_ex(c, (unsigned char *)&out[0] + len, &fin) == 1 &&
-              EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_GET_TAG, 16, (unsigned char *)&out[0] + len + fin) == 1;
-    if (c) EVP_CIPHER_CTX_free(c);
-    if (!ok) return "";
-    out.resize(len + fin + 16);
-    return b64_encode(nonce + out);
-  }
-
-  // A sealed line opened, or "" when it is not one of ours or was changed.
-  std::string unseal(const std::string &line) {
-    const std::string raw = b64_decode(line);
-    if (raw.size() < 12 + 16) return "";
-    const std::string nonce = raw.substr(0, 12), body = raw.substr(12, raw.size() - 28), tag = raw.substr(raw.size() - 16);
-    std::string out(body.size() + 16, '\0');
-    int len = 0, fin = 0;
-    EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
-    bool ok = c && EVP_DecryptInit_ex(c, EVP_aes_256_gcm(), nullptr, (const unsigned char *)key().data(), (const unsigned char *)nonce.data()) == 1 &&
-              EVP_DecryptUpdate(c, (unsigned char *)&out[0], &len, (const unsigned char *)body.data(), (int)body.size()) == 1 &&
-              EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag.data()) == 1 &&
-              EVP_DecryptFinal_ex(c, (unsigned char *)&out[0] + len, &fin) == 1;
-    if (c) EVP_CIPHER_CTX_free(c);
-    if (!ok) return "";
-    out.resize(len + fin);
-    return out;
-  }
-
   void publish() {
     Val ev = Val::object();
     ev["routines"] = routines();
     room_.bus.publish("routines", ev);
   }
+
+  std::string seal(const std::string &plain) { return gcm_seal(key(), plain); }
+  std::string unseal(const std::string &line) { return gcm_open(key(), line); }
 
   void journal(const std::string &bot, const std::string &kind, const std::string &what, const std::string &to, double amount,
                const std::string &decision, const std::string &why, bool by_auto) {

@@ -561,6 +561,33 @@ Or he opens the bot's live browser from the card, logs in himself (passkey,
 SMS code, captcha) and taps "Fertig, weiter" (`decision: done`). Then the
 tool returns the page to the bot. Cookies stay in the VM's Chrome profile.
 
+`browser_pay` (shop, amount_eur, what, the card number field as n or x/y,
+the order of the further fields) first asks `consent` with kind buy; only
+when that allows, a pay card waits (`action: pay`). Chris picks a saved card
+and gives its security code: `POST /api/pay/fill/<card>` (owner only) opens
+the card from the vault (`vault.hpp`: `STATE/pay/cards.enc`, one sealed
+JSON, key `STATE/pay/vault.key`; Luhn-checked number, MM/YY, name; never
+the code) and types it into the page: fields of the page by their names
+(`/elements`), else the field the bot named is clicked, the number typed,
+then Tab and each further field. Or he pays himself in the bot's browser
+from the card. Cards are managed in the settings ("Zahlung",
+`/api/pay/cards`); the page gets brand, last four digits, expiry and name.
+`/elements` lists frames too (`kind: frame`), so a provider's card frame can
+be named.
+
+### Goal driver
+
+`Engine::lead_` is the bot that carries out Chris's current request: the
+first to call an acting tool (shell, files, browser, consent, media, phone,
+plugins) after his message. Another bot's acting tool gets "<lead> erledigt
+diese Aufgabe schon" and nothing runs. A turn of Chris's (or a routine's)
+that used tools and ends after a failed step, without text or with an
+announcement of what the bot will do next (`announces`) gets a room note
+with the goal (Chris's last request) and is continued, three times a turn
+at most. A consent, login or pay card that ended without a yes, and a
+refused acting tool, are blockers and end the turn as it is. After a
+failed browser action the tool result already holds the page as it is now.
+
 ### Bot sites
 
 A bot's site is `<name>.bot.stardenburg.de`, tailnet only. nginx

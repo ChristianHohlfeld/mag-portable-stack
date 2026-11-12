@@ -248,7 +248,7 @@ static std::string js(const std::string &s) { return mj::dump(Val(s)); }
 // world, so a click or a type can name one by its number afterwards. A
 // password field's value is never read.
 static const char *kElements = R"JS((()=>{
-const sel='a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=option],[role=combobox],[role=switch],[contenteditable=true],[onclick],label[for]';
+const sel='a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=option],[role=combobox],[role=switch],[contenteditable=true],[onclick],label[for],iframe';
 const out=[],els=[];
 for(const e of document.querySelectorAll(sel)){
  const r=e.getBoundingClientRect();
@@ -262,7 +262,8 @@ for(const e of document.querySelectorAll(sel)){
  let label=(e.getAttribute('aria-label')||e.innerText||(secret?'':e.value)||e.placeholder||e.title||e.alt||e.name||e.id||'').replace(/\s+/g,' ').trim().slice(0,80);
  if(!label){const img=e.querySelector('img[alt]');if(img)label=img.alt.trim().slice(0,80);}
  const tag=e.tagName.toLowerCase();
- const kind=tag==='input'?(e.type||'text'):tag==='a'?'link':(e.getAttribute('role')||tag);
+ const kind=tag==='input'?(e.type||'text'):tag==='a'?'link':tag==='iframe'?'frame':(e.getAttribute('role')||tag);
+ if(tag==='iframe'&&!label){try{label=new URL(e.src).host}catch(_){label='frame'}}
  els.push(e);
  out.push({n:els.length,kind,label,x:Math.round(cx),y:Math.round(cy),password:secret||undefined,checked:(e.checked===true)||undefined});
  if(els.length>=150)break;}
@@ -424,7 +425,7 @@ int main(int argc, char **argv) {
                          "t.includes('are you a robot')||"
                          "t.includes('security check')||"
                          "t.includes('captcha'))})()})");
-      state["udp_transport"] = "MGB6"; // MGB6: numbered elements, click by number or point, wait
+      state["udp_transport"] = "MGB7"; // MGB7: numbered elements (frames too), click by number or point, wait
       state["udp_port"] = 9227;
       try {
         const Val nav = c.call("Page.getNavigationHistory");

@@ -154,6 +154,8 @@ public:
     const double amount = std::max(0.0, jnum(args, "amount_eur", 0));
     if (granted) *granted = false;
     if (what.empty()) return "Fehler: Beschreibe in `what`, was genau geschehen soll.";
+    if (lower(to).find("chris") != std::string::npos)
+      return "Fehler: Chris zu antworten oder etwas zu öffnen braucht keine Freigabe. Tu es einfach; consent ist nur für Senden an andere, Kaufen, Löschen, Veröffentlichen.";
     if (kind == "buy" && amount <= 0) return "Fehler: Ein Kauf braucht den Betrag in amount_eur.";
     const Val r = rules();
     const std::string rule = kind == "other" ? "ask" : jstr(at(r, "rules"), kind.c_str(), "ask");

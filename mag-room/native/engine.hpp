@@ -141,7 +141,12 @@ public:
     std::lock_guard<std::mutex> lk(mu_);
     round_limit_ = limit;
     bot_turns_ = 0;
-    lead_.clear(); // a new request: whoever acts on it first carries it out
+    // A new request: whoever acts on it first carries it out. A bot that is
+    // in the middle of carrying out Chris's last one (it waits at a card, say)
+    // stays the one that acts; the new message usually belongs to that work.
+    lead_.clear();
+    for (auto &b : bots_)
+      if (b->running == "human" && b->acted && b->cancel && !b->cancel->stopped()) lead_ = b->id;
     passes_ = 0;
     audience_.clear();
     if (only) audience_.insert(to.begin(), to.end());
@@ -549,6 +554,7 @@ private:
     bool want = false;
     std::string reason;          // why the next turn runs: human | bot | continue
     std::string running;         // reason of the running turn, "" when idle
+    bool acted = false;          // the running turn has used a tool that does something
     CancelPtr cancel;
     std::string message;         // room message of the running turn
     int continues = 0;
@@ -2064,6 +2070,7 @@ private:
             ++bot_turns_;
           }
           b.running = reason;
+          b.acted = false;
           b.cancel = std::make_shared<Cancel>();
         } else if (b.warm_pending) {
           b.warm_pending = false;
@@ -2548,6 +2555,7 @@ private:
           std::lock_guard<std::mutex> lk(mu_);
           if (lead_.empty()) lead_ = b.id;
           if (lead_ != b.id) lead = lead_;
+          else b.acted = true;
         }
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};

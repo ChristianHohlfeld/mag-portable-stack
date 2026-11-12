@@ -120,6 +120,7 @@ def main():
     pipe = WanImageToVideoPipeline.from_pretrained(str(WEIGHTS), transformer=None, transformer_2=None, text_encoder=None,
                                                    vae=None, torch_dtype=torch.float16)
     pipe.vae = AutoencoderKLWan.from_pretrained(str(WEIGHTS), subfolder="vae", torch_dtype=torch.float32).to("cuda")
+    pipe.vae.enable_tiling()                                    # the picture's latent as well as the frames
 
     if state is None:
         # 1. The words, read by UMT5 in fp32 (its states outgrow fp16), then it leaves the card.
@@ -208,7 +209,6 @@ def main():
     # 4. The frames, decoded in tiles.
     say("Bilder entpacken")
     vae = pipe.vae
-    vae.enable_tiling()
     with torch.no_grad():
         latents = latents.to("cuda", torch.float32)
         mean = torch.tensor(vae.config.latents_mean).view(1, vae.config.z_dim, 1, 1, 1).to(latents)

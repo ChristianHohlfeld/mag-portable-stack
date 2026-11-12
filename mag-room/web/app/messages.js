@@ -81,13 +81,21 @@
       e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { b.disabled = true; });
       MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
     };
-    const asking = ask ? el('span', { class: 'ask' },
+    // A plugin tool, or an action the bot asked about (consent: send, buy, delete, publish, a routine).
+    const euro = (n) => n.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
+    const asking = !ask ? null : ask.action ? el('span', { class: 'ask' },
+      el('b', { text: MAG.name(m.from) + ' bittet um Freigabe: ' + ask.label + (ask.amount_eur ? ' · ' + euro(ask.amount_eur) : '') + (ask.to ? ' · ' + ask.to : '') }),
+      el('span', { class: 'what', text: ask.what }),
+      S.you.role === 'owner' ? el('span', { class: 'btns' },
+        el('button', { class: 'yes', text: 'Erlauben', onclick: decide('allow') }),
+        el('button', { class: 'no', text: 'Ablehnen', onclick: decide('deny') })) : null)
+      : el('span', { class: 'ask' },
       el('b', { text: MAG.name(m.from) + ' möchte bei ' + ask.server + ' „' + ask.tool + '“ ausführen.' }),
       el('code', { text: ask.args }),
       S.you.role === 'owner' ? el('span', { class: 'btns' },
         el('button', { class: 'yes', text: 'Erlauben', onclick: decide('allow') }),
         el('button', { text: 'Immer erlauben', title: 'Dieses Werkzeug darf ' + MAG.name(m.from) + ' künftig ohne Nachfrage nutzen', onclick: decide('always') }),
-        el('button', { class: 'no', text: 'Ablehnen', onclick: decide('deny') })) : null) : null;
+        el('button', { class: 'no', text: 'Ablehnen', onclick: decide('deny') })) : null);
     const cancel = step.state === 'running'
       ? el('button', { class: 'cancel', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); MAG.api('POST', '/api/stop', { bot: m.from }).catch((x) => MAG.toast(x.message, true)); } })
       : null;
@@ -651,7 +659,8 @@
     const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
     if (user) {
       // The bubble, what was attached, and (on tap or hover) the actions.
-      const bubble = m.text ? el('div', { class: 'bubble' }, markdown(m.text)) : null;
+      // A routine that came due speaks like a request, marked as the routine's.
+      const bubble = m.text ? el('div', { class: 'bubble' + (m.routine ? ' routine' : '') }, m.routine ? el('small', { class: 'tag', text: '⏰ Routine' }) : null, markdown(m.text)) : null;
       const col = el('div', { class: 'col' }, aboutChip(m), bubble, atts);
       col.addEventListener('click', (e) => {
         if (e.target.closest('a, button, video, audio') || String(window.getSelection() || '')) return;

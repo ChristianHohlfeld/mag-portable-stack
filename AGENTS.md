@@ -231,6 +231,20 @@ The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants
 nothing; credentials are refused. Chris reads and removes them in the settings.
+Before a consequential action (send, buy, delete, publish, set up a
+routine) a bot calls `consent`; Chris's rules decide (settings "Freigaben":
+per kind ask, without asking or never; the auto mode turns every "ask" into
+"without asking"; money only within a limit per purchase and per day, above
+it always a card). A card at the bot's step waits for his yes (15 minutes);
+every decision is a line of `STATE/assist/ledger.jsonl`. Card numbers and
+passwords never reach a model, a tool, a log or the chat; paying is Chris's
+own entry in the bot's live browser until a payment vault (Stripe tokens)
+is set up with his account. Routines (`routine`; `STATE/routines.json`) are
+instructions for a bot at a time or on an event (a picture Chris posts, a
+job he ordered being done); one that is due is a chat message to its bot
+(`from: routine`) answered in a normal turn. A run missed while the room was
+down runs once when it is late by 12 hours at most; an event routine runs at
+most every 15 minutes. Chris pauses, runs and removes them in the settings.
 Plugins are remote MCP servers Chris connects in the settings and gives to a
 bot in its sheet (`plugins` of the bot; `STATE/mcp/servers.json`, a token in
 `STATE/mcp/<id>.secret`, never in a prompt, a log or the page). The room

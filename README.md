@@ -8,6 +8,8 @@ a shell, a real Chrome and a small web site. An AMD MI50 turns photos into
 animated Blender scenes from those models. Dictation runs on the server,
 reading aloud runs on the device. Models, speech and media generation run
 on this host; only web search and plugins Chris connects reach outside.
+The bots ask before they send, buy, delete or publish (or work on their own
+within Chris's rules in auto mode) and run routines at times or on events.
 Every part is in this repository.
 
 Install on a fresh Ubuntu 24.04 server (who and where the host is goes into

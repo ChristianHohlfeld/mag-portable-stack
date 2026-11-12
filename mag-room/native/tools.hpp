@@ -87,6 +87,26 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"({"type":"object","properties":{"name":{"type":"string","description":"file name of the image"}},"required":["name"]})"));
   list.push(fn("remember", "Store one durable fact in your long-term memory (kept when the room is emptied).",
                R"({"type":"object","properties":{"fact":{"type":"string"}},"required":["fact"]})"));
+  list.push(fn("consent",
+               "Ask before a consequential action: sending something to others (mail, message, form), buying (money), deleting data that is "
+               "not yours or cannot come back, publishing outside, setting up a routine. Chris's rules decide: allowed at once, refused, or "
+               "he gets a card in the chat and you wait for his yes. Call it right before the action, with exactly what will happen; "
+               "do only what was allowed. Card numbers and passwords never go into it or anywhere else.",
+               R"j({"type":"object","properties":{"action":{"type":"string","enum":["send","buy","delete","publish","routine"]},)j"
+               R"j("what":{"type":"string","description":"exactly what will happen, in German, one or two sentences"},)j"
+               R"j("to":{"type":"string","description":"recipient, shop or site"},"amount_eur":{"type":"number","description":"buy: the price in euros"}},)j"
+               R"j("required":["action","what"]})j"));
+  list.push(fn("routine",
+               "Routines: work you do again by yourself, at a time or on an event, without Chris asking each time (a morning briefing, a "
+               "daily check, something to do with every new picture). action add sets one up (Chris approves it), list shows them, "
+               "remove, pause and resume change one, run starts one now. When a routine is due you get its instruction as a message "
+               "and answer it like a request of Chris.",
+               R"j({"type":"object","properties":{"action":{"type":"string","enum":["add","list","remove","pause","resume","run"]},)j"
+               R"j("id":{"type":"string","description":"remove/pause/resume/run: the routine's id or name"},"name":{"type":"string"},)j"
+               R"j("instruction":{"type":"string","description":"add: what to do each time, as a request to yourself, in German"},)j"
+               R"j("bot":{"type":"string","description":"add: which bot does it (id), default you"},)j"
+               R"j("when":{"type":"object","description":"add: one of {"daily":"07:30"}, {"weekdays":"08:00"}, {"days":[1,3],"time":"18:00"} (1 = Monday), {"every_minutes":120}, {"once":"2026-11-14 18:00"}, {"event":"picture"} (Chris posts a picture), {"event":"job_done"} (a 3D model, picture or video he ordered is done)"}},)j"
+               R"j("required":["action"]})j"));
   list.push(fn("skill",
                "The how-tos you and the other bot share: list them, read one, save one. A skill says when it applies, its steps, how to check "
                "the result and what needs Chris's approval. It describes work and grants no permission.",
@@ -209,6 +229,12 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "skill") {
     const std::string action = jstr(args, "action");
     return action == "save" ? "Speichert den Skill " + one(jstr(args, "name"), 60) : action == "read" ? "Liest den Skill " + one(jstr(args, "name"), 60) : "Sieht die Skills durch";
+  }
+  if (name == "consent") return "Fragt um Freigabe: " + one(jstr(args, "what"), 80);
+  if (name == "routine") {
+    const std::string action = jstr(args, "action");
+    return action == "add" ? "Richtet die Routine " + one(jstr(args, "name"), 60) + " ein" : action == "list" ? "Sieht die Routinen durch"
+         : "Routine " + one(jstr(args, "id"), 40) + ": " + action;
   }
   if (name == "models_3d") return "Sieht die 3D-Modelle durch";
   if (name == "backup") return jstr(args, "action") == "start" ? "Startet eine Sicherung von allem" : "Sieht nach den Sicherungen";

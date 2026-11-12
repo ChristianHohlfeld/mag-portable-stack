@@ -677,8 +677,6 @@
     } else if (m.model3d) {
       node.append(m.model3d.kind === 'scene' ? buildScene(m) : build3d(m));
     } else {
-      const thoughts = m.reasoning && buildThoughts(m);
-      if (thoughts) node.append(thoughts);
       const body = el('div', { class: 'body' });
       (m.parts || []).forEach((p, i) => body.append(buildPart(m, i)));
       if (!(m.parts || []).length && m.text) body.append(markdown(m.text));
@@ -692,17 +690,6 @@
     if (acts) node.append(acts);
     markStreaming(node, m);
     return node;
-  }
-  // A bot's thoughts, folded away. A list entry without words is not shown
-  // (a model's outline has them), and thoughts without words are no block.
-  function buildThoughts(m) {
-    const box = markdown((m.reasoning || '').split('\n').filter((line) => !/^\s*([*+\-•–]|\d{1,3}[.)])\s*$/.test(line)).join('\n'));
-    for (let bare; (bare = [...box.querySelectorAll('li, ul, ol, p')].find((n) => !n.textContent.trim() && !n.querySelector('img')));) bare.remove();
-    // The folded line never stands there as a bare heading: it begins with what was thought,
-    // and thoughts of a word or two are no block at all.
-    const words = box.textContent.replace(/\s+/g, ' ').trim();
-    if ((words.match(/\p{L}/gu) || []).length < 20) return null;
-    return el('details', { class: 'think' }, el('summary', {}, el('span', { text: 'Gedanken' }), el('span', { class: 'first', text: words.slice(0, 140) })), box);
   }
   function buildPart(m, index) {
     const p = m.parts[index];
@@ -849,14 +836,7 @@
   MAG.on('message', (m) => upsert(m, !nodes.has(m.id)));
   MAG.on('gone', (id) => { nodes.get(id)?.remove(); nodes.delete(id); empty.hidden = S.messages.size > 0; paintDays(); });
   MAG.on('delta', (m, part) => { dirty.add(m.id + ':' + part); schedule(); });
-  MAG.on('reasoning', (m) => {
-    const node = nodes.get(m.id);
-    if (!node) return;
-    const old = node.querySelector('.think'), fresh = buildThoughts(m);
-    if (!fresh) return old?.remove();
-    if (old) { fresh.open = old.open; grow(() => old.replaceWith(fresh)); }
-    else grow(() => node.querySelector('.meta').after(fresh));
-  });
+  // A model's thoughts are its own: raw, often English, never shown in the chat (Chris, 2026-11-12).
   MAG.on('step', (m, part) => {
     const node = nodes.get(m.id);
     if (!node) return;

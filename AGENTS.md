@@ -328,8 +328,8 @@ the weights stay on disk. A paused bot that is asked by name does not answer,
 and the room says so. A pause changes no prompt. Per-backend model turns remain serial
 (one request per -np 1 slot).
 What a model writes is never shown raw, and never trusted to be well formed:
-the room reads channel markup itself (thoughts are thoughts, no tag reaches
-the chat), ends a generation that runs in circles or whose tool call runs
+the room reads channel markup itself (thoughts are thoughts, kept with the
+message but never shown in the chat; no tag reaches the chat), ends a generation that runs in circles or whose tool call runs
 away into markup and keeps such an answer once, and gives a tool only
 arguments that are a JSON object. Arguments that are not are stored as `{}`:
 they must never enter a prompt log, the server refuses every later request

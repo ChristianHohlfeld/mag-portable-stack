@@ -5,7 +5,7 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 source "$HERE/common.sh"
 check_root
 kind="${1:-daily}"
-case "$kind" in daily|deploy|clear) ;; *) echo 'Usage: backup.sh daily|deploy|clear|status' >&2; exit 2 ;; esac
+case "$kind" in daily|deploy|clear|manual) ;; *) echo 'Usage: backup.sh daily|deploy|clear|manual' >&2; exit 2 ;; esac
 backup_lock
 started=$(date +%s)
 work="$MAG_BACKUP_WORK/payload"
@@ -202,7 +202,7 @@ printf 'kind=%s\nrelease=%s\ncreated=%s\n' "$kind" "$release" "$stamp" > "$run_d
 chmod 0600 "$run_dir/META"
 export RESTIC_REPOSITORY="$run_dir/repo"
 restic init >/dev/null
-case "$kind" in daily) tag=daily ;; deploy) tag=hook-deploy ;; clear) tag=hook-clear ;; esac
+case "$kind" in daily) tag=daily ;; deploy) tag=hook-deploy ;; clear) tag=hook-clear ;; manual) tag=manual ;; esac
 snapshot_json=$(restic backup --json --host mag --tag "$tag" "$work" |
   jq -sc '[.[] | select(.message_type=="summary")][-1]')
 snapshot_id=$(jq -r '.snapshot_id // empty' <<<"$snapshot_json")

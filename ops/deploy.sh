@@ -175,12 +175,13 @@ mv -f /etc/sudoers.d/.magbot-guest.next /etc/sudoers.d/magbot-guest
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" \
   "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" \
   "$SOURCE/ops/mag-agents-network.service" "$SOURCE/ops/mag-git-gateway.socket" \
-  "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/vm/mag-bot-saves.service" \
+  "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/vm/mag-bot-saves@.service" \
   "$SOURCE/ops/vm/mag-bot-saves.timer" $UNITS/
 # The room unit is complete in one file; drop-ins of earlier releases (model
 # layouts, context budgets) no longer apply. The snapshot above restores them
 # on a rollback.
 rm -rf $UNITS/mag-120.service.d
+rm -f $UNITS/mag-bot-saves.service # the first, untemplated save unit
 # The audit gateway is the only path from the room to the model servers.
 gateway_changed=0
 if ! cmp -s "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/mag-audit-gateway ||
@@ -201,6 +202,8 @@ fi
 for unit in "$SOURCE"/ops/backup/units/*.service; do
   [[ ! -e $UNITS/$(basename "$unit") ]] || install -m 0644 "$unit" "$UNITS/$(basename "$unit")"
 done
+# The backup Chris asks for (settings or chat) runs where the backup is installed.
+[[ ! -e $UNITS/mag-backup-daily.service ]] || install -m 0644 "$SOURCE/ops/backup/units/mag-backup-chat.service" $UNITS/
 systemctl daemon-reload
 systemctl enable mag-120.service mag-browser-webrtc.service >/dev/null 2>&1 || :
 # VM isolation rules come from the release (ops/firewall.sh, mag-agents.nft).

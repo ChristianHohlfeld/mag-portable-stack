@@ -25,6 +25,11 @@ if [[ $# == 4 && $1 == restore && $2 =~ ^agent[0-9]+$ && $3 =~ ^[0-9]{8}T[0-9]{6
   exit "$rc"
 fi
 if [[ $# == 2 && $1 == saves && $2 =~ ^agent[0-9]+$ ]]; then exec "$magbot" saves "$2"; fi
+# Chris asks for a backup of everything: the room, Gitea and configuration
+# (restic) and a save of every bot VM, both in the background.
+if [[ $# == 1 && $1 == backup ]]; then
+  exec systemctl --no-block start mag-backup-chat.service mag-bot-saves@chat.service
+fi
 [[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == reset || $1 == audit-proxy || $1 == ip || $1 == verify) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
 if [[ $1 == verify ]]; then
   # Native read-only registry check. Exit 3 means missing metadata; any other

@@ -5,6 +5,7 @@ Description=MAG nightly save of every bot VM
 OnCalendar=*-*-* 04:15 Europe/Berlin
 RandomizedDelaySec=10m
 Persistent=true
+Unit=mag-bot-saves@daily.service
 
 [Install]
 WantedBy=timers.target

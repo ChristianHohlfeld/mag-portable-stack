@@ -381,6 +381,21 @@
         sys.append(el('dt', { text: '3D-Szenen' }), el('dd', { text: info.scene ? 'bereit (Blender, CPU)' : 'nicht erreichbar' }));
         if (info.backup) sys.append(el('dt', { text: 'Backup' }), el('dd', { text: info.backup.healthy ? 'aktuell · ' + MAG.day(info.backup.last_success * 1000) : 'veraltet' }));
       }).catch(() => {});
+      if (owner()) {
+        // Everything at once, as a bot does it when asked in the chat: the
+        // room, Gitea and configuration, and a save of every bot VM.
+        const backup = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Sicherung' }), backup, el('p', { class: 'fine', text: 'Nachts automatisch; hier oder im Chat („mach ein Backup“) jederzeit. Gesichert werden Chat, Dateien, Erinnerungen, Skills, Einstellungen, Gitea und Konfiguration (verschlüsselt, restic) und jede Bot-VM mit allem darin. Modelle werden nicht gesichert; sie werden neu geladen. Eine VM stellst du in ihrem Bot-Blatt wieder her.' }));
+        const draw = () => MAG.api('GET', '/api/backup').then((b) => {
+          const vms = b.bots.map((one) => one.name + ': ' + (one.saves.length ? one.saves.length + ' · zuletzt ' + saveDate(one.saves[0].id) : 'noch keine'));
+          backup.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' },
+            b.running ? el('span', {}, el('span', { class: 'spin' }), ' Sicherung läuft …') : 'Zuletzt: ' + (b.last_success ? MAG.day(b.last_success * 1000) : 'nie') + (b.healthy ? '' : ' (veraltet)'),
+            el('small', { text: (b.last_error ? 'Letzter Fehler: ' + b.last_error + ' · ' : '') + 'VMs: ' + (vms.join(' · ') || 'keine') })),
+            el('button', { class: 'btn', text: 'Jetzt alles sichern', disabled: b.running, onclick: () => call('POST', '/api/backup').then(() => { MAG.toast('Sicherung läuft'); setTimeout(draw, 1500); }) })));
+          if (b.running) setTimeout(() => backup.isConnected && draw(), 15000);
+        }).catch(() => backup.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Sicherung nicht lesbar.' })))));
+        draw();
+      }
       if (owner()) content.append(el('h3', { text: 'Raum' }), el('div', { class: 'btns' }, el('button', { class: 'btn danger', text: 'Raum und Bot-Kontext leeren', onclick: clearRoom })));
     });
   }

@@ -200,6 +200,12 @@ public:
     opt.timeout_s = 3 * 3600;
     return mag::run(wrapper({cfg_.agent_ctl, "save", vm, kind}), opt);
   }
+  // A backup of everything, started in the background (see backup.hpp).
+  RunResult backup() {
+    RunOptions opt;
+    opt.timeout_s = 30;
+    return mag::run(wrapper({cfg_.agent_ctl, "backup"}), opt);
+  }
   // The VM as it was in save <id>; its disk of now is kept as a save first.
   RunResult restore(const std::string &vm, const std::string &id, const std::string &token) {
     forget(vm);

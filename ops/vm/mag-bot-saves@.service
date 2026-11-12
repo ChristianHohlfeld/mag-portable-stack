@@ -1,11 +1,11 @@
 [Unit]
-Description=MAG nightly save of every bot VM (overlay, compressed; VMs keep running)
+Description=MAG save of every bot VM (%i; overlay, compressed; VMs keep running)
 After=libvirtd.service
 Wants=libvirtd.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/magbot save-all daily
+ExecStart=/usr/local/bin/magbot save-all %i
 CPUAffinity=28-55
 Nice=10
 IOSchedulingClass=idle

@@ -409,7 +409,7 @@ allows at once, a purchase only within both limits (the day's sum comes
 from the journal), anything else puts a card on the bot's step
 (`approval` with `action`, the same `/api/approval/<id>` as plugin cards,
 allow or deny, 15 minutes, a push notification). Every decision is appended
-to `STATE/assist/ledger.jsonl`. The room cannot intercept a click in a VM's
+to `STATE/assist/ledger.jsonl`; the settings show the last twenty (owner only). The room cannot intercept a click in a VM's
 browser, so for actions there the rule lives in the tool and the prompt;
 plugin tools keep their enforced card. No payment data is stored: a Stripe
 vault (PaymentMethod ids only, the key as a 0600 file) needs Chris's Stripe

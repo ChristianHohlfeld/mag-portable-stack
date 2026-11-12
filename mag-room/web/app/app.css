@@ -727,3 +727,5 @@ article.flash { animation: flash 1.6s ease-out; }
 .file-tile .th .excerpt b { font-size: 10.5px; letter-spacing: .05em; color: var(--muted); }
 .file-tile .th .excerpt .lines { font: 9.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); white-space: pre-wrap; word-break: break-word; opacity: .85; }
 .sheet img.big-thumb { display: block; width: 100%; max-height: 60vh; object-fit: contain; margin-top: 12px; border-radius: 12px; background: radial-gradient(120% 90% at 50% 35%, #3a3d46, #17181c); }
+.staged.failed { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); flex-wrap: wrap; }
+.staged.failed .nm { color: var(--bad); white-space: normal; }

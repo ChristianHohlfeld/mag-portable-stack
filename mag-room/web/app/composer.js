@@ -6,6 +6,7 @@
   const coarse = matchMedia('(pointer: coarse)').matches;
   let input, sendBtn, stagedBox;
   let staged = [];           // {att, url} uploaded, not sent yet
+  let failed = [];           // {file, why, again}: a picture or file that did not arrive, kept for another try
   let uploading = 0, sending = false;
   let mode3d = false;
   let modeImage = false;      // a picture from words (FLUX.2 klein on the MI50)
@@ -40,6 +41,13 @@
         el('button', { class: 'x', 'aria-label': 'Entfernen', html: MAG.icons.x, onclick: () => { staged = staged.filter((x) => x !== s); paintStaged(); } })));
     }
     if (uploading) stagedBox.append(el('div', { class: 'staged' }, el('span', { class: 'spin' }), el('span', { class: 'nm', text: 'Lädt hoch …' })));
+    // Nothing is lost without a word: what did not arrive stays here with why, and can be sent again.
+    for (const f of failed)
+      stagedBox.append(el('div', { class: 'staged failed' }, MAG.icon(f.file ? 'image' : 'camera'),
+        el('span', { class: 'nm', text: f.why }),
+        el('button', { class: 'pill', text: f.file ? 'Erneut senden' : 'Noch einmal', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); f.again(); } }),
+        f.file ? null : el('button', { class: 'pill', text: 'Kamera im Browser', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); shoot(null, true); } }),
+        el('button', { class: 'x', 'aria-label': 'Verwerfen', html: MAG.icons.x, onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); } })));
     if (modeImage) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Format' });
       for (const [key, label] of [['square', 'Quadrat'], ['wide', 'Quer'], ['tall', 'Hoch']])
@@ -81,10 +89,23 @@
     refresh();
   }
 
-  async function addFiles(files) {
-    for (const file of files) {
-      if (file.size > 64 * 1024 * 1024) { MAG.toast(file.name + ' ist größer als 64 MB', true); continue; }
-      if (!file.size) continue;
+  // A HEIC/HEIF photo (an iPhone's) as JPEG where this browser can read it, so every device shows it.
+  async function asJpeg(file) {
+    if (!/hei[cf]/i.test(file.type) && !/\.hei[cf]$/i.test(file.name || '')) return file;
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = el('canvas', { width: bitmap.width, height: bitmap.height });
+      canvas.getContext('2d').drawImage(bitmap, 0, 0);
+      const blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
+      return blob ? new File([blob], (file.name || 'foto').replace(/\.hei[cf]$/i, '') + '.jpg', { type: 'image/jpeg' }) : file;
+    } catch { return file; }
+  }
+  async function addFiles(files, then) {
+    for (let file of files) {
+      const lost = (why) => { failed.push({ file: file.size ? file : null, why, again: () => (file.size ? addFiles([file], then) : shoot(then)) }); MAG.toast(why, true); paintStaged(); };
+      if (file.size > 64 * 1024 * 1024) { lost((file.name || 'Die Datei') + ' ist größer als 64 MB.'); continue; }
+      if (!file.size) { lost('Das Foto kam leer an (die Kamera hat es nicht übergeben).'); continue; }
+      file = await asJpeg(file);
       uploading++;
       paintStaged();
       // A photo that was just taken may still be written by the phone: the room
@@ -97,6 +118,7 @@
           staged.push({ att, url: '/api/file/' + encodeURIComponent(att.file) });
         } catch (err) {
           if (err.data?.code === 'truncated' && again < 2) { await new Promise((done) => setTimeout(done, 1500 * (again + 1))); continue; }
+          failed.push({ file, why: 'Nicht angekommen: ' + err.message, again: () => addFiles([file], then) });
           MAG.toast('Upload fehlgeschlagen: ' + err.message, true);
         }
         break;
@@ -105,18 +127,35 @@
       paintStaged();
     }
   }
+  // A phone's own camera app takes the page out of view; a phone short of
+  // memory may even reload it, and the photo is gone with the old page. So
+  // the page notes that the camera is open, and when it comes back without a
+  // photo it says so and offers the camera inside the browser, which no
+  // reload can take away.
   function pick(accept, capture, then) {
     const chooser = el('input', { type: 'file', accept, multiple: !capture && !then, hidden: true });
-    if (capture) chooser.capture = 'environment';
-    chooser.addEventListener('change', async () => { await addFiles([...chooser.files]); chooser.remove(); then?.(); });
+    if (capture) {
+      chooser.capture = 'environment';
+      try { sessionStorage.setItem('mag-camera', String(Date.now())); } catch { /* private mode */ }
+    }
+    const done = () => { try { sessionStorage.removeItem('mag-camera'); } catch { /* private mode */ } };
+    chooser.addEventListener('change', async () => {
+      done();
+      const files = [...chooser.files];
+      chooser.remove();
+      if (capture && !files.length) failed.push({ file: null, why: 'Die Kamera hat kein Foto zurückgegeben.', again: () => shoot(then) }), paintStaged();
+      await addFiles(files, then);
+      then?.();
+    });
+    chooser.addEventListener('cancel', () => { done(); chooser.remove(); });
     document.body.append(chooser);
     chooser.click();
   }
 
   // A photo from the camera. A phone opens its own camera; a desktop shows the
   // webcam with a release button. Where neither works, a file is chosen.
-  async function shoot(then) {
-    if (coarse || !navigator.mediaDevices?.getUserMedia) return pick('image/*', true, then);
+  async function shoot(then, inPage = false) {
+    if ((coarse && !inPage) || !navigator.mediaDevices?.getUserMedia) return pick('image/*', true, then);
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
@@ -133,7 +172,8 @@
           canvas.getContext('2d').drawImage(video, 0, 0);
           canvas.toBlob(async (blob) => {
             close();
-            if (blob) await addFiles([new File([blob], 'kamera-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jpg', { type: 'image/jpeg' })]);
+            if (blob) await addFiles([new File([blob], 'kamera-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jpg', { type: 'image/jpeg' })], then);
+            else { failed.push({ file: null, why: 'Das Bild der Kamera ließ sich nicht festhalten.', again: () => shoot(then, true) }); paintStaged(); }
             then?.();
           }, 'image/jpeg', 0.92);
         } }, MAG.icon('camera'), el('b', { text: 'Auslösen' }))));
@@ -326,6 +366,13 @@
     // Files dropped anywhere on the page are attachments, never a navigation.
     window.addEventListener('dragover', (e) => e.preventDefault());
     window.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer?.files?.length) addFiles([...e.dataTransfer.files]); });
+    // The page came back from the phone's camera as a new page: the photo is lost; say so.
+    try {
+      const opened = +sessionStorage.getItem('mag-camera');
+      sessionStorage.removeItem('mag-camera');
+      if (opened && Date.now() - opened < 10 * 60 * 1000)
+        failed.push({ file: null, why: 'Das Foto der Kamera kam nicht an: der Browser hat die Seite während der Aufnahme neu geladen.', again: () => shoot() });
+    } catch { /* private mode */ }
     resize();
     paintStaged();
   });

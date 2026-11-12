@@ -343,6 +343,16 @@ a download and a link back to the message. `GET /api/files` lists them;
 length is known in advance. The files stay where they are; the folder is
 only a view.
 
+Nothing Chris sends is dropped without a word (`composer.js`): a file that
+did not arrive (too large, empty, refused by the room) stays above the
+message field with the reason and "Erneut senden". A phone's camera app
+takes the page out of view and may have it reloaded, which loses the
+photo: the page notes that the camera is open (`sessionStorage`), and when
+it comes back as a new page, or the camera returns nothing, it says so and
+offers the camera again or the camera inside the browser (`getUserMedia`),
+which no reload can take away. A HEIC photo is sent as JPEG where the
+browser can read it.
+
 ### Documents
 
 `Engine::document_text` turns an attached PDF, DOCX, PPTX, ODT or ODP into

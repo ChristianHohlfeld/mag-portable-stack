@@ -22,7 +22,7 @@ struct Ctx {
   std::function<void(const Val &)> page;                 // show a published page in the bot message
   Scenes *scenes = nullptr;                              // 3D scenes from the models in the chat
   // A picture from words (the Idol worker's FLUX.2 klein): (prompt, width, height, by, error) -> message id.
-  std::function<std::string(const std::string &, int, int, const std::string &, std::string &)> imagine;
+  std::function<std::string(const std::string &, int, int, const std::string &, std::string &, const std::string &)> imagine; // ..., then_video
   // A video from a picture of the chat (the Idol worker's Wan 2.2): (picture's name, prompt, by, error) -> message id.
   std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &)> film;
   // A 3D model from a picture of the chat (photo to 3D): (picture's name, quality, error) -> message id.
@@ -122,10 +122,12 @@ inline Val schemas(bool has_vm, bool phone = false) {
   list.push(fn("video_generate",
                "Make a short video (about five seconds) from a picture in the chat (Wan 2.2, on the server's graphics card): what the picture "
                "shows starts to move. Use it when Chris asks for a video, a clip or for a picture to come alive. Name the picture as the chat "
-               "shows it ([Bild <name> ...]); without a name the newest picture is taken. Describe the motion in English: who moves how, "
-               "the camera. It waits in the graphics card's line behind other jobs and takes a quarter of an hour or more; the video "
-               "appears in the chat as its own message.",
+               "shows it ([Bild <name> ...]); without a name the newest picture is taken. When the video is to show something no picture of "
+               "the chat shows, give `paint` instead: the first frame is painted from it (FLUX.2 klein) and the video follows by itself. "
+               "Describe the motion in English: who moves how, the camera. It waits in the graphics card's line behind other jobs and "
+               "takes a quarter of an hour or more; the video appears in the chat as its own message.",
                R"j({"type":"object","properties":{"image":{"type":"string","description":"the picture's file name as in the chat"},)j"
+               R"j("paint":{"type":"string","description":"instead of a picture: what the first frame shows, in English, detailed"},)j"
                R"j("prompt":{"type":"string","description":"the motion, in English"}},"required":["prompt"]})j"));
   list.push(fn("scene_3d",
                "Build an animated 3D scene from 3D models in the chat (Blender). Every figure gets a skeleton by itself: an animal walks on its "
@@ -525,7 +527,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     const std::string shape = jstr(args, "shape", "square");
     const int w = shape == "wide" ? 1344 : shape == "tall" ? 768 : 1024, h = shape == "wide" ? 768 : shape == "tall" ? 1344 : 1024;
     std::string error;
-    const std::string id = ctx.imagine(jstr(args, "prompt"), w, h, jstr(ctx.bot, "id"), error);
+    const std::string id = ctx.imagine(jstr(args, "prompt"), w, h, jstr(ctx.bot, "id"), error, "");
     if (id.empty()) return fail(error.empty() ? "Das Bild wurde nicht in Auftrag gegeben." : error);
     return {"Das Bild wird gemalt (FLUX.2 klein auf der MI50, meist unter einer Minute, hinter laufenden 3D-Aufträgen). "
             "Es erscheint im Chat als eigene Nachricht; warte nicht darauf und beschreibe es nicht, bevor du es gesehen hast.", true};
@@ -541,6 +543,13 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (name == "video_generate") {
     if (!ctx.film) return fail("Videos sind hier nicht eingerichtet.");
     std::string error;
+    if (const std::string paint = trim(jstr(args, "paint")); !paint.empty() && trim(jstr(args, "image")).empty()) {
+      if (!ctx.imagine) return fail("Bilder malen ist hier nicht eingerichtet.");
+      const std::string id = ctx.imagine(paint, 1344, 768, jstr(ctx.bot, "id"), error, jstr(args, "prompt"));
+      if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);
+      return {"Erst wird das erste Bild gemalt (FLUX.2 klein), dann folgt das Video von selbst (Wan 2.2 auf der MI50, eine "
+              "Viertelstunde oder länger, hinter anderen Aufträgen der Grafikkarte). Beides erscheint im Chat; warte nicht darauf.", true};
+    }
     const std::string id = ctx.film(jstr(args, "image"), jstr(args, "prompt"), jstr(ctx.bot, "id"), error);
     if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);
     return {"Das Video wird gemacht (Wan 2.2 auf der MI50, eine Viertelstunde oder länger, hinter anderen Aufträgen der Grafikkarte). "

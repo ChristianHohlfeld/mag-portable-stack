@@ -633,7 +633,12 @@ an ordinary image of the chat. The weights come from `ops/imagegen/fetch.sh`.
 ### Videos from pictures (`ops/idol/videogen.py`)
 
 Every picture of the chat has "3D" and "Video" below it
-(`POST /api/image/act`). "Video" orders Wan 2.2 I2V-A14B: its two experts as
+(`POST /api/image/act`), and "Video erzeugen" in the plus menu
+(`/api/message` with `mode: video`) takes a picture from the gallery or the
+camera, or words alone: then FLUX.2 klein paints the first frame (wide) and
+that picture's message orders the video when it is there (`then_video` in
+its `model3d`, then `video` with the video's message). A bot does the same
+with `video_generate` and `paint`. A video is Wan 2.2 I2V-A14B: its two experts as
 GGUF Q6_K with the Lightning 4-step LoRA (four Euler steps, shift 5, as it
 was distilled; two per expert), 81 frames at 16 fps, about 480p, H.264 by
 ffmpeg. The card has no bf16 and no fast attention: the experts compute in

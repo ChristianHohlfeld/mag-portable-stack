@@ -399,11 +399,14 @@
     const video = m3.kind === 'video', model = video ? 'Wan 2.2' : 'FLUX.2 klein';
     const sub = m3.state === 'done' ? (m3.took ? model + ' · ' + MAG.dur(m3.took * 1000) : model)
       : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : m3.state === 'queued' ? waiting(m3) : m3.stage || 'Malt';
+    // Text to video: the picture comes first, the video follows by itself.
+    const next = m3.then_video && m3.state !== 'error' && m3.state !== 'cancelled' ? ' · danach das Video'
+      : m3.video_error ? ' · Video: ' + m3.video_error : '';
     // A video shows the picture it comes from.
     const src = video && m3.image ? el('span', { class: 'src' }, el('img', { src: '/api/file/' + encodeURIComponent(m3.image), alt: '', loading: 'lazy' }))
       : el('span', { class: 'src' }, MAG.icon(video ? 'play' : 'image'));
     card.append(el('div', { class: 'head' }, src,
-      el('div', { class: 'txt' }, el('b', { text: m3.prompt || (video ? 'Video' : 'Bild') }), el('small', { text: sub })),
+      el('div', { class: 'txt' }, el('b', { text: m3.prompt || (video ? 'Video' : 'Bild') }), el('small', { text: sub + next })),
       running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
         : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => MAG.toast(x.message, true)); } }) : null));
     if (running) {

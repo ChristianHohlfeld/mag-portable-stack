@@ -19,6 +19,7 @@
 #include "vm.hpp"
 
 #include <ctime>
+#include <regex>
 #include <thread>
 
 namespace mag {
@@ -2170,6 +2171,7 @@ private:
     bool last_ok = true;     // how the last tool call went
     bool blocked = false;    // a card ended without a yes (consent, login): a real blocker
     int drives = 0;          // times the room sent the bot back to its goal in this turn
+    bool login_wall = false; // the browser shows a login, a password field or a code page
     std::string tool_sig;
     int steps = 0;
     size_t asked_at = 0;     // parts of the message that were there when Chris last wrote into this turn
@@ -2509,6 +2511,19 @@ private:
         // after a failed step, without a word, or saying what it will do
         // next, is sent back to the goal (three times a turn at most). A
         // card that ended without a yes is a real blocker and ends the work.
+        if (reason == "human" && t.steps > 0 && !t.blocked && t.drives < 3 && t.login_wall) {
+          ++t.drives;
+          logf("engine: " + b.id + " stopped at a login page; the room has it call browser_login");
+          Val note = Val::object();
+          note["role"] = "user";
+          note["content"] = "(Notiz des Raums, nicht von Chris: Die Seite in deinem Browser will eine Anmeldung, ein Passwort oder einen Code. "
+                            "Bitte Chris nicht im Text darum und tippe nichts davon selbst: rufe jetzt browser_login auf (site, reason). "
+                            "Chris erledigt es auf der Karte, danach machst du weiter.)";
+          note["_turn"] = t.token;
+          b.wire["messages"].push(note);
+          save_wire(b);
+          continue;
+        }
         if (reason == "human" && t.steps > 0 && !t.blocked && t.drives < 3 && (!t.last_ok || trim(content).empty() || announces(content))) {
           ++t.drives;
           logf("engine: " + b.id + " stopped short of its goal; the room sends it on (" + std::to_string(t.drives) + ")");
@@ -2686,6 +2701,12 @@ private:
         });
         if (result.ok) t.ok_tool = true;
         t.last_ok = result.ok || was_cancelled;
+        // A page that wants a login, a password or a code is Chris's card, not the bot's typing.
+        if (c.name == "browser_login") t.login_wall = false;
+        else if (starts_with(c.name, "browser_")) {
+          static const std::regex wall("Passwortfeld|(?:^|\n)Seite: [^\n]*(Anmelden|Anmeldung|Sign[- ]?In|Login|Verifizierung|Bestätigungscode|Two-Step|2FA)", std::regex::icase);
+          t.login_wall = std::regex_search(result.text, wall);
+        }
         if (!result.ok && (c.name == "consent" || c.name == "browser_login" || c.name == "browser_pay" || result.text.find(" erledigt diese Aufgabe schon") != std::string::npos))
           t.blocked = true;
         t.tool_sig += c.name + ":" + c.arguments + ";";

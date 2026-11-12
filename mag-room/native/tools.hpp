@@ -8,6 +8,8 @@
 #include "site.hpp"
 #include "vm.hpp"
 
+#include <set>
+
 namespace mag::tools {
 
 struct Ctx {
@@ -28,6 +30,7 @@ struct Ctx {
   // A 3D model from a picture of the chat (photo to 3D): (picture's name, quality, error) -> message id.
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
+  std::function<void(const std::string &)> shot;         // a picture of the browser (JPEG) for this step
 };
 
 struct Result {
@@ -67,14 +70,32 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  "Create or replace a text file in your VM (relative paths are below /home/bot). Prefer this over heredocs. "
                  "A file below /home/bot/www is published on your website at once; an .html file there is shown to Chris as a live page in the chat.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})"));
-    list.push(fn("browser_open", "Open a URL in your own VM browser (real Chrome, persistent profile).",
+    list.push(fn("browser_open", "Open a URL in your own VM browser (real Chrome, persistent profile: logins and cookies stay). Shows the page as browser_look does.",
                  R"({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})"));
-    list.push(fn("browser_read", "Read URL, title and visible text of the current page.",
+    list.push(fn("browser_look",
+                 "Look at the browser as it is now: URL, title, the start of the visible text and every element you can act on, numbered "
+                 "(kind, label, point x/y in the 1440x900 window). Work like a person at the screen: look, act on one element by its number, "
+                 "look again. Use it before every click or type and whenever a page changed.",
                  R"({"type":"object","properties":{}})"));
-    list.push(fn("browser_click", "Click an element by CSS selector or by its exact visible text.",
-                 R"({"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"}}})"));
-    list.push(fn("browser_type", "Type text into the focused field or into the field given by a CSS selector.",
-                 R"({"type":"object","properties":{"text":{"type":"string"},"selector":{"type":"string"},"enter":{"type":"boolean","description":"press Enter afterwards"}},"required":["text"]})"));
+    list.push(fn("browser_read", "Read URL, title and the whole visible text of the current page (long pages, articles, order lists).",
+                 R"({"type":"object","properties":{}})"));
+    list.push(fn("browser_click",
+                 "Click like a person: an element by its number n from the last browser_look (best), a point x/y of the window, or a visible "
+                 "text (also part of a label, any case). Shows the page afterwards.",
+                 R"({"type":"object","properties":{"n":{"type":"integer","description":"element number from browser_look"},"x":{"type":"number"},"y":{"type":"number"},"text":{"type":"string"},"selector":{"type":"string","description":"CSS selector, only if nothing else works"}}})"));
+    list.push(fn("browser_type",
+                 "Type into a field: by its number n from browser_look (it is clicked and its old text replaced), or into the focused field. "
+                 "Never type passwords, card numbers or codes: when a page wants a login, call browser_login.",
+                 R"({"type":"object","properties":{"text":{"type":"string"},"n":{"type":"integer","description":"field number from browser_look"},"selector":{"type":"string"},"enter":{"type":"boolean","description":"press Enter afterwards"}},"required":["text"]})"));
+    list.push(fn("browser_key", "Press a key in the browser: Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown, Backspace.",
+                 R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"));
+    list.push(fn("browser_login",
+                 "A page wants a login (or a captcha, a passkey, a code by SMS): call this instead of typing anything. Chris gets a card: he "
+                 "types his login into a safe form that the room fills into your browser (you never see it), or he takes over your browser "
+                 "himself. You wait; then you see the page and go on. The login stays in your browser for next time. No consent is needed for it.",
+                 R"({"type":"object","properties":{"site":{"type":"string","description":"the site, e.g. amazon.de"},"reason":{"type":"string","description":"why, in German, one sentence"}},"required":["site"]})"));
+    list.push(fn("browser_wait", "Wait until the page has loaded and, if given, a text is on it (at most 15 s). Then shows the page.",
+                 R"({"type":"object","properties":{"text":{"type":"string"},"seconds":{"type":"number"}}})"));
     list.push(fn("browser_scroll", "Scroll the page vertically; positive dy scrolls down.",
                  R"({"type":"object","properties":{"dy":{"type":"integer"}}})"));
     list.push(fn("browser_back", "Go back one page.", R"({"type":"object","properties":{}})"));
@@ -219,8 +240,15 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "write_file") return "Schreibt " + one(jstr(args, "path"), 100);
   if (name == "browser_open") return "Öffnet " + one(jstr(args, "url"), 120);
   if (name == "browser_read") return "Liest die Seite";
-  if (name == "browser_click") return "Klickt " + one(jstr(args, "selector", jstr(args, "text")), 80);
-  if (name == "browser_type") return "Tippt " + one(jstr(args, "text"), 60);
+  if (name == "browser_look") return "Sieht sich die Seite an";
+  if (name == "browser_click")
+    return args.find("n") ? "Klickt Element " + std::to_string((long)jnum(args, "n"))
+         : args.find("x") ? "Klickt auf " + std::to_string((long)jnum(args, "x")) + ", " + std::to_string((long)jnum(args, "y"))
+         : "Klickt " + one(jstr(args, "text", jstr(args, "selector")), 80);
+  if (name == "browser_type") return "Tippt " + one(jstr(args, "text"), 60) + (args.find("n") ? " in Feld " + std::to_string((long)jnum(args, "n")) : "");
+  if (name == "browser_key") return "Taste " + one(jstr(args, "key"), 30);
+  if (name == "browser_login") return "Braucht eine Anmeldung bei " + one(jstr(args, "site"), 60);
+  if (name == "browser_wait") return "Wartet" + (jstr(args, "text").empty() ? std::string() : " auf " + one(jstr(args, "text"), 60));
   if (name == "browser_scroll") return "Scrollt";
   if (name == "browser_back") return "Zurück";
   if (name == "share_file") return "Teilt " + one(jstr(args, "path"), 100);
@@ -264,7 +292,36 @@ inline std::string for_model(const std::string &out, const std::string &log_path
 
 inline Result fail(const std::string &text) { return {"Fehler: " + text, false}; }
 
-inline Result browser_result(const http::ClientResult &r, size_t budget = 6000) {
+inline Result browser_result(const http::ClientResult &r, size_t budget = 6000);
+
+// The browser as a person sees it: where it is, the start of its text, every
+// element to act on with its number and point; the picture goes to the step.
+inline Result look(Ctx &ctx, const std::string &vm) {
+  const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
+  if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+  if (ctx.shot) {
+    const auto pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
+    if (pic.status == 200 && pic.body.size() > 100) ctx.shot(pic.body);
+  }
+  const Val v = jparse(r.body);
+  std::string out = "Seite: " + jstr(v, "title") + "\nURL: " + jstr(v, "url") + "\n";
+  if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; bitte Chris mit browser_login (Übernehmen) um Hilfe.\n";
+  const double height = jnum(v, "height"), vh = jnum(v, "vh", 900), scroll = jnum(v, "scroll");
+  if (height > vh) out += "Gescrollt " + std::to_string((long)scroll) + " von " + std::to_string((long)(height - vh)) + " px\n";
+  out += "Elemente (Nummer, Art, Beschriftung, Punkt):\n";
+  if (const Val *els = v.find("elements"); els && els->isArr())
+    for (auto &e : els->asArr()) {
+      out += std::to_string((long)jnum(e, "n")) + " " + jstr(e, "kind") + " \"" + jstr(e, "label") + "\" (" +
+             std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
+      if (jbool(e, "password")) out += " Passwortfeld";
+      if (jbool(e, "checked")) out += " an";
+      out += "\n";
+    }
+  out += "Text (Anfang):\n" + jstr(v, "text");
+  return {clip(out, 9000, "\n…[gekürzt]"), true};
+}
+
+inline Result browser_result(const http::ClientResult &r, size_t budget) {
   if (!r.error.empty()) return fail("Browser nicht erreichbar: " + r.error);
   if (r.status != 200) return fail("Browser HTTP " + std::to_string(r.status) + ": " + clip(jstr(jparse(r.body), "error", r.body), 300));
   Val v = jparse(r.body);
@@ -447,31 +504,58 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (starts_with(name, "browser_")) {
     if (!need_vm()) return fail("Du hast keine eigene VM.");
     if (!ctx.web && name == "browser_open") return fail("Internet ist in den Einstellungen ausgeschaltet.");
+    // After every action the page as it is now: numbered elements for the
+    // model, a picture for the step in the chat.
+    const auto acted = [&](const http::ClientResult &r) -> Result {
+      if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+      usleep(350000); // what the click or key set off
+      return look(ctx, vm);
+    };
     if (name == "browser_open") {
       const std::string url = jstr(args, "url");
       if (url.empty()) return fail("url fehlt.");
-      return browser_result(ctx.guests.browser(vm, "GET", "/navigate?url=" + url_encode(url), "", 60, ctx.cancel), 1500);
+      return acted(ctx.guests.browser(vm, "GET", "/navigate?url=" + url_encode(url), "", 60, ctx.cancel));
     }
+    if (name == "browser_look") return look(ctx, vm);
     if (name == "browser_read") return browser_result(ctx.guests.browser(vm, "GET", "/read", "", 30, ctx.cancel), 9000);
-    if (name == "browser_back") return browser_result(ctx.guests.browser(vm, "GET", "/back", "", 30, ctx.cancel), 1500);
+    if (name == "browser_back") return acted(ctx.guests.browser(vm, "GET", "/back", "", 30, ctx.cancel));
     if (name == "browser_click") {
       Val body = Val::object();
-      if (!jstr(args, "selector").empty()) body["selector"] = jstr(args, "selector");
+      if (args.find("n")) body["n"] = jnum(args, "n");
+      else if (args.find("x") && args.find("y")) { body["x"] = jnum(args, "x"); body["y"] = jnum(args, "y"); }
       else if (!jstr(args, "text").empty()) body["text"] = jstr(args, "text");
-      else return fail("selector oder text ist nötig.");
-      return browser_result(ctx.guests.browser(vm, "POST", "/click", mj::dump(body), 45, ctx.cancel), 1500);
+      else if (!jstr(args, "selector").empty()) body["selector"] = jstr(args, "selector");
+      else return fail("n, x/y, text oder selector ist nötig.");
+      return acted(ctx.guests.browser(vm, "POST", "/click", mj::dump(body), 45, ctx.cancel));
     }
     if (name == "browser_type") {
       Val body = Val::object();
       body["text"] = jstr(args, "text");
-      if (!jstr(args, "selector").empty()) body["selector"] = jstr(args, "selector");
+      if (args.find("n")) body["n"] = jnum(args, "n");
+      else if (!jstr(args, "selector").empty()) body["selector"] = jstr(args, "selector");
       body["enter"] = jbool(args, "enter");
-      return browser_result(ctx.guests.browser(vm, "POST", "/type", mj::dump(body), 60, ctx.cancel), 1500);
+      return acted(ctx.guests.browser(vm, "POST", "/type", mj::dump(body), 60, ctx.cancel));
+    }
+    if (name == "browser_key") {
+      const std::string key = jstr(args, "key");
+      static const std::set<std::string> keys = {"Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Backspace", "Home", "End", "Space"};
+      if (!keys.count(key)) return fail("Taste: Enter, Tab, Escape, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, PageDown, PageUp, Backspace, Home, End oder Space.");
+      return acted(ctx.guests.browser(vm, "GET", "/key?key=" + url_encode(key == "Space" ? " " : key), "", 30, ctx.cancel));
+    }
+    if (name == "browser_wait") {
+      Val body = Val::object();
+      body["ms"] = std::clamp(jnum(args, "seconds", 2) * 1000, 100.0, 15000.0);
+      if (!jstr(args, "text").empty()) body["text"] = jstr(args, "text");
+      const auto r = ctx.guests.browser(vm, "POST", "/wait", mj::dump(body), 30, ctx.cancel);
+      if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+      Result seen = look(ctx, vm);
+      if (!jstr(args, "text").empty() && !jbool(jparse(r.body), "found")) seen.text = "»" + jstr(args, "text") + "« ist nach dem Warten nicht auf der Seite.\n" + seen.text;
+      return seen;
     }
     if (name == "browser_scroll") {
       Val body = Val::object();
       body["dy"] = std::to_string((int)jnum(args, "dy", 600)); // text: older controllers ignore a number
-      return browser_result(ctx.guests.browser(vm, "POST", "/scroll", mj::dump(body), 30, ctx.cancel), 1500);
+      return acted(ctx.guests.browser(vm, "POST", "/scroll", mj::dump(body), 30, ctx.cancel));
     }
     return fail("Unbekanntes Browser-Werkzeug.");
   }

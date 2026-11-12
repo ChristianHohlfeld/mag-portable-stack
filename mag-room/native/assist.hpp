@@ -127,32 +127,14 @@ public:
         by_auto = true;
         why = rule == "auto" ? "Regel: ohne Nachfrage" : "Auto-Modus";
       } else {
-        const std::string id = random_hex(8);
-        {
-          std::lock_guard<std::mutex> lk(mu_);
-          pending_[id] = "";
-        }
         Val card = Val::object();
-        card["id"] = id;
         card["bot"] = bot_id;
         card["action"] = kind;
         card["label"] = kind_label(kind);
         card["what"] = what;
         if (!to.empty()) card["to"] = to;
         if (amount > 0) card["amount_eur"] = amount;
-        if (ask) ask(card);
-        const int64_t until = mono_ms() + std::clamp(envl("MAG_ASSIST_APPROVAL_S", 900), 2L, 86400L) * 1000;
-        {
-          std::unique_lock<std::mutex> lk(mu_);
-          for (;;) {
-            if (!pending_[id].empty()) { decision = pending_[id]; break; }
-            if (cancel && cancel->stopped()) { decision = "stopped"; break; }
-            if (mono_ms() >= until) { decision = "timeout"; break; }
-            cv_.wait_for(lk, std::chrono::milliseconds(200));
-          }
-          pending_.erase(id);
-        }
-        if (ask) ask(Val());
+        decision = await_card(card, cancel, ask);
         why = decision == "allow" ? "Chris hat erlaubt" : decision == "deny" ? "Chris hat abgelehnt" : decision == "stopped" ? "abgebrochen" : "keine Antwort in 15 Minuten";
       }
     }
@@ -182,8 +164,10 @@ public:
   }
 
   // The owner's answer to a pending card. False: no such card waits.
+  // allow/deny for an action, done/cancel for a login. Only the owner's
+  // request (/api/approval, /api/login) gets here, never a model.
   bool decide(const std::string &id, const std::string &decision) {
-    if (decision != "allow" && decision != "deny") return false;
+    if (decision != "allow" && decision != "deny" && decision != "done" && decision != "cancel") return false;
     {
       std::lock_guard<std::mutex> lk(mu_);
       const auto it = pending_.find(id);
@@ -192,6 +176,42 @@ public:
     }
     cv_.notify_all();
     return true;
+  }
+
+  // A card that waits at a bot's step until Chris decides, the turn is
+  // stopped, or 15 minutes have passed. Returns the decision, "stopped" or
+  // "timeout".
+  std::string await_card(Val card, const Cancel *cancel, const std::function<void(const Val &)> &ask) {
+    const std::string id = random_hex(8);
+    card["id"] = id;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      pending_[id] = "";
+      cards_[id] = card;
+    }
+    if (ask) ask(card);
+    const int64_t until = mono_ms() + std::clamp(envl("MAG_ASSIST_APPROVAL_S", 900), 2L, 86400L) * 1000;
+    std::string decision;
+    {
+      std::unique_lock<std::mutex> lk(mu_);
+      for (;;) {
+        if (!pending_[id].empty()) { decision = pending_[id]; break; }
+        if (cancel && cancel->stopped()) { decision = "stopped"; break; }
+        if (mono_ms() >= until) { decision = "timeout"; break; }
+        cv_.wait_for(lk, std::chrono::milliseconds(200));
+      }
+      pending_.erase(id);
+      cards_.erase(id);
+    }
+    if (ask) ask(Val());
+    return decision;
+  }
+
+  // A card that still waits (for /api/login: whose browser to fill), or null.
+  Val waiting_card(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = cards_.find(id);
+    return it == cards_.end() || !pending_[id].empty() ? Val() : it->second;
   }
 
   // ---- routines -------------------------------------------------------------
@@ -321,6 +341,7 @@ private:
   std::mutex mu_, routines_mu_;
   std::condition_variable cv_;
   std::map<std::string, std::string> pending_; // card id -> decision ("" while waiting)
+  std::map<std::string, Val> cards_;           // card id -> the card, while it waits
   int64_t seen_ms_ = 0;                        // messages up to here were looked at for events
   std::set<std::string> done_;                 // jobs of the graphics card already seen done
 

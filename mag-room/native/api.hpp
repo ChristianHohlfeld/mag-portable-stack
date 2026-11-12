@@ -6,6 +6,8 @@
 #include "idol.hpp"
 #include "push.hpp"
 
+#include <regex>
+
 namespace mag {
 
 class Api {
@@ -93,6 +95,20 @@ public:
       if (starts_with(p, "/api/screen/")) return screen(fd, r);
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
+      if (starts_with(p, "/api/shot/")) {
+        // The browser as a step left it: <message>-<step>.jpg.
+        const std::string name = p.substr(10);
+        const size_t dash = name.rfind('-');
+        if (dash == std::string::npos || !is_id(name.substr(0, dash)) || !ends_with(name, ".jpg") ||
+            name.find_first_not_of("0123456789", dash + 1) != name.size() - 4)
+          return http::send_error(fd, 404, "Kein Bild");
+        const std::string path = room_.cfg.state_dir + "/shots/" + name;
+        struct stat st{};
+        if (stat(path.c_str(), &st) != 0) return http::send_error(fd, 404, "Kein Bild");
+        http::Headers h;
+        h.push_back({"Cache-Control", "private, max-age=86400"});
+        return http::send_file(fd, r, path, "image/jpeg", h);
+      }
       if (p == "/api/skills") { Val v = Val::object(); v["skills"] = room_.skills(); return http::send_json(fd, 200, v); }
       if (p == "/api/routines") {
         // The routines with when they run next, and the rules of approval with what was spent today.
@@ -245,6 +261,22 @@ public:
       // Chris's answer to a plugin call that waits for him: allow, always or deny.
       const std::string id = p.substr(14), decision = jstr(jparse(r.body), "decision");
       if (!plugins_.decide(id, decision) && !assist_.decide(id, decision)) return http::send_error(fd, 409, "Diese Freigabe wartet nicht mehr");
+      return http::send_ok(fd);
+    }
+    if (r.method == "POST" && starts_with(p, "/api/login/")) {
+      // Chris's login for a page that waits in a bot's browser: typed into the
+      // page by the room, never stored, never logged, never shown to a model.
+      const Val card = assist_.waiting_card(p.substr(11));
+      if (!card.isObj() || jstr(card, "action") != "login") return http::send_error(fd, 409, "Diese Anmeldung wartet nicht mehr");
+      Val in = jparse(r.body);
+      std::string user = jstr(in, "user"), pass = jstr(in, "password");
+      in = Val();
+      const std::string vm = jstr(room_.bot(jstr(card, "bot")), "vm");
+      std::string why = fill_login(vm, user, pass);
+      std::fill(user.begin(), user.end(), '\0');
+      std::fill(pass.begin(), pass.end(), '\0');
+      if (!why.empty()) return http::send_error(fd, 422, why);
+      assist_.decide(jstr(card, "id"), "done");
       return http::send_ok(fd);
     }
     if (starts_with(p, "/api/routines/") && (r.method == "DELETE" || r.method == "POST")) {
@@ -623,6 +655,7 @@ private:
     if (!is_id(id)) return http::send_error(fd, 400, "Ungültige Nachricht");
     Val removed;
     if (!room_.remove(id, &removed)) return http::send_error(fd, 404, "Nachricht nicht gefunden");
+    forget_shots(id);
     idol_.forget(removed);
     scenes_.forget(removed);
     engine_.forget(id);
@@ -634,6 +667,10 @@ private:
     Val report = engine_.clear(&removed);
     idol_.purge();
     scenes_.purge();
+    {
+      std::error_code ec;
+      std::filesystem::remove_all(room_.cfg.state_dir + "/shots", ec); // the pictures of browser steps go with their messages
+    }
     Val v = Val::object();
     v["ok"] = true;
     v["removed"] = (double)removed.size();
@@ -731,6 +768,65 @@ private:
     room_.add(note);
   }
   std::mutex assemble_mu_;
+
+  // Types a login into the page a bot's browser shows: the user field (when
+  // there is one and a user was given; a site that asks for it on a page of
+  // its own gets Enter and is looked at again), then the password with
+  // Enter. "" when no password field is left afterwards, else why not.
+  std::string fill_login(const std::string &vm, const std::string &user, const std::string &pass) {
+    if (!vm::valid_name(vm)) return "Dieser Bot hat keinen Browser.";
+    const auto fields = [&](int &user_n, int &pass_n) {
+      user_n = pass_n = 0;
+      const auto r = guests_.browser(vm, "GET", "/elements", "", 30, nullptr);
+      if (r.status != 200) return false;
+      const Val v = jparse(r.body);
+      const Val *els = v.find("elements");
+      if (!els || !els->isArr()) return false;
+      static const std::regex named("mail|user|benutzer|login|konto|account|telefon|phone|handy|kunden|name|ap_email", std::regex::icase);
+      for (auto &e : els->asArr()) {
+        const std::string kind = jstr(e, "kind"), label = jstr(e, "label");
+        if (jbool(e, "password") && !pass_n) pass_n = (int)jnum(e, "n");
+        else if (!user_n && (kind == "email" || ((kind == "text" || kind == "tel") && std::regex_search(label, named)))) user_n = (int)jnum(e, "n");
+      }
+      return true;
+    };
+    const auto type = [&](int n, const std::string &text, bool enter) {
+      Val body = Val::object();
+      body["n"] = (double)n;
+      body["text"] = text;
+      body["enter"] = enter;
+      return guests_.browser(vm, "POST", "/type", mj::dump(body), 60, nullptr).status == 200;
+    };
+    const auto settle = [&](int ms) {
+      Val body = Val::object();
+      body["ms"] = (double)ms;
+      guests_.browser(vm, "POST", "/wait", mj::dump(body), 30, nullptr);
+    };
+    int user_n = 0, pass_n = 0;
+    if (!fields(user_n, pass_n)) return "Der Browser des Bots antwortet nicht.";
+    if (user_n && !user.empty()) {
+      if (!type(user_n, user, !pass_n)) return "Das Feld für den Benutzer ließ sich nicht ausfüllen.";
+      if (!pass_n) {
+        settle(3500);
+        if (!fields(user_n, pass_n)) return "Der Browser des Bots antwortet nicht.";
+      }
+    }
+    if (!pass_n) return "Auf der Seite ist kein Passwortfeld zu sehen. Übernimm den Browser selbst.";
+    if (pass.empty()) return "Das Passwort fehlt.";
+    if (!type(pass_n, pass, true)) return "Das Passwortfeld ließ sich nicht ausfüllen.";
+    settle(4000);
+    int again_user = 0, again_pass = 0;
+    if (fields(again_user, again_pass) && again_pass)
+      return "Die Seite fragt noch nach dem Passwort (falsch, oder ein weiterer Schritt). Übernimm den Browser selbst.";
+    return "";
+  }
+
+  // A deleted message takes the pictures of its browser steps along.
+  void forget_shots(const std::string &id) {
+    std::error_code ec;
+    for (auto &f : std::filesystem::directory_iterator(room_.cfg.state_dir + "/shots", ec))
+      if (starts_with(f.path().filename().string(), id + "-")) std::filesystem::remove(f.path(), ec);
+  }
   std::map<std::string, int64_t> naming_; // group -> until when its figures' names are waited for
 
   // What a cut-out object is, as the bot that saw it began its description

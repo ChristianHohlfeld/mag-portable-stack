@@ -83,7 +83,7 @@
     };
     // A plugin tool, or an action the bot asked about (consent: send, buy, delete, publish, a routine).
     const euro = (n) => n.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-    const asking = !ask ? null : ask.action ? el('span', { class: 'ask' },
+    const asking = !ask ? null : ask.action === 'login' ? loginCard(m, ask) : ask.action ? el('span', { class: 'ask' },
       el('b', { text: MAG.name(m.from) + ' bittet um Freigabe: ' + ask.label + (ask.amount_eur ? ' · ' + euro(ask.amount_eur) : '') + (ask.to ? ' · ' + ask.to : '') }),
       el('span', { class: 'what', text: ask.what }),
       S.you.role === 'owner' ? el('span', { class: 'btns' },
@@ -100,6 +100,7 @@
       ? el('button', { class: 'cancel', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); MAG.api('POST', '/api/stop', { bot: m.from }).catch((x) => MAG.toast(x.message, true)); } })
       : null;
     // Collapsed, a running step still shows its last lines as they arrive.
+    const shot = step.shot ? '/api/shot/' + m.id + '-' + index + '.jpg' : '';
     node.append(el('summary', {},
       el('span', { class: 'mark', html: stepMark[step.state] || '' }),
       el('span', { class: 'title', text: step.title || step.tool }),
@@ -107,10 +108,13 @@
       cancel,
       el('span', { class: 'chev', html: MAG.icons.chev }),
       asking,
-      step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null));
+      step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null,
+      // The browser as this step left it: small in the line, large when the step is open.
+      shot && latestShot(m) === index ? el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' }) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
     node.append(el('div', { class: 'body' },
+      shot ? el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' }) : null,
       input ? el('div', { class: 'label', text: step.tool === 'shell' ? 'Befehl' : 'Eingabe' }) : null,
       input ? el('pre', { class: 'cmd', text: input }) : null,
       el('div', { class: 'label', text: step.state === 'running' ? 'Ausgabe (live)' : 'Ausgabe' + (step.cut ? ' (Ende; vollständig im Log der VM)' : '') }),
@@ -118,6 +122,47 @@
     node.addEventListener('toggle', () => { if (node.open) out.scrollTop = out.scrollHeight; });
     return node;
   }
+  // A page in a bot's browser wants a login. Chris types it here (the room
+  // fills it into the page; the bot never sees it, nothing is stored; the
+  // phone's password manager can fill the form) or takes the browser over.
+  function loginCard(m, ask) {
+    const name = MAG.name(m.from), owner = S.you.role === 'owner';
+    const note = el('small', { class: 'note' });
+    const decide = (decision) => MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
+    const user = el('input', { type: 'text', name: 'username', autocomplete: 'username', placeholder: 'E-Mail oder Benutzer', autocapitalize: 'off', spellcheck: false });
+    const pass = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', placeholder: 'Passwort' });
+    const go = el('button', { class: 'yes', type: 'submit', text: 'Anmelden' });
+    const form = el('form', { class: 'login', onsubmit: (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      note.textContent = 'Wird in den Browser von ' + name + ' eingetragen …';
+      MAG.api('POST', '/api/login/' + ask.id, { user: user.value, password: pass.value })
+        .then(() => { pass.value = ''; note.textContent = 'Angemeldet; ' + name + ' macht weiter.'; },
+          (x) => { go.disabled = false; note.textContent = x.message; });
+    } }, user, pass, go);
+    // The bot's browser in a sheet: Chris logs in himself (passkey, code), then lets the bot go on.
+    const takeOver = () => {
+      let live = null;
+      const sheet = MAG.sheet('Browser von ' + name, (content, _, close) => {
+        live?.stop();
+        live = MAG.liveView(m.from);
+        content.append(el('p', { class: 'fine', text: 'Melde dich hier selbst an (Passkey, Code per SMS, Captcha). Danach macht ' + name + ' weiter.' }), live.node,
+          el('div', { class: 'btns' }, el('button', { class: 'btn', text: 'Fertig, weiter', onclick: () => { decide('done'); close(); } })));
+      });
+      sheet.addEventListener('closed', () => live?.stop());
+    };
+    return el('span', { class: 'ask' },
+      el('b', { text: name + ' braucht eine Anmeldung bei ' + (ask.site || 'einer Seite') }),
+      ask.what ? el('span', { class: 'what', text: ask.what }) : null,
+      owner ? form : null,
+      owner ? el('span', { class: 'btns' },
+        el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); takeOver(); } }),
+        el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
+      note);
+  }
+
+  // Only the newest browser picture of an answer stands in its line; the others open with their step.
+  const latestShot = (m) => (m.parts || []).reduce((at, p, i) => (p.shot ? i : at), -1);
   const lastLines = (text) => text.replace(/\s+$/, '').split('\n').slice(-3).join('\n');
 
   // ---- pages: a bot's HTML, running in a frame from the bot's own site -----
@@ -844,6 +889,7 @@
     const body = node.querySelector('.body'), old = body.querySelector(':scope > [data-part="' + part + '"]'), fresh = buildStep(m, part);
     if (old) { fresh.open = old.open; grow(() => old.replaceWith(fresh)); }
     else grow(() => body.append(fresh));
+    if (fresh.querySelector('.shot-mini')) node.querySelectorAll('.shot-mini').forEach((img) => { if (!fresh.contains(img)) img.remove(); });
     markStreaming(node, m);
   });
   MAG.on('step_output', (m, part, text) => {

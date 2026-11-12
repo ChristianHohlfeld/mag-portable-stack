@@ -85,6 +85,8 @@ public:
       if (p == "/api/state") return state(fd, r, who);
       if (p == "/api/messages") return messages(fd, r);
       if (p == "/api/events") return events(fd);
+      if (starts_with(p, "/api/file/") && ends_with(p, "/thumb")) return file_thumb(fd, url_decode(p.substr(10, p.size() - 10 - 6)));
+      if (starts_with(p, "/api/file/") && ends_with(p, "/excerpt")) return file_excerpt(fd, url_decode(p.substr(10, p.size() - 10 - 8)));
       if (starts_with(p, "/api/file/")) return file(fd, r);
       if (p == "/api/files") return files(fd);
       if (p == "/api/files.zip") return files_zip(fd, r);
@@ -789,6 +791,86 @@ private:
                        {"Content-Disposition", std::string(r.param("download") == "1" || (active && r.param("view") != "1") ? "attachment" : "inline") +
                                                    "; filename*=UTF-8''" + url_encode(name)}};
     http::send_file(fd, r, path, mime, h);
+  }
+
+  // ---- previews of the chat's files --------------------------------------
+  // Each file as it really is, small: a 3D file rendered by Blender (the
+  // scene worker), a picture scaled down, a video's first frame, a sound's
+  // waveform, a PDF's first page (ffmpeg, pdftoppm). Made once per file in
+  // STATE/thumbs; 404 for a file that has no picture (its text is the excerpt).
+  static std::string file_ext(const std::string &stored) {
+    const size_t dot = stored.find_last_of('.');
+    return dot == std::string::npos ? "" : lower(stored.substr(dot + 1));
+  }
+  void file_thumb(int fd, const std::string &stored) {
+    const std::string src = room_.file_path(stored);
+    if (src.empty() || !exists(src)) return http::send_error(fd, 404, "Datei nicht gefunden");
+    const std::string dir = room_.cfg.state_dir + "/thumbs", out = dir + "/" + stored + ".png";
+    static const http::Headers cached = {{"Cache-Control", "private, max-age=31536000, immutable"}};
+    if (!exists(out)) {
+      static std::mutex mu; // one preview is made at a time; the others wait for it
+      std::lock_guard<std::mutex> lk(mu);
+      if (!exists(out)) {
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const std::string ext = file_ext(stored), mime = mime_for(stored), part = out + ".part.png";
+        std::string error;
+        RunOptions opt;
+        opt.timeout_s = 120;
+        auto tool = [&](std::vector<std::string> args) { // CPUs 28-55 like the room, at low priority
+          args.insert(args.begin(), {"nice", "-n", "10"});
+          return run(args, opt).code == 0 && exists(part);
+        };
+        bool made = false;
+        if (ext == "glb" || ext == "gltf" || ext == "stl" || ext == "ply" || ext == "obj" || ext == "fbx" || ext == "blend") {
+          const std::string png = scenes_.thumb(stored, error);
+          made = !png.empty() && write_atomic(part, png, 0640);
+        } else if (starts_with(mime, "image/") && ext != "svg") {
+          made = tool({"ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "scale='min(400,iw)':-2", "-frames:v", "1", part});
+        } else if (starts_with(mime, "video/")) {
+          made = tool({"ffmpeg", "-v", "error", "-y", "-ss", "0.5", "-i", src, "-vf", "scale='min(400,iw)':-2", "-frames:v", "1", part}) ||
+                 tool({"ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "scale='min(400,iw)':-2", "-frames:v", "1", part});
+        } else if (starts_with(mime, "audio/")) {
+          made = tool({"ffmpeg", "-v", "error", "-y", "-i", src, "-filter_complex",
+                       "aformat=channel_layouts=mono,showwavespic=s=400x240:colors=0x7c8cff:scale=sqrt", "-frames:v", "1", part});
+        } else if (ext == "pdf") {
+          const std::string base = out + ".part";
+          made = tool({"pdftoppm", "-png", "-f", "1", "-l", "1", "-scale-to", "400", "-singlefile", src, base});
+        }
+        if (!made) {
+          fs::remove(part, ec);
+          return http::send_error(fd, 404, error.empty() ? "Keine Vorschau" : error);
+        }
+        fs::rename(part, out, ec);
+        if (ec) return http::send_error(fd, 500, "Vorschau nicht gespeichert");
+      }
+    }
+    std::string png;
+    read_file(out, png, 16u << 20);
+    http::send(fd, 200, "image/png", png, cached);
+  }
+  // The beginning of what a file says, for files whose content is text: a
+  // text file as it is, a document (PDF, Word, OpenDocument, PowerPoint) by
+  // its text. {"text": ...}, or "" when there is none.
+  void file_excerpt(int fd, const std::string &stored) {
+    const std::string src = room_.file_path(stored);
+    if (src.empty() || !exists(src)) return http::send_error(fd, 404, "Datei nicht gefunden");
+    const std::string mime = mime_for(stored), ext = file_ext(stored);
+    std::string text;
+    static const std::set<std::string> plain = {"txt", "md", "csv", "json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py",
+                                                "sh", "c", "cc", "cpp", "h", "hpp", "go", "rs", "java", "toml", "ini", "log", "svg", "tex"};
+    if (starts_with(mime, "text/") || plain.count(ext)) {
+      read_file(src, text, 4096);
+    } else {
+      Val a = Val::object();
+      a["file"] = stored;
+      const size_t us = stored.find('_');
+      a["name"] = us == std::string::npos ? stored : stored.substr(us + 1);
+      text = engine_.text_of(a);
+    }
+    Val v = Val::object();
+    v["text"] = mj::utf8_cut(text, 1500);
+    http::send_json(fd, 200, v, {{"Cache-Control", "private, max-age=86400"}});
   }
 
   // ---- the files of the chat ---------------------------------------------

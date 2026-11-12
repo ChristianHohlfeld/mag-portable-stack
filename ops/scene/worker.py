@@ -425,6 +425,37 @@ def parts_of(stored):
     return json.loads(out.read_text())
 
 
+THUMBED = (".glb", ".gltf", ".stl", ".ply", ".obj", ".fbx", ".blend")
+thumbing = threading.Lock()  # one picture at a time; scenes are built beside it
+
+
+def thumb_of(stored):
+    """A picture of a 3D file of the chat as it really is (scene.py thumb),
+    made once per file: PNG bytes."""
+    source = room_file(stored)
+    if source.suffix.lower() not in THUMBED:
+        raise Refused("Keine 3D-Datei.")
+    cache = ROOT.parent / "thumbs"
+    cache.mkdir(parents=True, exist_ok=True)
+    out = cache / (stored + ".png")
+    if not out.is_file() or out.stat().st_mtime < source.stat().st_mtime:
+        scratch = cache / ("tmp-" + uuid4().hex)
+        scratch.mkdir()
+        try:
+            with thumbing:
+                done = subprocess.run(blender("thumb", str(source), str(scratch / "thumb.png")), env=stage_env(scratch, "normal"),
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
+            if done.returncode != 0 or not (scratch / "thumb.png").is_file():
+                text = done.stdout.decode("utf-8", errors="replace")
+                raise Refused(errors_of(text) or "Blender konnte kein Bild der Datei machen.")
+            os.replace(scratch / "thumb.png", out)
+        except subprocess.TimeoutExpired:
+            raise Refused("Blender hat zu lange gebraucht.")
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    return out.read_bytes()
+
+
 def keep_log(folder):
     """What Blender said about a scene it could not build stays for a while
     (the newest twenty), so a failure can be understood afterwards."""
@@ -535,6 +566,14 @@ class API(BaseHTTPRequestHandler):
             stray = [p.name for p in ROOT.iterdir() if p.is_dir() and VALID_ID.fullmatch(p.name)]
             return self.reply(200, {"deleted": sum(discard(i) for i in set(known + stray))})
         try:
+            if url.path == "/api/scene/thumb":
+                picture = thumb_of(parse_qs(url.query).get("file", [""])[0])
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(picture)))
+                self.end_headers()
+                self.wfile.write(picture)
+                return None
             if url.path == "/api/scene/parts":
                 return self.reply(200, {"parts": parts_of(parse_qs(url.query).get("file", [""])[0])})
             if url.path == "/api/scene/jobs":

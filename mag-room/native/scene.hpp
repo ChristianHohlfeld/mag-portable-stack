@@ -249,6 +249,17 @@ public:
       if (is_scene(m) && jstr(m, "state") == "streaming") watch(jstr(m, "id"), jstr(*m.find("model3d"), "job"));
   }
 
+  // A picture of a 3D file of the chat as it really is (rendered once by the
+  // worker, scene.py thumb): PNG bytes, or "" with why not.
+  std::string thumb(const std::string &stored, std::string &error) {
+    http::ClientOptions opt = options("POST");
+    opt.timeout_s = 260;
+    opt.cap = 8u << 20;
+    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/thumb?file=" + url_encode(stored), opt);
+    if (res.status == 200 && res.body.size() > 8 && res.body.compare(1, 3, "PNG") == 0) return res.body;
+    error = res.error.empty() && res.status ? jstr(jparse(res.body), "error", "Kein Bild der Datei.") : "Der Szenen-Dienst (Blender) ist nicht erreichbar.";
+    return "";
+  }
 private:
   Room &room_;
   std::mutex blend_mu_;

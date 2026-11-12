@@ -1,7 +1,7 @@
 // Native MAG audit gateway. One public loopback listener :8080.
-// Requests name a model; MAG_ROOM_MODEL_ID/PORTS select two single-slot NUMA
-// servers. Legacy IQ3/Qwen hosts retain their fixed routing. Neither process
-// is started, stopped, or restarted here.
+// Requests name a model; MAG_ROOM_MODEL_ID/PORTS select the two single-slot
+// NUMA servers (Lena :8191, Noah :8192). Without that configuration it does
+// not start. Neither server is started, stopped, or restarted here.
 #include "json.hpp"
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -43,7 +43,6 @@ using mj::Val;
 namespace fs=std::filesystem;
 static std::string env(const char *k,const std::string &def) {const char *p=getenv(k);return p&&*p?p:def;}
 static int number(const char *k,int d){try{return std::stoi(env(k,std::to_string(d)));}catch(...){return d;}}
-static std::string value(const Val &v,const char *k,const std::string &def=""){auto p=v.find(k);return p?p->asStr():def;}
 static bool write_all(int fd,const std::string &s){size_t n=0;while(n<s.size()){ssize_t v=send(fd,s.data()+n,s.size()-n,MSG_NOSIGNAL);if(v<=0)return false;n+=(size_t)v;}return true;}
 static std::string lower(std::string v){for(auto &c:v)c=(char)tolower((unsigned char)c);return v;}
 static std::string sha(const std::string &s){unsigned char dig[SHA256_DIGEST_LENGTH];SHA256((const unsigned char*)s.data(),s.size(),dig);char out[65];for(unsigned i=0;i<32;i++)snprintf(out+2*i,3,"%02x",dig[i]);return std::string(out,64);}
@@ -132,20 +131,14 @@ static void release_orphans(int port){
   }
 }
 struct Config {
-  int q4=8090,iq3=8091,listen=8080;
-  std::string secondary="iq3"; // legacy IQ3/Qwen hosts
+  int listen=8080;
   RoomModel room;
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
 static void release_orphan_upstreams(){
   std::set<int> ports;
-  if(cfg.room.enabled()){
-    for(const auto &b:cfg.room.backends) if(b.port>0) ports.insert(b.port);
-  }else{
-    if(cfg.q4>0) ports.insert(cfg.q4);
-    if(cfg.iq3>0) ports.insert(cfg.iq3);
-  }
+  for(const auto &b:cfg.room.backends) if(b.port>0) ports.insert(b.port);
   for(int port:ports) release_orphans(port);
 }
 static std::mutex audit_mtx;
@@ -288,37 +281,15 @@ static Val sse_assemble(const std::string &wire){
 struct Http {
   std::string method,path,head,body;std::map<std::string,std::string> headers;
 };
-// Hot-swap (mag-numa-swap): the model a NUMA node serves is in its state file.
-// A request naming that model (or "numa0"/"numa1") goes to the node's port.
-static bool numa_route(const std::string &asked,std::string &selected,int &port){
-  const char *path=std::getenv("MAG_NUMA_STATE");
-  std::ifstream f(path&&*path?path:"/var/lib/mag-numa/state.json");
-  if(!f||asked.empty())return false;
-  std::stringstream ss;ss<<f.rdbuf();
-  Val st;if(!mj::parse(ss.str(),st)||!st.isObj())return false;
-  auto nodes=st.find("nodes");if(!nodes||!nodes->isObj())return false;
-  for(int n=0;n<2;n++){
-    auto node=nodes->find(std::to_string(n));if(!node||!node->isObj())continue;
-    auto model=node->find("model");if(!model)continue;
-    if(asked==model->asStr()||asked=="numa"+std::to_string(n)){
-      selected="numa:"+model->asStr();port=n==0?cfg.q4:cfg.iq3;return true;
-    }
-  }
-  return false;
-}
 static bool choose_model(const Http &r,std::string &selected,int &port,int *id_slot=nullptr){
-  selected="q4"; port=cfg.q4; if(id_slot)*id_slot=-1;
+  selected="configured"; port=0; if(id_slot)*id_slot=-1;
   std::string asked;
   auto header=r.headers.find("x-mag-model");
   if(header!=r.headers.end()) asked=header->second;
   if(asked.empty()&&!r.body.empty()){
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
-  // Ignore stale DeepSeek NUMA state on Ornith/Qwen hosts.
-  if(!cfg.room.enabled()&&cfg.secondary=="iq3"&&numa_route(asked,selected,port))return true;
-  if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"&&!cfg.room.enabled()){selected="iq3"; port=cfg.iq3;return true;}
-  if((asked.empty()||asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"&&!cfg.room.enabled()){selected="qwen"; port=cfg.iq3;return true;}
-  if(cfg.room.enabled()){
+  {
     // Persistent bot slot selects a server; NUMA is never a llama id_slot.
     size_t slot=0; auto h=r.headers.find("x-mag-slot"); const bool has=h!=r.headers.end();
     if(has){
@@ -336,10 +307,6 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
     if(id_slot&&r.path.rfind("/slots/",0)==0)*id_slot=0; // both nodes use /slots/0
     return true;
   }
-  // No fallback on an explicitly unknown or inactive secondary model.
-  // Configured hosts reject every other model ID.
-  if(cfg.room.enabled()||cfg.secondary=="qwen")return false;
-  return asked.empty()||asked=="q4"||asked=="deepseek-v4-flash-0731";
 }
 static bool request_read(int fd,Http &r){
   std::string s;char b[8192];size_t pos=std::string::npos;
@@ -392,30 +359,22 @@ static int peer_uid(int fd,int server_port){
 static void proxy(int fd){
   Http r;if(!request_read(fd,r))return;
   const bool quiet=r.path=="/health"||r.path=="/v1/models"||r.path=="/props"||r.path=="/metrics"||r.path=="/slots";
-  std::string id=audit_id(),selected="q4";
-  int upstream=cfg.q4;
+  std::string id=audit_id(),selected="configured";
+  int upstream=0;
   if((r.method=="GET"||r.method=="HEAD")&&(r.path=="/v1/models"||r.path=="/v1/models/")){
     Val data=Val::array();
     auto add=[&](const char *name,const char *label,int port){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
-    if(!cfg.room.enabled()&&cfg.secondary=="iq3")add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
-    if(cfg.room.enabled()) {
-      std::set<std::string> seen;
-      for (const auto &b : cfg.room.backends)
-        if (seen.insert(b.id).second) add(b.id.c_str(),b.label.c_str(),b.port);
-    }
-    else if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
-    else add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
+    std::set<std::string> seen;
+    for (const auto &b : cfg.room.backends)
+      if (seen.insert(b.id).second) add(b.id.c_str(),b.label.c_str(),b.port);
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
     json_response(fd,200,listed); return;
   }
   int id_slot=-1;
   if(!choose_model(r,selected,upstream,&id_slot)){
-    json_response(fd,400,message(cfg.room.enabled()
-      ?"Modell nicht verfügbar: nur das konfigurierte Modell ist aktiv (kein Fallback)"
-      :cfg.secondary=="qwen" ? "Modell nicht verfügbar: DeepSeek ist stillgelegt, nur Qwen (kein Fallback)"
-      :"Unbekanntes Modell (kein Fallback)"));return;
+    json_response(fd,400,message("Modell nicht verfügbar: nur das konfigurierte Modell ist aktiv (kein Fallback)"));return;
   }
   if(id_slot>=0&&r.path.rfind("/slots/",0)==0){
     // The room may post /slots/0: always the bot's own llama slot, actions only.
@@ -483,12 +442,9 @@ static void proxy(int fd){
       j["id_slot"]=id_slot; // shared server: each bot keeps its own KV slot
       forwarded=mj::dump(j);
     }
-    // Qwen-only rollback is the default model when the caller omits "model".
-    // Forward the canonical alias as well: llama-server and its test fixtures
-    // must receive the same model id for explicit and model-less chat requests.
-    if(mj::parse(forwarded,j)&&j.isObj()&&
-       (j.find("model")||((selected=="qwen"||selected=="configured")&&r.path=="/v1/chat/completions"))){
-      j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="configured"?[&](){for(const auto &b:cfg.room.backends)if(b.port==upstream)return b.id;return std::string();}():selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
+    // The server's own model id, for explicit and model-less chat requests alike.
+    if(mj::parse(forwarded,j)&&j.isObj()&&(j.find("model")||r.path=="/v1/chat/completions")){
+      j["model"]=[&](){for(const auto &b:cfg.room.backends)if(b.port==upstream)return b.id;return std::string();}();
       forwarded=mj::dump(j);
     }
   }
@@ -587,14 +543,13 @@ static int server(int port){
 }
 int main(){
   try{
-    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);cfg.secondary=env("MAG_SECONDARY_MODEL","iq3");
+    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);
     cfg.room=RoomModel::from_env();
-    if(cfg.room.enabled())cfg.secondary="configured";
-    if(cfg.secondary!="iq3"&&cfg.secondary!="qwen"&&cfg.secondary!="configured")throw std::runtime_error("invalid model configuration (fail closed)");
+    if(!cfg.room.enabled()||cfg.room.backends.empty())throw std::runtime_error("MAG_ROOM_MODEL_ID/PORTS missing (fail closed)");
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
     release_orphan_upstreams();
     int public_fd=server(cfg.listen);
-    Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]=cfg.room.enabled()?cfg.room.id:cfg.secondary=="qwen"?"qwen":std::to_string(cfg.q4);audit(start);
+    Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]=cfg.room.id;audit(start);
     for(;;){
       pollfd pfd{public_fd,POLLIN,0};
       if(poll(&pfd,1,-1)<0){if(errno==EINTR)continue;break;}

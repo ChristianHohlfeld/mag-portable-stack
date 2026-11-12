@@ -693,7 +693,11 @@ fetches the model once; `ops/stt/install.sh` is the deploy layer. CI builds
 Speech is made in the browser, never on the server. `mag-room/web/app/speak.js`
 drives a Web Worker (`ops/tts/tts-worker.js`) that runs Supertonic 3 in
 onnxruntime-web, on WebGPU where the device has one, else in WASM threads
-(the page is cross-origin isolated for that). One voice and tempo per
+(the page is cross-origin isolated for that). On the GPU what one network
+hands to the next stays there (the text for the steps, the sound from step
+to step to the vocoder): only the length of the speech and the finished
+sound are read back, two waits for the GPU per part instead of one per
+step. One voice and tempo per
 speaker, kept on the device. The page fetches and prepares the model in the
 background after load, so the first "Vorlesen" speaks at once; until then
 the device's own voice reads. The newest answer is synthesised ahead while

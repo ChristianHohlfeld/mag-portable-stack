@@ -187,19 +187,27 @@ function halfTable() {
   }
   return t;
 }
-// The weights of a network as float32, read piece by piece into one array.
+// The weights of a network as float32, read piece by piece into one array
+// (the next piece is read while this one is widened). How long reading and
+// widening take goes to the journal with the rest of the making.
+const took = {read: 0, widen: 0, create: 0};
 async function widened(url) {
+  let t = Date.now();
   const total = await keepAll(url);
   const out = new Float32Array(total >> 1);
   HALF = HALF || halfTable();
+  let reading = readPiece(url, 0);
   for (let n = 0; n * PIECE < total; n++) {
-    const bytes = await readPiece(url, n);
+    const bytes = await reading;
     if (!bytes || bytes.byteLength !== pieceSize(total, n)) {   // lost or broken: fetched again next time
       await dropPiece(url, n);
       throw new Error('piece ' + n + ' of ' + url);
     }
+    reading = (n + 1) * PIECE < total ? readPiece(url, n + 1) : null;
+    took.read += Date.now() - t; t = Date.now();
     const half = new Uint16Array(bytes), at = (n * PIECE) >> 1;
     for (let i = 0; i < half.length; i++) out[at + i] = HALF[half[i]];
+    took.widen += Date.now() - t; t = Date.now();
   }
   return out;
 }
@@ -222,15 +230,24 @@ async function fetchAll(id) {
   for (let i = 0; i < files.length; i++) await keepAll(files[i], (g) => { got[i] = g; say(); });
 }
 
+// On the GPU what one network hands to the next stays on the GPU: the text
+// for the steps, and the sound from step to step to the vocoder. Only the
+// length of the speech and the finished sound are read back, two waits for
+// the GPU per part instead of one for every step.
+const ON_GPU = {text_encoder: {text_emb: 'gpu-buffer'}, vector_estimator: {denoised_latent: 'gpu-buffer'}};
 async function sessions(provider, alive) {
   const made = [];
+  took.read = took.widen = took.create = 0;
   try {
     for (const name of NETWORKS) {
       // A network is handed over and let go before the next is read: all four at once would not fit a phone.
       const graph = await (await cachedFetch(home + name + '.onnx')).arrayBuffer();
       const weights = await widened(home + name + '.f16.data');
+      const t = Date.now();
       made.push(await ort.InferenceSession.create(graph, {executionProviders: [provider], graphOptimizationLevel: 'all',
+        ...(provider === 'webgpu' && ON_GPU[name] ? {preferredOutputLocation: ON_GPU[name]} : {}),
         externalData: [{path: name + '.data', data: new Uint8Array(weights.buffer)}]}));
+      took.create += Date.now() - t;
       alive();
     }
   } catch (e) {
@@ -262,7 +279,8 @@ async function build(id) {
       }
       const t0 = Date.now();
       made = await sessions(provider, alive);
-      const e = {cfg, indexer, dp: made[0], enc: made[1], est: made[2], voc: made[3], provider, makeMs: Date.now() - t0};
+      const e = {cfg, indexer, dp: made[0], enc: made[1], est: made[2], voc: made[3], provider, makeMs: Date.now() - t0,
+                 readMs: took.read, widenMs: took.widen, createMs: took.create};
       // A provider that takes the networks but speaks nonsense (or nothing) is no provider: one word decides.
       const style = await loadStyle('F1.json');
       const t1 = Date.now();
@@ -429,19 +447,25 @@ async function infer(e, text, lang, style, steps, speed) {
   const textMask = new ort.Tensor('float32', new Float32Array(tagged.length).fill(1), [1, 1, tagged.length]);
   const duration = (await e.dp.run({text_ids: textIds, style_dp: style.dp, text_mask: textMask})).duration.data[0] / speed;
   const textEmb = (await e.enc.run({text_ids: textIds, style_ttl: style.ttl, text_mask: textMask})).text_emb;
+  const gone = (t) => { if (t && t.location === 'gpu-buffer') { try { t.dispose(); } catch (_) { /* gone */ } } };
   const rate = e.cfg.ae.sample_rate, chunk = e.cfg.ae.base_chunk_size * e.cfg.ttl.chunk_compress_factor;
   const length = Math.max(1, Math.floor((Math.floor(duration * rate) + chunk - 1) / chunk));
   const dim = e.cfg.ttl.latent_dim * e.cfg.ttl.chunk_compress_factor;
-  let latent = new Float32Array(dim * length);
-  for (let i = 0; i < latent.length; i++) latent[i] = noise();
+  const start = new Float32Array(dim * length);
+  for (let i = 0; i < start.length; i++) start[i] = noise();
+  let latent = new ort.Tensor('float32', start, [1, dim, length]);
   const latentMask = new ort.Tensor('float32', new Float32Array(length).fill(1), [1, 1, length]);
   const total = new ort.Tensor('float32', Float32Array.from([steps]), [1]);
-  for (let step = 0; step < steps; step++) {
-    const out = await e.est.run({noisy_latent: new ort.Tensor('float32', latent, [1, dim, length]), text_emb: textEmb, style_ttl: style.ttl,
-                                 latent_mask: latentMask, text_mask: textMask, current_step: new ort.Tensor('float32', Float32Array.from([step]), [1]), total_step: total});
-    latent = Float32Array.from(out.denoised_latent.data);
-  }
-  const wav = (await e.voc.run({latent: new ort.Tensor('float32', latent, [1, dim, length])})).wav_tts.data;
+  let wav;
+  try {
+    for (let step = 0; step < steps; step++) {
+      const out = await e.est.run({noisy_latent: latent, text_emb: textEmb, style_ttl: style.ttl,
+                                   latent_mask: latentMask, text_mask: textMask, current_step: new ort.Tensor('float32', Float32Array.from([step]), [1]), total_step: total});
+      gone(latent);
+      latent = out.denoised_latent;
+    }
+    wav = (await e.voc.run({latent})).wav_tts.data;
+  } finally { gone(latent); gone(textEmb); }
   // The vocoder fills its last chunk; the speech is as long as the model said.
   const samples = Math.min(wav.length, Math.max(1, Math.floor(duration * rate)));
   return Float32Array.from(wav.subarray ? wav.subarray(0, samples) : Array.prototype.slice.call(wav, 0, samples));
@@ -532,7 +556,8 @@ async function handle({type, id, text, model, rate, lang, steps}) {
     if (type === 'warm') {
       const e = await getEngine(id);
       await loadStyle(model);
-      postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads, provider: e.provider, makeMs: e.makeMs, probeMs: e.probeMs});
+      postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads, provider: e.provider, makeMs: e.makeMs, probeMs: e.probeMs,
+                   readMs: e.readMs, widenMs: e.widenMs, createMs: e.createMs});
       return;
     }
     if (type === 'speak') {

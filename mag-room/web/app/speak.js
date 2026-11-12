@@ -321,7 +321,7 @@
     if (piper.loading.has(v.model)) return piper.loading.get(v.model);
     const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then((m) => { piper.ready.add(v.model); voiceState.provider = m?.provider || voiceState.provider; shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
+      .then((m) => { piper.ready.add(v.model); voiceState.provider = m?.provider || voiceState.provider; shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, read_ms: m.readMs | 0, widen_ms: m.widenMs | 0, create_ms: m.createMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
       .catch(() => {
         report({ warm_fail: 1, warm_ms: Math.round(performance.now() - began) });
         // Not there yet (a broken connection, a full device): it is tried again in a while, by itself.

@@ -773,8 +773,12 @@ Figures on two legs move with recorded motions (`motion.py`,
 nearest pose, feet that stand stay where they stand, a free `pose` uses IK
 on the figure's own arm. A fight (kick, punch, attack) knocks the target
 away in an arc. Animals move by a worked-out gait (`animal.py`). Parts of a
-thing (a lid, a door, a turret) are cut at their seam and turn about a
-hinge. A figure that speaks or shows a feeling gets a face (`face.py`:
+thing (a lid, a door, a turret, a drawer) are found on the mesh alone: a
+seeded watershed over the faces, from the middle of the side against the
+thing's inner half, whose border lies on the folds of the surface (grooves,
+steps, inner creases); without such a border the side is cut by a plane at
+the seam of its cross-section. A part turns about a hinge on its edge,
+slides out (a drawer) or spins about the middle of its edge (a turret). A figure that speaks or shows a feeling gets a face (`face.py`:
 MediaPipe's face landmarker, pinned in `ops/scene/face`, else the head's
 proportions). Its lips follow the sounds of what is said, not the letters:
 `phonemes.py` (pure Python, no packages, in Blender's Python) turns German

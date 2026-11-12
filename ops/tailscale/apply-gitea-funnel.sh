@@ -414,7 +414,10 @@ run_cmd install -m 0644 "$here/mag-tailscale-cert.service" "$systemd_dir/mag-tai
   die 1 'install mag-tailscale-cert.service'
 run_cmd install -m 0644 "$here/mag-tailscale-cert.timer" "$systemd_dir/mag-tailscale-cert.timer" ||
   die 1 'install mag-tailscale-cert.timer'
-sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
+# The boot-time retry runs the deployed release, never a working checkout.
+unit_root=/opt/mag-stack/current
+[[ -x $unit_root/ops/tailscale/apply-gitea-funnel.sh ]] || unit_root=$root
+sed "s#@ROOT@#$unit_root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
 install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.timer"
 run_cmd systemctl daemon-reload || die 1 'systemctl daemon-reload'
 run_cmd systemctl enable mag-tailscale-cert.timer || die 1 'enable mag-tailscale-cert.timer'

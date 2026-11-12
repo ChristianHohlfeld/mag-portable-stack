@@ -1,43 +1,206 @@
 # MAG architecture
 
 One home server, one user (Chris, phone and desktop), one room, two bots.
+This document describes the processes, how a request travels, where state
+lives and what happens on a restart. Installation is in
+[INSTALL.md](INSTALL.md), day-to-day operation in
+[OPERATIONS.md](OPERATIONS.md), the rules for changes in
+[`AGENTS.md`](../AGENTS.md).
+
+- [Processes and ports](#processes-and-ports)
+- [Request flow](#request-flow)
+- [CPU, memory and the MI50](#cpu-memory-and-the-mi50)
+- [The room](#the-room-mag-roomnative-c17-one-process)
+- [Models](#models-opsmodels)
+- [Audit layer](#audit-layer-opsaudit)
+- [Bot VMs](#bot-vms)
+- [The MI50 queue: 3D, pictures, videos](#the-mi50-queue-opsidol)
+- [Scenes](#scenes-opsscene)
+- [Dictation](#dictation-opsstt)
+- [Reading aloud](#reading-aloud-opstts)
+- [Backups](#backups-opsbackup)
+- [Gitea and CI](#gitea-and-ci)
+- [Deploy](#deploy-opsdeploysh)
+- [Reboot and restart behaviour](#reboot-and-restart-behaviour)
+
+## Processes and ports
 
 ```
-phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ── magroom :8766
-                                                                        │
-                    bot VMs (KVM, user bot) ── bridge 192.168.122.1:8767┤
-                    mag-audit-gateway :8080 ── llama-server lena :8191 (NUMA0)
-                                            └─ llama-server noah :8192 (NUMA1)
-                    mag-modeld (download, verify, start)   /run/mag-models/status.json
-                    mag-idol :8793 (photo to 3D on the MI50)
-                    mag-scene :8795 (scenes from 3D models, Blender on the CPU)
-                    mag-browser-webrtc :18784 (live view of the VM browsers)
-                    mag-stt :8194 (speech to text, cores 28-55)
+ phone / desktop on the tailnet
+   https://mag.stardenburg.de, https://<name>.bot.stardenburg.de
+        │
+        ▼
+ tailscaled  :443 on the Tailscale address (raw TCP forward, PROXY v2)
+        │
+        ▼
+ nginx  127.0.0.1:4443  TLS, SNI: room, bot sites, Gitea
+        │  auth_request /_mag_whois ──► magroom /_internal/tailscale/whois
+        │                                  └─► tailscaled LocalAPI (whois)
+        ▼
+ magroom  127.0.0.1:8766 (page, API, event stream)        CPUs 28-55
+   │       192.168.122.1:8767 (bridge for the bot VMs)
+   │
+   ├─► mag-audit-gateway 127.0.0.1:8080 ─┬─► llama-server lena :8191  NUMA0, cores 0-13
+   │                                     └─► llama-server noah :8192  NUMA1, cores 14-27
+   ├─► /run/mag-models/status.json, /var/lib/mag-models/control/ ◄── mag-modeld
+   ├─► mag-idol    127.0.0.1:8793  one queue on the MI50 (3D, pictures, videos)
+   ├─► mag-scene   127.0.0.1:8795  Blender on the CPU
+   ├─► mag-stt     127.0.0.1:8194  speech to text
+   ├─► mag-browser-webrtc 127.0.0.1:18784 (offers), UDP :18783 (VMs)
+   ├─► sudo magbot-guest-run / magbot-agent-ctl / magbot-netmode ─► magbot ─► libvirt
+   └─► outbound web (search, plugins) through mag-audit-webproxy :8888
+
+ bot VMs magbot-agentN on virbr0 (192.168.122.0/24) reach only 192.168.122.1:
+   8767 room bridge · 8091 site publisher · 3001 Git gateway ─► Gitea 127.0.0.1:3000
+   8888 audit web proxy · 8889 browser CONNECT · 53 DNS · UDP 18783 live link
 ```
 
-## Room (`mag-room/native`, C++17, one process)
+| Unit | Binary / script | Listens | Runs as | CPUs |
+| --- | --- | --- | --- | --- |
+| `mag-120.service` | `/opt/mag-stack/current/bin/magroom` | 127.0.0.1:8766, 192.168.122.1:8767 | `magbot` | 28-55 |
+| `mag-audit-gateway.service` | `/opt/mag-audit/bin/mag-audit-gateway` | 127.0.0.1:8080 | `mag-audit` | any |
+| `mag-audit-webproxy.service` | mitmproxy in `/opt/mag-audit/venv` | :8888 (audited), :8889 (CONNECT only) | `mag-audit` | any |
+| `mag-audit-nft.service` | `nft -f /etc/nftables.d/mag-audit.nft` | | root | |
+| `mag-modeld.service` | `/usr/local/lib/mag-models/mag-modeld` | | root | 28-55 |
+| `mag-model@lena.service` | `/usr/local/lib/mag-models/run.sh lena` | 127.0.0.1:8191 | `chris` | 0-13 |
+| `mag-model@noah.service` | `/usr/local/lib/mag-models/run.sh noah` | 127.0.0.1:8192 | `chris` | 14-27 |
+| `mag-model-fetch@<bot>-<kind>.service` | `/usr/local/lib/mag-models/fetch.sh` | | `chris` | 28-55 |
+| `mag-browser-webrtc.service` | `/opt/mag-stack/current/bin/mag-browser-webrtc` (Go) | 127.0.0.1:18784, UDP :18783 | `magbot` | any |
+| `mag-idol.service` | `ops/idol/worker.py` | 127.0.0.1:8793 | `chris` | 28-55 |
+| `mag-scene.service` | `ops/scene/worker.py` | 127.0.0.1:8795 | `magbot` | 28-55 |
+| `mag-stt.service` | `/opt/mag-stt/bin/mag-stt` | 127.0.0.1:8194 | `magbot` | 28-55 |
+| `mag-bots-publish.service` | `/usr/local/lib/mag-bots/mag-bots-publish` | 192.168.122.1:8091 | root | any |
+| `mag-agents-network.service` | `ops/firewall.sh` (loads `ops/mag-agents.nft`) | | root | |
+| `mag-git-gateway.socket` | `systemd-socket-proxyd` to 127.0.0.1:3000 | 192.168.122.1:3001 | dynamic | |
+| `gitea.service` | `/usr/local/bin/gitea` | 127.0.0.1:3000 (HTTP), 127.0.0.1:2222 (SSH) | `git` | |
+| `mag-gitea-runner.service` | `/usr/local/bin/gitea-runner` | | `mag-runner` | 42-55 |
+| `nginx.service` | nginx | 127.0.0.1:4443 | `www-data` | |
+| `tailscaled.service` | tailscaled | :443 on the Tailscale address | root | |
+| `mag-cpu-tune.service` | cpupower and sysfs writes | | root | |
+
+Timers: `mag-stack-check.timer` (health, every minute),
+`mag-bot-saves.timer` (VM saves, 04:15), the backup timers (see
+[Backups](#backups-opsbackup)), `mag-acme-renew.timer` (room certificate,
+twice a day), `mag-tailscale-cert.timer` (the `ts.net` certificate),
+`mag-gitea-funnel.timer` (re-asserts the Tailscale serve config),
+`mag-tailscale-egress.timer` (the nft set for `api.tailscale.com`) and
+`mag-agent-drift.timer` (removes half-created bot VMs every 15 minutes).
+
+The phone control daemon `s23ctl` (`devices/s23`, 127.0.0.1:18721) is
+Chris's own service. Nothing here installs or starts it; the room offers the
+phone tools only while its token file exists.
+
+## Request flow
+
+1. A device on the tailnet opens `https://mag.stardenburg.de/`. DNS points
+   at the host's Tailscale address. `tailscaled` owns port 443 there and
+   forwards the raw TLS stream with a PROXY v2 header to nginx on
+   127.0.0.1:4443. The same socket carries the bot sites and Gitea; nginx
+   picks the vhost by SNI.
+2. nginx (`ops/private-access/mag-room.nginx.conf`) admits only tailnet
+   addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, loopback) and sends
+   every request first to `auth_request /_mag_whois`. That internal
+   location asks the room's `/_internal/tailscale/whois` with the client
+   address from the PROXY header.
+3. The room (`auth.hpp`) asks tailscaled's LocalAPI who owns that address,
+   and answers with identity headers plus an HMAC proof. nginx copies them
+   onto the proxied request; client-supplied `X-Tailscale-*` headers are
+   overwritten. The room accepts an identity only with a valid proof, and
+   only if the login is listed in `owners` of
+   `/var/lib/magbot/room/access.json` (re-read when the file changes).
+   There are no guests. A loopback request without identity is "local": it
+   may read and chat, nothing destructive.
+4. The room calls the models only through `mag-audit-gateway`
+   (127.0.0.1:8080). The gateway picks the server by the bot's slot
+   header and writes every request and answer to the audit log. The nft
+   table `mag_audit` rejects any other local user that tries to reach
+   ports 8191/8192 directly.
+5. The room's own outbound web traffic (`web_search` through Brave, remote
+   MCP plugins) goes through the audit web proxy on 127.0.0.1:8888, which
+   logs it fully. The trust store for that is
+   `/etc/mag-audit/ca-bundle.pem`.
+
+`/readyz` is served without the whois step, so the deploy can probe it.
+App shell, service worker, manifest and API responses are `no-store`; the
+event stream is not buffered.
+
+## CPU, memory and the MI50
+
+The host has two NUMA nodes. Physical cores 0-27 belong to the models;
+everything else runs on CPUs 28-55.
+
+| CPUs | What |
+| --- | --- |
+| 0-13, memory of node 0 | Lena's llama-server (`numactl --physcpubind --membind` in `ops/models/run.sh`) |
+| 14-27, memory of node 1 | Noah's llama-server |
+| 28-55 | the room, mag-modeld, downloads, mag-idol, mag-scene (Blender), mag-stt, SAM 2 and depth estimation, every bot VM's vCPUs and its QEMU emulator thread (`vcpupin`/`emulatorpin` at spawn), VM saves, builds and deploys |
+| 42-55, memory of node 1 | backups (`numactl --physcpubind=42-55 --membind=1`, 15 % CPU quota) and the Gitea Actions runner |
+
+`mag-cpu-tune.service` runs before the models: performance governor,
+uncore frequency fixed at its maximum, energy bias 0, C1E disabled.
+
+The AMD MI50 belongs to `mag-idol` alone. No bot model offloads to it: the
+llama.cpp runtime is built without a GPU backend
+(`ops/models/build-runtime.sh`) and `ops/ci/check.sh` refuses GPU flags in
+`models.json`. `mag-scene` has `PrivateDevices=true`. The card's power cap
+is 72 W: `ops/idol/power-cap.sh` runs as `ExecStartPre` of `mag-idol` and
+only ever lowers the cap to 72 W, never raises it. Every stage that uses
+the card holds the flock `/var/lib/mag-idol/gpu.lock`.
+
+## The room (`mag-room/native`, C++17, one process)
 
 | File | Responsibility |
 | --- | --- |
-| `util.hpp` | time, ids, atomic files, subprocess with streamed output and cancel |
+| `magroom.cpp` | wiring |
+| `util.hpp`, `common.hpp`, `json.hpp` | time, ids, atomic files, subprocess with streamed output and cancel, JSON |
 | `http.hpp` | thread-per-connection HTTP/1.1 server, file ranges, libcurl client |
 | `auth.hpp` | Tailscale LocalAPI whois for nginx, HMAC proof, owner check, CSRF |
-| `room.hpp` | configuration, event bus, the message store, bots, settings |
+| `room.hpp`, `room_model.hpp` | configuration, event bus, the message store, bots, settings |
 | `llm.hpp` | llama-server client through the audit gateway: chat stream, slot actions; what a model wrote made fit for the chat |
-| `engine.hpp` | who answers when: turns, append-only prompt log, context budget, PASS |
+| `engine.hpp` | who answers when: turns, append-only prompt log, context budget, PASS, reset and restore of a bot |
+| `group_dispatcher.hpp` | pure helpers of the group dialogue (tested by `test_group_dispatcher.cpp`) |
 | `tools.hpp` | tool schemas and dispatch |
-| `vm.hpp` | guest exec with live output, file writes, browser controller, VM tokens |
+| `vm.hpp`, `guest_pty.hpp`, `browser_udp.hpp`, `browser_recovery.hpp` | guest exec with live output, file writes, browser controller, terminal, VM tokens |
 | `site.hpp` | bot web pages: HTML blocks and `www` files published on the bot's site, shown as live previews |
-| `idol.hpp` | photo-to-3D jobs as room messages |
+| `idol.hpp` | MI50 jobs (3D, pictures, videos) as room messages |
 | `scene.hpp` | scenes the bots build from 3D models, as room messages |
 | `mcp.hpp` | plugins: remote MCP servers, their tools per bot, approvals |
-| `push.hpp` | Web Push (VAPID) |
-| `api.hpp` | HTTP routes, event stream, VM bridge |
-| `magroom.cpp` | wiring |
+| `backup.hpp` | backup on request: starts it and reports its state |
+| `gitea_account.hpp` | the bots' Gitea accounts |
+| `push.hpp`, `push_core.hpp` | Web Push (VAPID) |
+| `api.hpp` | HTTP routes, event stream, VM bridge, file folder |
 
-Helper binaries: `mag-modeld` (model supervisor), `mag-audit-gateway`,
-`magbot` (`vm.cpp`: VM lifecycle and guest exec), `mag-browser` (controller
-inside each VM), `mag-browser-webrtc` (Go, live view gateway).
+Other binaries built from this tree: `mag-modeld`, `mag-audit-gateway`,
+`magbot-native` (installed as `/usr/local/bin/magbot`, from `vm.cpp`),
+`mag-browser` (controller inside each VM), `mag-bots-publish`
+(`ops/bots/publishd.cpp`), `mag-stt`, `mag-browser-webrtc` (Go,
+`mag-room/webrtc`) and `s23ctl` (`devices/s23`).
+
+The page is plain JavaScript without a build step (`mag-room/web`):
+`core.js` (store and live connection), `messages.js` (timeline),
+`composer.js`, `mention.js`, `dictate.js` and `capture.js` (dictation),
+`speak.js` (reading aloud), `viewer3d.js` (WebGL2 viewer), `live.js` (VM
+browser and terminal), `files.js` (file folder), `panels.js` (header and
+the settings sheet). Its few libraries (marked, DOMPurify, highlight.js,
+xterm.js, the Inter font) are vendored in `mag-room/web/static`; the page
+loads nothing from outside the release.
+
+### State
+
+Everything the room keeps is below `/var/lib/magbot/room` (`STATE`):
+
+| Path | Content |
+| --- | --- |
+| `messages/<id>.json` | one file per message |
+| `files/` | attachments; each belongs to exactly one message |
+| `text/<file>.txt` | text read from a document |
+| `wire/<bot>.json` | the bot's append-only prompt log |
+| `agents.json`, `bots.json` | the bots: name, VM, model, pause, plugins, reset or restore in progress |
+| `settings.json` | room settings |
+| `skills.json` | the bots' shared notebook of skills |
+| `mcp/servers.json`, `mcp/<id>.secret` | plugins and their tokens (0600) |
+| `push_subscriptions.json` | Web Push subscriptions |
+| `access.json` | owner logins |
 
 ### One message model
 
@@ -84,11 +247,13 @@ whether a message of the turn exists yet). The mark goes when the turn ends,
 unless the room itself is going down. A room that starts and finds it knows
 that a restart cut the turn off: if Chris had asked and nothing of the
 answer could be seen yet, the turn runs again once the model is ready (at
-most three times for one turn), for the bots his message had named.
+most three times for one turn), for the bots his message had named. An
+answer that was cut off in view stays as it is ("Gestoppt").
 
-Each llama-server has one slot, no host prompt cache and no context
-checkpoints. The only slot state ever written to disk is the evaluated system
-prefix of the day (`prefix-<hash>-<date>.bin`).
+Each llama-server has one slot (`--parallel 1`), no host prompt cache
+(`--cache-ram 0`) and no context checkpoints. The only slot state ever
+written to disk is the evaluated system prefix of the day
+(`/var/lib/mag-models/slots/prefix-<hash>-<date>.bin`).
 
 ### What a model wrote
 
@@ -104,22 +269,54 @@ room does not rely on that going well (`llm.hpp`):
 - **Circles.** A text whose end is the same passage three times over (or the
   same long passage a fourth time) is a model that lost its way: the room
   closes the connection, which ends the generation, and keeps the text up to
-  the end of the first round (`circles`). Inside an open code block and in
-  tool-call arguments equal lines are normal, so the bar is far higher there.
+  the end of the first round. Inside an open code block and in tool-call
+  arguments equal lines are normal, so the bar is far higher there.
   Thoughts in circles are asked once more from the start, then the answer
   ends with one line saying so.
-- **Tool calls.** With Gemma the server's grammar reads a string argument up
-  to the model's own quote token. A model that closes a string with a plain
-  quote stays inside that string for the grammar: it cannot end its turn and
-  writes markup and its answer into the arguments until its tokens run out.
-  The room ends the generation at the first tag inside arguments; what the
-  model meant stands in front of it and is called (`mend`). Arguments that are
-  no JSON object after that are stored as `{}` and the tool is not run, the
-  model is told why. Invalid arguments never enter a prompt log: the server
-  refuses every later request whose history holds them. A log from before is
-  repaired when it is read.
-- **Errors.** What an answer ended with is one short line (`short_error`); a
-  server error may quote a whole generation.
+- **Tool calls.** The room ends the generation at the first tag inside
+  tool-call arguments; what the model meant stands in front of it and is
+  called. Arguments that are no JSON object after that are stored as `{}`
+  and the tool is not run; the model is told why. Invalid arguments never
+  enter a prompt log: the server refuses every later request whose history
+  holds them.
+- **Errors.** What an answer ended with is one short line; a server error
+  may quote a whole generation and is never shown.
+
+### Conversation rules
+
+The execution contract is in [`AGENTS.md`](../AGENTS.md). In short:
+
+- A human message without an addressee is answered by all active bots.
+  `@Lena …` asks Lena alone; the other bot gets no turn and reads the
+  message as context. Several mentions or `@alle` mean all of them. A
+  mention is stored as the bot's id, so it survives a rename.
+- A visible bot message may be answered by the other bot. Bots keep talking
+  among themselves; the setting "Bots untereinander"
+  (`MAG_ROOM_BOT_ROUNDS`, 0 = unlimited) bounds the rounds, and the room
+  rests after `MAG_ROOM_BOT_FUSE` (24) bot turns in a row without a word
+  from Chris.
+- `PASS` is invisible; a repeated answer or a bare acknowledgement counts as
+  PASS. When all bots pass in a row the room rests.
+- New human input and Stop preempt bot rounds at once.
+- One request per llama-server at a time.
+- Tool work outside dialogue continues on its own only after a successful
+  tool result with distinct progress and `[[MAG:WEITER]]`.
+- A message Chris sends while a bot is working on his earlier request is
+  handed to that bot at its next step.
+- A paused bot gets no turn and makes no model request; it reads what it
+  missed when it is back. A stopped bot's model server is off.
+
+### Tools
+
+The list is fixed and in a stable order, so the prompt prefix stays
+cacheable (`tools.hpp`). With a VM: `shell`, `write_file`, `browser_open`,
+`browser_read`, `browser_click`, `browser_type`, `browser_scroll`,
+`browser_back`, `share_file`. For every bot: `web_search`, `read_image`,
+`remember`, `skill`, `backup`, `models_3d`, `image_generate`,
+`photo_to_3d`, `video_generate`, `scene_3d`. The phone tools `s23_status`,
+`s23_screenshot`, `s23_tap`, `s23_swipe`, `s23_text`, `s23_key` are offered
+only while Chris runs the phone's control daemon. Plugin tools follow as
+`mcp__<server>__<tool>`.
 
 ### Trash button
 
@@ -129,45 +326,15 @@ erases the slot of every llama-server (`POST /slots/0?action=erase`) and
 restores only the prefix state. No model is reloaded and nothing of the old
 conversation can come back; the next answer starts from a warm prefix.
 
-### Conversation rules
+### The chat's files
 
-See the execution contract in `AGENTS.md`. In short: a human message without
-an addressee is answered by all active bots (`@name` addresses one); a
-visible bot message may be answered by the other bot; `PASS` is invisible and
-when all bots pass the room rests; the setting "Bots untereinander" bounds
-the bot rounds; new human input and Stop preempt bot rounds at once; one
-request per llama-server at a time; tool work continues on its own only after
-a successful tool result with distinct progress and `[[MAG:WEITER]]`.
-A message Chris sends while a bot is working on his earlier request is handed
-to that bot at its next step. It counts as a new request there (a bot builds
-one scene per request, so it may build another one now), and the turn the
-message queued does not answer it a second time.
-
-### Bot VMs
-
-Each bot has its own KVM guest. The room reaches it only through two narrow
-sudo wrappers (`magbot-guest-run`, `magbot-agent-ctl`). `magbot exec --live`
-relays the output of a command while it runs. A VM reaches the room only on
-the bridge listener, with a token derived per VM, so it cannot act as the
-other bot. "Internet für Bots" off is a host firewall switch
-(`magbot-netmode`), not a prompt rule.
-
-In the bot's panel the owner has that browser live, a real terminal and a file
-view of the bot's home (`mag-room/web/app/live.js`).
-
-Browser and terminal use the VM's realtime link. `mag-browser` in the VM
-captures its Chrome as JPEG frames (while someone is subscribed, about five a
-second), takes pointer, wheel, key and text input, and holds one Bash PTY as
-user `bot` that outlives every viewer. It talks to `mag-browser-webrtc` on the
-host over UDP, authenticated with a key per VM. The gateway hands that to the
-page as WebRTC data channels: `frames` (unreliable, a late frame is dropped),
-`control` (input for the page) and `console` (the PTY in both directions, with
-a heartbeat every 2 s so a dead session is noticed and reconnected). The room
-only passes the SDP offer on (`POST /api/browser-live/offer`). The page shows
-the frames on a canvas and runs xterm.js (vendored in `web/static`) on the PTY.
-Where UDP cannot get through, the browser view falls back to pictures over
-HTTPS (`/api/screen`) and the terminal offers single commands
-(`/api/vm/<bot>/run`); the file view always goes through the wrappers.
+The folder button in the header opens every file of the chat in one sheet
+(`mag-room/web/app/files.js`): uploads, pictures, models, scenes, films,
+videos, audio and documents, newest first, grouped by kind, with a preview,
+a download and a link back to the message. `GET /api/files` lists them;
+`GET /api/files.zip?files=…` streams several as one uncompressed ZIP whose
+length is known in advance. The files stay where they are; the folder is
+only a view.
 
 ### Documents
 
@@ -178,44 +345,6 @@ text once and keeps it in `STATE/text/<file>.txt` (removed with the message):
 their XML reduced to paragraphs. The bots get up to 12,000 characters of each
 document inline; the whole text is copied to the bot's VM as `<name>.txt`.
 
-### Dictation
-
-The page captures the microphone in an AudioWorklet (`web/app/capture.js`:
-any device rate to 16 kHz mono PCM, 100 ms frames, the last 400 ms kept while
-the microphone is open but idle) and `web/app/dictate.js` posts what has been
-spoken since the last request to `POST /api/stt/live?sid=&seq=`, one request
-after the other; `end=1` closes the dictation. The room only checks the
-caller and passes the chunk on to `mag-stt` (`native/mag_stt.cpp`).
-
-`mag-stt` keeps one recognizer loaded (transcribe.cpp, Parakeet TDT 0.6B in
-primeLine's German fine-tune, Q8 GGUF, 16 threads on cores 28-55). The model
-hears a recording as a whole in about 1/20 of its length, so live text comes
-from decoding the open part of the recording again whenever at least 200 ms
-of new audio are there. Every answer carries `committed` and `partial`:
-
-- shown while speaking: words heard to their end (the newest one once two
-  decodes agree on it), a full stop once silence follows it;
-- committed, and the audio dropped: a sentence both of the last two decodes
-  have and that is followed by 0.9 s of silence (2.5 s without a full stop),
-  or that lies at least 1.5 s back once more than 12 s are open;
-- chunks are numbered, so one that is sent again is not heard twice.
-
-`POST /api/stt` takes a finished recording in any format ffmpeg reads and
-answers with its text. `ops/stt/bootstrap.sh` builds the pinned recognizer
-and fetches the pinned model once; `ops/stt/install.sh` is the deploy layer.
-CI builds `mag-stt` without the recognizer and runs its protocol on a fake
-engine whose "speech" spells its own transcript.
-
-### Bot sites
-
-A bot's site is `<name>.bot.stardenburg.de`, tailnet only. nginx hands every
-host of that zone to the room; the room resolves the name (the current one
-serves, an earlier name, the bot id or the VM name redirect) and sends the
-files the bot's VM published (`/var/lib/mag-bots/www/<vm>`, uploaded by the VM
-through `mag-bots-publish`). A finished HTML block of an answer, or a file
-written below `/home/bot/www`, is published and framed from that site in the
-chat. The room page's policy allows frames from that zone and nothing else.
-
 ### What the bots read
 
 Every finished message of the others, with what belongs to it: small text
@@ -224,17 +353,18 @@ gets the image itself (a 1280 px copy, each image right in front of its own
 `[Bild …]` line); once per picture it writes down what it shows, asked on a
 branch of its prompt log that is not appended, with the picture again in
 front of the question; the description begins with what the picture shows in
-one to three words and a colon ("Roter Stuhl: …"). Pictures are told apart by their content (SHA256): a
-picture posted twice has one description, and `POST /api/file/<f>/describe`
-(owner) has it made anew for every copy. A bot without eyes waits briefly
-for the description and gets a renewed one as an addendum.
+one to three words and a colon ("Roter Stuhl: …"). Pictures are told apart
+by their content (SHA256): a picture posted twice has one description, and
+`POST /api/file/<f>/describe` (owner) has it made anew for every copy. A bot
+without eyes waits briefly for the description and gets a renewed one as an
+addendum.
 
 `POST /api/upload` follows a JPEG, PNG or WebP to its end; one that ends in
 its picture data is answered with 422 `truncated`. The page reads the file
 again twice (a phone may still be writing a photo it has just taken) and
 then sends it with `force=1`, which stores it marked `cut`. Before the GPU
 stage the Idol runner measures how much of such a photo is missing and
-refuses it in words (`MAG-ERROR`), which is what the 3D message then shows.
+refuses it in words, which is what the 3D message then shows.
 
 ### Plugins (MCP)
 
@@ -250,447 +380,446 @@ means no plugin outside is reached. A token lives in `STATE/mcp/<id>.secret`
 (0600) and is sent as `Authorization: Bearer` or a header of the owner's
 choice; it never reaches the page, a prompt or a log.
 
-A bot's plugin tools are named `mcp__<server>__<tool>` and follow the room's
-own in its tool list (at most 64); what the owner wrote about a plugin and
-what the server says about itself stand in the system prompt. Both are part
-of the prompt prefix, so they change only with a binding or a refresh. Every
-bot has its own session per server. A call of a tool that is not read-only
-holds the bot's turn: its step carries `approval` (`id`, tool, arguments),
-the page shows "Erlauben / Immer erlauben / Ablehnen"
-(`POST /api/approval/<id>`), a push goes out, and without an answer it runs
-out (`MAG_MCP_APPROVAL_S`, 15 minutes). "Immer" is kept in the binding; a
-binding set to `auto` asks nothing. A server that works with the owner's own
-connector token (`auth: connector`) is sent `X-MCP-Readonly` and never
-changes anything unasked.
+A bot's plugin tools follow the room's own in its tool list (at most 64);
+what the owner wrote about a plugin and what the server says about itself
+stand in the system prompt. Both are part of the prompt prefix, so they
+change only with a binding or a refresh. A call of a tool that is not
+read-only holds the bot's turn: its step carries `approval`, the page shows
+"Erlauben / Immer erlauben / Ablehnen" (`POST /api/approval/<id>`), a push
+goes out, and without an answer it runs out after 15 minutes
+(`MAG_MCP_APPROVAL_S`). A binding set to `auto` asks nothing. A server that
+works with the owner's own connector token (`auth: connector`) is sent
+`X-MCP-Readonly` and never changes anything unasked.
 
-### Resetting a bot
+### Skills
 
-`POST /api/vm/<bot>/reset` (`Engine::reset_vm`) puts a bot back to its first
-day. The steps, each of which can be done again: `stop` (the turn is
-cancelled, nothing waits for it), `memory` (the bot's memories, its prompt
-log, which starts again behind the last message, and its slot), `vm`
-(`magbot-agent-ctl reset agentN`). The state is the `reset` object of the
-bot's record (`state` running or failed, `step`, `vm`, `error`): a room that
-starts with a running reset goes through it again from the top, and the VM
-check at start-up leaves such a bot its VM name. While it runs the bot gets
-no turn; what was written to it meanwhile is answered afterwards. A pause
-and a stopped model are not touched.
+`skill` (list, read, save) is the bots' shared notebook in
+`STATE/skills.json`: how they do recurring work, the steps, how to check the
+result and what needs Chris's approval. A skill grants nothing; credentials
+in a skill are refused. Chris reads and removes skills in the settings
+(`/api/skills`).
 
-`magbot reset` holds the lifecycle lock, asks the host's admission first
-(so a refusal costs nothing), then tears down whatever is there (a domain in
-any state, a directory with or without a disk, a damaged record, the rest of
-a spawn that was cut off) without archiving, and spawns under the same name
-with the same size. `site.sh reset` deletes what the bot published and gives
-it its first page again. The Gitea account of the VM name stays (its
-credential is issued anew), as do its repositories.
+## Models (`ops/models`)
 
-## Photo to 3D (`ops/idol`)
+`models.json` declares both bots: the GGUF (path, Hugging Face URL, size,
+SHA256), Lena's MTP draft model and vision projector, NUMA node, CPUs,
+threads, port, context and sampling arguments, and the pinned llama.cpp
+revision (`runtime.rev`), which `build-runtime.sh` builds CPU-only.
+
+`mag-modeld` is the single owner of the model lifecycle:
+
+- a GGUF that is missing or partial is "downloading": the supervisor starts
+  `mag-model-fetch@<bot>-<kind>.service` (`wget -c`) only when no other
+  process has the file open, and `fetch.sh` takes a lock of its own, so a
+  file has exactly one writer;
+- a file whose size equals the Hugging Face size gets one SHA256 pass and a
+  `<bot>.<kind>.ok` stamp in `/var/lib/mag-models`;
+- a verified model is started as `mag-model@<bot>.service` and watched on
+  `/health`;
+- the state is published in `/run/mag-models/status.json` ("lädt herunter",
+  "wird geprüft", "lädt", "bereit"); control verbs (start, stop, restart,
+  freeze, thaw) arrive as files in `/var/lib/mag-models/control/`, written
+  by the room or by `mag-modeld ctl`.
+
+A model file is never deleted, truncated or rewritten. Lena runs her vision
+projector on the CPU (`--no-mmproj-offload`).
+
+## Audit layer (`ops/audit`)
+
+- `mag-audit-gateway` (C++, `mag_audit_gateway.cpp`) is the only path from
+  the room to the model servers. It logs every request and answer below
+  `/var/log/mag-audit` with hash chains per day; `mag-audit-tail` shows and
+  verifies them.
+- `mag-audit-webproxy` (mitmproxy with `mitm_audit_addon.py`) logs every
+  web access of the room and of the VMs' shells, tools, `apt`, `pip` and
+  `git` on port 8888, bodies included (large ones content-addressed under
+  `/var/log/mag-audit/blobs`). Port 8889 lets the VM browsers through as
+  CONNECT without TLS interception; only host and SNI are logged.
+- `mag-audit.nft` (`mag-audit-nft.service`) enforces it: only root and
+  `mag-audit` reach the model ports; the room user `magbot` and the VM
+  bridge reach the web only through the proxy. `mag-tailscale-egress`
+  keeps a narrow set for `api.tailscale.com`.
+- `vm-proxy-setup.sh` runs inside each VM (through the guest agent) and
+  points its shell tools and Chrome at the proxy with its CA.
+
+## Bot VMs
+
+Each bot has its own KVM guest, bound to the bot's id. The VM name is
+`agentN`, the libvirt domain `magbot-agentN`; the binding never changes with
+a rename.
+
+### Image and disks
+
+`ops/vm/build-golden.sh` builds a reproducible base image from a pinned
+Ubuntu 24.04 cloud image (serial and SHA256 in the script), customised once
+in a throwaway QEMU boot: guest agent, cloud-init, Xvfb, Google Chrome
+stable, the German locale, the audit CA tooling. It is written atomically
+to `/var/lib/libvirt/images/magbot/base/golden.qcow2` (read-only,
+`root:kvm 0440`) with a manifest of what it contains. Chrome and Ubuntu
+updates are not pinnable; their versions are in the manifest.
+
+`magbot spawn` (`vm.cpp`) checks the host's admission limits
+(`/etc/magbot/config.json`, defaults in `vm.cpp`: 2 vCPUs, 16 GiB RAM,
+20 GiB disk per bot), creates a qcow2 overlay
+`bots/<id>/root.qcow2` on the golden image and a cloud-init seed, defines
+the domain with `virt-install`, pins its vCPUs and emulator thread to
+CPUs 28-55, throttles its disk I/O, sets it to autostart, gives it a Gitea
+account, prepares its browser sandbox and points it at the audit proxy.
+`mag-agent-drift.timer` removes half-created VMs that no bot refers to.
+
+### Isolation
+
+- The room reaches a VM only through three narrow sudo wrappers
+  (`/usr/local/sbin/magbot-guest-run`, `magbot-agent-ctl`, `magbot-netmode`;
+  `ops/magbot-guest.sudoers`). Commands run in the guest through the QEMU
+  guest agent as user `bot`. `magbot exec --live` relays output while a
+  command runs.
+- A VM reaches the host only on the bridge address 192.168.122.1, and there
+  only DHCP, DNS, 8767 (room bridge, with a token derived per VM, so it
+  cannot act as the other bot), 8091 (site publisher), 3001 (Git), 8888 and
+  8889 (audit proxies) and UDP 18783 (live link). Forwarding into private,
+  tailnet and link-local ranges is rejected. These rules are the table
+  `inet mag_agents` in `ops/mag-agents.nft`, loaded by `ops/firewall.sh`
+  from `mag-agents-network.service` on every deploy and boot.
+- "Internet für Bots" off is `magbot-netmode offline`: a host nft table that
+  leaves a VM only DHCP, the room bridge, the publisher and the live link.
+
+### Browser and terminal
+
+`mag-browser` in the VM captures its Chrome as JPEG frames (while someone
+is subscribed, about five a second), takes pointer, wheel, key and text
+input, and holds one Bash PTY as user `bot` that outlives every viewer. It
+talks to `mag-browser-webrtc` on the host over UDP, authenticated with a key
+per VM. The gateway hands that to the page as WebRTC data channels:
+`frames` (unreliable, a late frame is dropped), `control` (input) and
+`console` (the PTY in both directions, with a heartbeat every 2 s). The room
+only passes the SDP offer on (`POST /api/browser-live/offer`). The page shows
+the frames on a canvas and runs xterm.js on the PTY (`mag-room/web/app/live.js`).
+Where UDP cannot get through, the browser view falls back to pictures over
+HTTPS (`/api/screen`) and the terminal to single commands
+(`/api/vm/<bot>/run`); the file view (`/api/vm/<bot>/files`) always goes
+through the wrappers.
+
+### Bot sites
+
+A bot's site is `<name>.bot.stardenburg.de`, tailnet only. nginx
+(`ops/bots/mag-bots.nginx.in`) hands every host of that zone to the room;
+the room resolves the name (the current one serves, an earlier name, the bot
+id or the VM name redirect) and sends the files the bot's VM published to
+`/var/lib/mag-bots/www/<vm>` through `mag-bots-publish`. A finished HTML
+block of an answer, or a file written below `/home/bot/www`, is published
+and framed from that site in the chat. The room page's policy allows frames
+from that zone and nothing else. The zone has its own wildcard certificate
+(`ops/bots/issue-wildcard.sh`).
+
+### Reset
+
+`POST /api/vm/<bot>/reset` (`Engine::reset_vm`, the sheet's "Zurücksetzen")
+puts a bot back to its first day. The steps, each of which can be done
+again: `stop` (the turn is cancelled), `memory` (memories, prompt log, slot),
+`vm` (`magbot-agent-ctl reset agentN`). The state is the `reset` object of
+the bot's record; a room that starts with a running reset goes through it
+again from the top. While it runs the bot gets no turn. Name, address,
+model and a pause stay as they were.
+
+`magbot reset` holds the lifecycle lock, asks the host's admission first,
+tears down whatever is there without archiving, and spawns under the same
+name with the same size. `site.sh reset` deletes what the bot published and
+gives it its first page again. The VM's Gitea account and repositories
+stay; its credential is issued anew. A reset leaves the VM's saves alone.
+
+### Saves and restore
+
+A save is the bot's overlay (everything it changed against the golden
+image: files, programs, browser profile, its site) at one moment, written
+compressed with `qemu-img convert -c` to
+`/var/lib/libvirt/images/magbot/saves/<vm>/<stamp>-<kind>/root.qcow2` with
+a `META.json`. A running VM keeps running: an external disk-only snapshot
+(file systems frozen through the guest agent where it answers) makes the
+overlay read-only for the copy, and a shallow block commit takes what was
+written meanwhile back into it. A save that was cut off is settled at the
+next save or restore. The newest four saves per VM are kept
+(`keep_saves`); there must be at least the overlay's size plus 30 GiB free.
+
+- `mag-bot-saves.timer` runs `mag-bot-saves@daily.service`
+  (`magbot save-all daily`) every night at 04:15 Europe/Berlin.
+- The bot's sheet ("Sicherungen der VM") lists the saves
+  (`GET /api/vm/<bot>/saves`), makes one now (`POST /api/vm/<bot>/save`,
+  kind `manual`) and restores one (`POST /api/vm/<bot>/restore`).
+- A restore shuts the VM down, keeps its current disk as a save of kind
+  `vor-wiederherstellung` (a rename, so a restore can be undone), puts the
+  chosen save in place, starts the VM and renews its Git credential,
+  browser sandbox and proxy setup. The bot's turn ends and it gets no turn
+  until the VM is back; what it remembers of the chat stays. The restore is
+  in the bot's record with a token; after a restart of the room it goes on,
+  and `magbot` knows by the token whether it already went through.
+- Saves and restores run as transient units (`magbot-save-agentN`,
+  `magbot-restore-agentN`) on CPUs 28-55, so a restart of the room does not
+  cut them off. One save or restore per bot at a time
+  (`/run/lock/magbot-<vm>.lock`).
+
+## The MI50 queue (`ops/idol`)
 
 `worker.py` keeps one job at a time on the MI50: it is the one queue of
-every job that needs the card (3D, and pictures from words), and the card
-belongs wholly to the job whose turn it is (at its 72 W; "wholly" never means
-more power). A stage that uses the card (`sample`, `shape`, `image`) also
-holds `/var/lib/mag-idol/gpu.lock` (flock) for as long as its process runs,
-across a restart of the worker; anything else that would use the card takes
-the same lock. A stage that finds it taken waits, says "Wartet auf die
-Grafikkarte" in the chat, and is not taken for standing still. A job is a folder below
-`/var/lib/mag-idol/jobs`: `status.json` (state, phase, the running stage's
-process) and the result of every finished stage (`splat.ply` after sampling,
-`mesh.glb`/`mesh.stl` after meshing). A stage runs in its own session with its
-output in a log and its exit code in a file; the unit has `KillMode=process`.
-So a restart of the worker (a deploy) leaves the stage running and the new
-worker follows it again; after a reboot the job starts again at the first
-stage whose result is missing; queued and running jobs are taken up again in
-order at every start. The room mirrors the job into its message (phase k of
-n, the sampler's step and its own estimate) and picks jobs up again after its
-own restart. A job that failed or was cancelled keeps its folder; "Noch
-einmal" at its message (`POST /api/3d/<id>/retry`, the worker's
-`/api/idol/jobs/<id>/retry`) queues it again, and it goes on at the first
-stage whose result is missing, like after a reboot.
+every job that needs the card (3D, pictures from words, videos). A stage
+that uses the card also holds `/var/lib/mag-idol/gpu.lock` for as long as
+its process runs; a stage that finds it taken waits and says "Wartet auf die
+Grafikkarte". A job is a folder below `/var/lib/mag-idol/jobs`:
+`status.json` (state, phase, the running stage's process, its place
+`order`) and the result of every finished stage. A stage runs in its own
+session with its output in a log and its exit code in a file; the unit has
+`KillMode=process`.
 
-A photo with several things in it: before the order, the page asks which
-object is meant ("Objekt wählen": `POST /api/3d/select`, the worker's
-`/api/idol/select`). `objects.py` runs SAM 2 (`facebook/sam2.1-hiera-small`,
-pinned in `install.sh`) on the CPU, cores 28-55, never the MI50: the object
-at the place Chris tapped, or every object by itself (a grid of places, no
-background, nothing twice). A thing Chris names instead is found by a bot
-that sees (`Engine::locate`: the image in front of the question, on a branch
-off its prompt log, answered with a place in per mille), then SAM 2 takes
-that place. The page shows the mask, cuts the photo with it
-(a PNG with alpha) and orders with that: Idol takes the alpha as the
-foreground and does not guess one. "Alle einzeln" orders one normal job per
-object Chris leaves marked. Nothing of a selection is kept on the worker.
+Resumability:
 
-A photo ordered for 3D is one job of the photo as it is, with Idol's own
-foreground; nothing is split or looked at unasked (Chris found the automatic
-splitting too much). Several things of one photo are what "Objekt wählen" is
-for: one tapped or named, every one by itself, or the whole room. Both are
-offered beside the photo before it is sent ("Objekt wählen", "Ganze
-Szene"); "Ganze Szene" opens the same sheet and looks for the room's objects
-at once, so Chris only takes off what does not belong and orders.
+- a restart of the worker (a deploy) leaves the running stage alone and the
+  new worker follows it again;
+- after a reboot a 3D job goes on at its first missing stage (shape, splat,
+  mesh), a picture starts its one stage again, and a video goes on after its
+  last finished step (`state.pt`);
+- queued jobs keep their place: the job whose stage still runs comes first,
+  then the line as it was; up to 32 wait;
+- no stage has a time limit; a stage that stands still for ten minutes (no
+  log output, no CPU) is started again, and after three standstills the job
+  fails in words;
+- a job that failed or was cancelled keeps its folder; "Noch einmal"
+  (`POST /api/3d/<id>/retry`) queues it again at its first missing stage.
+  Chris moves a waiting job with "Nach vorn"/"Nach hinten"
+  (`POST /api/3d/<id>/move`) and cancels it at its message.
 
-"Ganze Szene" is the same with places: `objects.py --scene` also estimates
-how far away every pixel is (Depth Anything V2, the small model for rooms,
-in metres; pinned in `install.sh`; the focal length from the photo's EXIF,
-else a phone's main camera) and gives every object where it stands (x to
-the right of the camera, z away from it, its foot's height above the floor),
-how tall it is, and the room (left, right, back, height, the colours of
-floor and wall). The page orders each object with that (`scene` of the
-order, kept as numbers in `model3d.scene` with a group id). The mesh stage
-notes from where the photo looked at each model (`mesh.json`, the direction
-of the camera `photo.py` found). When no model of a group is under way any
-more (`Api::assemble`, also after a restart, once per group), the models
-that were made become one scene: `tall`, `lift`, `seen_from` and `at` of
-each actor and `room` of the scene are what `scene.py` builds it from. An
-actor is called what the bot that saw its cut-out began that description
-with ("Roter Stuhl", a second one "Roter Stuhl 2"). A cut-out nobody has
-described yet is looked at first (the bots that see describe new pictures
-when they have no turn of their own); after eight minutes the room is put
-together anyway, with "Objekt N" for what is still unnamed. The
-photo is assumed to be taken about level; a camera that looks steeply down
-puts the floor too low.
+The room mirrors each job into its message (phase k of n, the sampler's
+step) and picks jobs up again after its own restart.
 
-No stage has a time limit. The worker ends a stage only when it stands
-still (for ten minutes it neither writes to its log nor uses the processor)
-and starts it again; after three standstills the job fails in words and can
-be taken up again like any failed job.
+### Photo to 3D
 
-The shape stage comes first. Where it made a shape whose picture it covers
-(`front_of`), the model is made from the shape and the photo alone
-(`mesh.py --alone`, `reconstruct_shape`): no splat is sampled, which saves
-the MI50 about a quarter of an hour per job; the model is scaled to about
-one unit at its largest like Idol's, and seen from +z. Only where that does
-not do (`alone.failed`), or for a job that was already sampling when the
-worker started, Idol samples and the mesh is made from splat and shape as
-described next. "Netz neu" makes a model anew from whichever it has.
+A photo ordered for 3D is one job of the photo as it is; nothing is split
+or looked at unasked. The shape stage comes first: TripoSG (`shape.py`, on
+the MI50, in its own environment `~/idol-mi50/triposg/venv` that reuses
+Idol's ROCm torch) makes the whole, closed shape from the cut-out picture.
+Where that shape covers its picture, the model is made from the shape and
+the photo alone (`mesh.py --alone`); no splat is sampled. Only where that
+does not do, Idol samples a splat and the mesh is made from splat and shape.
 
-The shape stage (`shape.py`, on the MI50, in
-its own environment `~/idol-mi50/triposg/venv` that reuses Idol's ROCm torch)
-asks TripoSG (VAST-AI, MIT, code and weights pinned) for the whole, closed
-shape of the thing from the same cut-out picture: Idol's splat is a relief
-seen from the side, TripoSG's shape is a head from every side. It writes
-`shape.ply`; it never costs a job (not installed, failed: the mesh is made
-from the splat as below, and the stage is not tried again for that job).
-`mesh.py` fits the shape onto the splat (`fit_shape`: the 24 ways a box can
-lie, each started with the splat's front on either end of the shape,
-trimmed nearest-point fitting with scale, the splat asked from its side
-only) and uses it when at least half of the splat's points lie on it (a splat has loose flaps at its sides); when it does not,
-the shape stands where the photo's camera (found from the splat) saw it, and
-only without that camera the splat's own shell is used. TripoSG sees its
-picture straight from +z without perspective, a little smaller than its
--1..1 square (`front_of` finds how much smaller from the outlines; some
-things TripoSG turns its own way, so `facing` tries the four turns about
-the upright axis and keeps the one whose outline covers the picture), so the
-shape lies exactly under the picture it was made from: the side the photo
-shows takes the photo's own colours (`shape_photo.png`, the cut-out as fine
-as the photo was taken, up to 4096 px), not the splat's blur with a little
-detail on it; glasses, eyes and letters are as sharp as the photo. What the
-photo did not see takes its colours carried over the surface (`carried`:
-every corner the colour of the nearest seen one along the surface, a step
-sideways in the photo counted three times, softened), so the back of a head
-is the hair's colour, reached over the crown rather than around from the
-cheeks, and the back of a shirt the shirt's. A shape TripoSG's grid left
-open somewhere is closed (`mended`) before it is used. Without a shape the colours come from the splat and the
-photo's fine detail as below. A person (or anything) the photo cuts off at its
-lower edge stands on a clean, flat base there (`based`: `shape.py` notes in
-`shape_cut.json` where the photo ends below the thing, the shape is cut
-level a hair below that line and the cut closed with a flat face), not on
-a ragged edge or a body TripoSG made up beneath it; a cut that would not
-leave a solid is not made.
+The mesh stage (`mesh.py`, CPU) produces closed solids: marching cubes over
+an opacity field, smoothed, decimated to a printable STL and a lighter GLB,
+unwrapped (`unwrap.py`: xatlas with a time limit, else a simple chart
+layout), textured. The side the photo shows wears the photo itself (up to
+4096 px); what the photo did not see takes its colours carried over the
+surface from the nearest seen part. A figure the photo cuts off at its lower
+edge stands on a clean flat base. "Netz neu" makes a model anew from what
+the job has.
 
-The mesh stage (`mesh.py`, CPU) makes the model from the splat, a cloud of
-small flat Gaussians lying on what the photo showed:
+"Objekt wählen": SAM 2 (`objects.py`, `facebook/sam2.1-hiera-small`) on the
+CPU finds the object Chris taps, every object by itself, or a named one
+(found by a bot that sees, on a branch off its prompt log). The page shows
+the mask and orders the cut-out like any photo.
 
-1. `surface.opacity_field`: every Gaussian, none left out, is written into a
-   grid with its own three widths and its own turn. A cell is as opaque as
-   the Gaussians in it together (1 minus the product of what each lets
-   through), so the shell is where that is one half, wherever many or few
-   Gaussians lie.
-2. `surface.body_of`: pores of a cell or two are closed, the grid is flooded
-   from outside, and what the flood does not reach is the body: closed, with
-   no shells or bubbles inside. That leaves the thing as it is: legs apart,
-   arms off its sides, a bowl open. One case it gets wrong: where the
-   Gaussians of a side the photo did not show leave a gap wider than a
-   pore, the flood runs into the thing and leaves only its skin. That is
-   known by what it leaves behind: large rooms walled in by the shell on
-   all six sides (or on all but the underside). Only then are those rooms
-   added, and the tear out to where the shell would run. A thing the flood
-   did not get into is not touched at all. Loose bits fall away; a piece
-   that is big enough is a figure of its own and stays (one photo may show
-   a gnome and a fox).
-3. The surface is taken anew from that body by marching cubes (uniform
-   triangles, no holes), smoothed, and decimated twice: to the faces a
-   printed model may have (the STL), and to the far fewer a shown model
-   needs (the GLB). Both stay solids: closed, every edge between exactly
-   two faces (what decimation breaks is mended, or fewer faces are taken
-   out), faces outwards, no bubble inside, no corner where two sheets only
-   touch. The log line of the stage says `solid`.
-4. The small mesh is unwrapped (`unwrap.py`): xatlas in a process of its own
-   for a limited time, and if it is not done by then the plain way (faces
-   that look the same way and hang together are one chart, laid flat, the
-   charts side by side; a second of work). The texture (2048² for "fast",
-   4096² otherwise) is baked from the splat at every texel the way a splat
-   is drawn: every Gaussian near the texel counts by how much of it lies
-   there, with its own three widths and its own turn. So the colours are
-   as sharp as the splat, however few faces the model has.
-5. The side the photo shows takes its fine detail from the photo itself
-   (`photo.py`). The photo's camera is found again from the splat alone:
-   the view of the Gaussians that covers the photo's outline and has its
-   colours, judged on the square around the thing (from everywhere around
-   first, then closer from the best places; about a minute). The splat
-   keeps its colours, which are of one piece around the whole thing; what
-   the photo has more is added: the photo minus the photo blurred (within
-   the thing's outline). Every texel that camera sees straight enough, with
-   nothing in front of it, inside the outline but not at its rim, gets
-   that, the more the straighter it is seen. So there is no seam of tone
-   between the side the photo shows and the others, and a photo that does
-   not sit exactly on the model misplaces only fine detail. The sampling
-   stage notes which square of the photo the model was shown
-   (`outputs/input_crop.json`, written by `runner.py` around the SDK's
-   unchanged preparation), so the detail comes from the photo as fine as it
-   was taken, not from the 1024² copy the model saw. If no view looks like
-   the photo, the photo is not used, and the log line says so.
+"Ganze Szene": `objects.py --scene` also estimates depth (Depth Anything V2,
+small indoor metric model) and gives every object where it stood, how tall
+it was and the room around it. Each object is ordered as its own job; when
+the last one is through, the room assembles them into one scene, each actor
+named after the description a seeing bot gave its cut-out.
 
-## Pictures from words (`ops/idol/imagegen.py`)
+### Pictures from words (`ops/idol/imagegen.py`)
 
-"Bild erzeugen" in the plus menu, or a bot's `image_generate` tool, orders a
-picture: FLUX.2 klein 4B (Black Forest Labs, Apache-2.0, four steps, fp16 on
-the MI50) in Idol's environment. It is a job of the Idol worker's one queue
-(`POST /api/idol/images`, `kind: image`, result `image.png`), so the card
-does one thing at a time and a picture waits behind a running 3D job. The
-room's message (`model3d.kind = "image"`) shows the progress and becomes an
-ordinary image of the chat, which the bots see and which can go on to
-photo to 3D; cancel and "Noch einmal" work as for 3D jobs. The weights are
-fetched once by `ops/imagegen/fetch.sh` (pinned revision, resumable).
+"Bild erzeugen" in the plus menu, or a bot's `image_generate`, orders a
+picture: FLUX.2 klein 4B (four steps, fp16 on the MI50). It is a job of the
+same queue (`kind: image`, result `image.png`); the room's message becomes
+an ordinary image of the chat. The weights come from `ops/imagegen/fetch.sh`.
 
-## Videos from pictures (`ops/idol/videogen.py`)
+### Videos from pictures (`ops/idol/videogen.py`)
 
-Every picture of the chat (uploaded, painted, a bot's) has "3D" and "Video"
-below it (`POST /api/image/act`, `{"file", "do": "3d"|"video", "quality",
-"prompt"}`). "3D" orders photo to 3D for that picture as it is; the model
-can then be animated at its message. "Video" asks what should happen and
-orders a video: Wan 2.2 I2V-A14B (Wan-AI, Apache-2.0), its two experts
-(high noise, then low noise) as GGUF Q6_K (QuantStack) with the Lightning
-4-step LoRA (lightx2v), four Euler steps (shift 5, as the LoRA was
-distilled; two for each expert) without guidance, 81 frames at 16 fps,
-about 480p in the picture's shape, H.264 by ffmpeg. The card has no bf16
-and no fast attention: the experts compute in fp16, attention is exact but
-built a block of queries at a time, UMT5 reads the words in fp32 and leaves
-the card before the experts come, and the experts come one after the other
-(the high-noise one leaves before the low-noise one loads). It runs in `~/idol-mi50/video/venv`
-(Idol's torch and diffusers through a .pth file, plus gguf, peft, ftfy);
-the weights come from `ops/video/fetch.sh` (pinned, resumable, SHA256, one
-writer) and until `.complete` is there the worker refuses a video in words
-(`POST /api/idol/videos`, `kind: video`, result `video.mp4`). The room's
-message (`model3d.kind = "video"`) shows the picture it comes from, the
-stage and the steps, and becomes an ordinary video of the chat. A bot orders
-one with `video_generate` (`image`: the picture's name as the chat shows it,
-else the newest picture; `prompt`: the motion), and reads the video message
-as "Video aus dem Bild …" with how it ended.
-
-The MI50's one line: 3D, pictures and videos are jobs of the one worker,
-which runs one at a time; a GPU stage also holds the lock file, and a lock
-file that cannot be opened never fails a job. A queued job shows how many
-jobs are before it (`ahead`, from the worker); up to 32 wait. Each job's
-place is its `order` in its own status.json, so the line is the same after a
-restart of the worker or a reboot: the job whose stage still runs comes
-first, then the line as it was. Chris moves a waiting job one place forwards
-or backwards at its message ("Nach vorn", "Nach hinten": `POST
-/api/3d/<id>/move`, the worker's `/api/idol/jobs/<id>/move?to=up|down`) and
-cancels it there. A stage survives a restart of the worker and is followed
-again; after a reboot a 3D job goes on at its first missing stage (shape,
-splat, mesh), a picture starts its one stage again, and a video goes on
-after its last finished step (`state.pt` in its folder: the words as read,
-the picture's latent, the latents and the scheduler with its history).
-
-The bots take part in the same flow: `image_generate` paints, `photo_to_3d`
-and `video_generate` take a picture of the chat by its name (or the newest),
-and `scene_3d` animates the models; every result is an ordinary message of
-the chat that goes on from there.
-
-## Reading aloud (`ops/tts`)
-
-Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker
-(`ops/tts/tts-worker.js`): Supertonic 3 (Supertone; a duration predictor, a
-text encoder, a flow-matching estimator and a vocoder as ONNX, 44.1 kHz) in
-onnxruntime-web, on the device's GPU (WebGPU) where there is one, else in
-WASM on several threads. The GPU gets 90 s to make the model ready and
-speak its first word; a GPU that fails, is silent or takes longer is not
-asked again on that device (`mag-tts-gpu` in its storage), and the worker
-makes the model in WASM. For the threads the
-page is cross-origin isolated
-(`Cross-Origin-Opener-Policy: same-origin` on the page,
-`Cross-Origin-Embedder-Policy: credentialless` on every response, so the
-bots' pages still run in their frames). A provider is taken only after it
-has spoken one word that is sound, and the networks are run a few times in
-the background, because their first runs are the slowest. A voice is a
-style file (five female, five male); each speaker has a voice and a tempo,
-kept on the device. The text is cut into sentences, and they are made ahead
-of what plays (up to three at a time), so the reading does not stop
-between them. How long a part takes is learned on the device as a line, a fixed
-time per part plus a time per step and second of speech (on Chris's
-phone's GPU the fixed time is about a second, so a part of a few words
-plays for less time than it takes to make); the first parts are as long
-as that allows, so each is made while the ones before it play, and where
-the fixed time is large the later parts are longer (200 letters instead
-of 120). The first part of a reading is a few words only, and on a
-device that is not much faster than real time the first parts are made in
-three or four of the model's five steps: the sound starts within a second
-or two instead of after the first whole sentence; a device that cannot
-keep up even so (WASM on a phone) reads on in two rather than stop
-between sentences; one that makes eight steps in a quarter of the time
-they play (a GPU) gets eight. How fast the device is,
-is measured on every part. The parts are laid end to end on the audio
-clock (each starts on the sample where the one before ends). The newest
-answer in the chat is made whole before anybody asks, already while it
-comes in (while nothing is read and the page is in view, cut as the tap
-will cut it; the first two parts in the device's best quality, the rest in
-as many steps as the device makes in the time they play; about four
-minutes of sound are kept; of the five answers before it, and of every
-older answer whose "Vorlesen" is scrolled into view or a screen away, the
-first words), so the tap that most often comes speaks at
-once and plays to the end without a pause even on a phone that makes
-speech slower than it plays. An open page reloads only for a release
-that changes its own files or the voice (their content is the cache key
-of the assets, `mag-ui` and `ui` in `/api/state`; a release of a service
-behind it does not cost the phone the minute its voice needs to be made
-ready again), and only after a reading has ended; it takes the room's new
-token from `/api/state`. And a tap never
-waits for the model: while it is still loading, the device's own voice
-reads that message. The page tells the room's journal how a reading
-went, as numbers (`POST /api/tts/stat`: provider, threads, steps, time to
-the first sound, work against length), never what was read. Before a sentence goes to the model it is written as it
-is spoken (`german()` in the worker: numbers, dates, times, units,
-abbreviations, and what is spelled out: "3D" is "drei De"), and it is given decomposed (the model's table knows "a" and
-the two dots, not "ä"). German and English are read by the same voices.
-
-Browsers get the model with its weights in float16, about 200 MB instead of
-400: `pack.py` moves every large weight out of its network's `.onnx` into
-`<network>.f16.data` (the graph refers to it as float32 external data), and
-the worker widens it to float32 again before it hands it to onnxruntime, so
-the model computes as before. `source.lock` pins the model as published,
-`models.lock` what browsers fetch, `assets.lock` the runtime and our
-worker, all by SHA256; `bootstrap.sh` fetches and packs them once,
-`install.sh` (deploy) puts them into `/opt/mag-tts/m-<hash>/` (the model),
-`/opt/mag-tts/r-<hash>/` (the runtime, about 27 MB) and
-`/opt/mag-tts/v-<hash>/` (the worker) and writes `config.json`; the room
-hands them out under `/tts/` (immutable, except the config). Model and
-runtime have folders of their own, so a change of the worker costs no
-browser a new download. A new release of the page never touches the
-voice's Cache Storage (`sw.js` clears only its own caches). The worker
-keeps everything in Cache Storage (asked to persist), the weights in
-pieces of 8 MB, three coming in at once, that are kept as they come (a
-download that breaks off goes on where it stopped) and never put together
-into one file; it reads them piece by piece into the network it makes. A
-piece that gets no byte for 25 s is asked for again by the worker itself;
-the page never ends the worker while it downloads. After the download it
-tells the page after every step that it is still at work, so a slow phone
-is not taken for a stuck one and started anew (time out of view does not
-count). Shortly after the page has loaded it
-fetches and loads the model in the background (over a mobile connection
-too; not with data saving on), so the first "Vorlesen" speaks at once.
-While it loads, a thin line under every "Vorlesen" fills up (and breathes
-while the model is made ready); the settings say it in words. No toast.
-Without the model the device's own voice reads. The Piper voices of before stay on disk.
+Every picture of the chat has "3D" and "Video" below it
+(`POST /api/image/act`). "Video" orders Wan 2.2 I2V-A14B: its two experts as
+GGUF Q6_K with the Lightning 4-step LoRA, 81 frames at 16 fps, about 480p,
+H.264 by ffmpeg. The experts compute in fp16 and take the card one after
+the other. It runs in `~/idol-mi50/video/venv`; the weights come from
+`ops/video/fetch.sh`, and until they are complete the worker refuses a
+video in words. A bot orders one with `video_generate`.
 
 ## Scenes (`ops/scene`)
 
 The bots' tools `models_3d` and `scene_3d` turn 3D models from the chat into
-animated scenes. A scene is a description (who plays, what each one does, in
-order), never code. `mag-scene` (`worker.py`, user `magbot`, cores 28-55, no
-device access) runs the pinned Blender (`blender.lock`, fetched once by
-`bootstrap.sh`) headless with `scene.py`:
+animated scenes. A scene is a description (who plays, what each one does,
+in order), never code; no code of a bot or a request runs in Blender.
+`mag-scene` (`worker.py`, user `magbot`, CPUs 28-55, no device access) runs
+the pinned Blender (`blender.lock`) headless with `scene.py`:
 
-- `parts`: a generated model is one mesh that may show several figures; they
-  are told apart, and each one is read (`rig.py`). The mesh is filled into a
-  grid of cubes, so the second wall such models have inside does not matter.
-  What rises from a patch of the ground until it meets another leg or the
-  body is a leg; a tail or a head is followed from its tip until the slice
-  through it widens into the body. Two legs make a figure that walks upright
-  (with arms where they stand off the body), three or four an animal, anything
-  else a thing.
+- `parts` / `rig.py`: a generated model may show several figures; each is
+  read. Two legs make a figure that walks upright, three or four an animal;
+  a long body without legs, a bird, an insect or spider and a vehicle (by
+  its wheels) are recognised too; anything else is a thing that moves as a
+  whole.
 - `build` (while the tool call waits, so a wrong description comes back in
-  words): every figure gets its skeleton and weights (each vertex follows the
-  bone of its cube, softened along the surface), the actions become
-  keyframes. A figure on two legs moves as people do and an animal as
-  animals do (see below); a thing moves as a whole. It writes `scene.glb`
-  (skinned, animated), which the room posts at once and the page plays in
-  its own viewer, and `scene.blend`.
-- `render` (only when the film is asked for; a stage on its own, like the
-  Idol stages): Cycles on the CPU, frame by frame, then ffmpeg. A restart of
-  the worker follows the running render again; after a reboot it goes on with
-  the first missing frame. The film joins the scene's message when it is
-  done. A built scene without a film costs nothing but its folder.
+  words): skeletons, weights and keyframes; writes `scene.glb` (posted at
+  once and played in the chat) and `scene.blend`.
+- `render` (only when the owner asks for the film): Cycles on the CPU frame
+  by frame, then ffmpeg. A restart of the worker follows the running render
+  again; after a reboot it goes on with the first missing frame. The film
+  joins the scene's message.
 
-Somebody on two legs moves with recorded motions (`motion.py`, numpy only,
-so the tests run it without Blender). `motions.npz` holds them as a figure
-of any build can take them over: for every frame, seen from the body itself,
-how hips, chest and head are turned from standing straight, where thighs,
-shins and arms point, how high the hips are in leg lengths, and what each
-foot does (in the air, on its toes, standing). `mocap/build.py` makes the
-file from the recordings `mocap/clips.json` names (`sources.lock` pins them;
-`MOTIONS.md` has their terms and the credit they ask for); a gait is cut to a
-round that ends as it begins. In a scene every such figure is a `Performer`
-that does something in every frame, a motion that was asked for or standing
-and breathing:
+Figures on two legs move with recorded motions (`motion.py`,
+`motions.npz`, built by `mocap/build.py` from CMU motion capture, see
+`MOTIONS.md`): about 150 motions found by description, joined at the
+nearest pose, feet that stand stay where they stand, a free `pose` uses IK
+on the figure's own arm. A fight (kick, punch, attack) knocks the target
+away in an arc. Animals move by a worked-out gait (`animal.py`). Parts of a
+thing (a lid, a door, a turret) are cut at their seam and turn about a
+hinge. A figure that speaks or shows a feeling gets a face (`face.py`:
+MediaPipe's face landmarker, pinned in `ops/scene/face`, else the head's
+proportions); the film's voices are made on the device and sent with the
+film request. The film is lit with key, fill and rim light like the scene in
+the chat.
 
-- its bones point where the recorded ones did; the way it covers follows the
-  length of its own legs, short legs step quicker, and a jump is as high as
-  the figure is tall;
-- a foot that stands is held where it stands and the leg is solved for it,
-  the hips come down when it would be out of reach; a foot that ends up far
-  from where it belongs (after a turn on the spot, a stop) takes a step;
-- one motion goes over into the next without the two being mixed: what is
-  left of the old one fades out on top of the new one (inertialization);
-- an arm that hangs does what the recorded arm does, one that is held up or
-  bent keeps its hold and only moves along; a gesture is made with the hand
-  that is free;
-- on its way it is steered towards where it goes, in whole strides; before a
-  leap the run-up is taken as far as the leap itself runs;
-- who has nothing to do looks at who does something.
+## Dictation (`ops/stt`)
 
-For an animal on four legs there are no recorded motions that may be passed
-on, so `animal.py` works its motion out, as the body does it (numpy only as
-well). An `Animal` is in a scene what a `Performer` is:
+The page captures the microphone in an AudioWorklet (`mag-room/web/app/capture.js`:
+16 kHz mono PCM, 100 ms frames) and `mag-room/web/app/dictate.js` posts what has been
+spoken since the last request to `POST /api/stt/live?sid=&seq=`; `end=1`
+closes the dictation. The room only checks the caller and passes the chunk
+on to `mag-stt` (`mag-room/native/mag_stt.cpp`).
 
-- the feet take turns in the order of the gait (walk and stalking one after
-  the other, trot in pairs across the body, gallop and bounds with all four
-  in the air); each stands where it was put down until its turn comes, and
-  swings to where the body will be over it;
-- the body rides on the legs that carry it: at a walk it vaults over them, in
-  the springing gaits it gives; hips and shoulders turn and sink with the
-  legs, the back flexes and stretches at a gallop, the head stays level, the
-  tail follows late;
-- a leg is carried at the length the model was made with, so standing it is
-  itself; its joint to the body slides under the skin towards the foot (a
-  shoulder blade does), which is what gives a short-legged model a stride;
-  hips and shoulders come down to a foot that would be out of reach, and no
-  leg whips round faster than a leg can;
-- sitting, lying, sleeping, crouching, a bow and begging are poses the body
-  eases into: an end that goes down has its feet put where they belong
-  first, one that comes up after; paws whose end is lifted out of reach hang;
-- a leap gathers, takes off, tucks, and lands with the legs giving; over
-  somebody it is as long and as high as it takes to clear them, and out of a
-  run it lands running. It also turns on the spot stepping round, lifts a
-  paw, wags, shakes itself, sniffs, eats, howls, digs and pounces.
+`mag-stt` keeps one recognizer loaded (transcribe.cpp, primeLine's German
+Parakeet TDT 0.6B as Q8 GGUF, 16 threads on CPUs 28-55). Live text comes
+from decoding the open part of the recording again whenever at least 200 ms
+of new audio are there; a sentence followed by a pause is committed. Nothing
+is stored and the journal gets numbers only. `POST /api/stt` takes a
+finished recording. `ops/stt/bootstrap.sh` builds the pinned recognizer and
+fetches the model once; `ops/stt/install.sh` is the deploy layer. CI builds
+`mag-stt` without the recognizer and tests its protocol on a fake engine.
 
-Limbs are turned to where they point from frame to frame (`motion.Swings`):
-the least turn is anybody's guess when a bone points nearly opposite to
-where it came from, and a limb must not spin about itself there.
+## Reading aloud (`ops/tts`)
 
-The film is lit like the chat shows the scene (`LIGHTS` in `scene.py`): a key
-light over the camera's left shoulder casts the one shadow, a fill and a rim
-light are linked to the figures alone, and every figure shows a part of its
-texture unlit (`glow`), because generated textures are painted light already.
-Colours go out as they are (view transform Standard).
+Speech is made in the browser, never on the server. `mag-room/web/app/speak.js`
+drives a Web Worker (`ops/tts/tts-worker.js`) that runs Supertonic 3 in
+onnxruntime-web, on WebGPU where the device has one, else in WASM threads
+(the page is cross-origin isolated for that). One voice and tempo per
+speaker, kept on the device. The page fetches and prepares the model in the
+background after load, so the first "Vorlesen" speaks at once; until then
+the device's own voice reads. The newest answer is synthesised ahead while
+it arrives. Before a sentence goes to the model it is written as it is
+spoken (numbers, dates, units, abbreviations).
 
-## Models (`ops/models`)
+`ops/tts/bootstrap.sh` fetches and packs the model once (weights moved to
+float16 by `pack.py`, about 200 MB); `source.lock`, `models.lock` and
+`assets.lock` pin every file by SHA256. `ops/tts/install.sh` puts model,
+runtime and worker under `/opt/mag-tts/` in folders named by their content
+and writes `config.json`; the room serves them under `/tts/` as immutable
+files. The worker keeps everything in Cache Storage, so a browser downloads
+the model once.
 
-`models.json` declares both bots. `mag-modeld` owns download, verification
-and start; the room only reads `/run/mag-models/status.json` and writes
-control verbs. See `AGENTS.md`.
+## Backups (`ops/backup`)
+
+`backup.sh <kind>` (kinds `daily`, `deploy`, `manual`, `clear`) copies:
+
+- the room state `/var/lib/magbot/room` (copied until it is consistent);
+- Gitea: an online SQLite backup of `gitea.db`, the repositories and
+  `/etc/gitea`;
+- configuration: `/etc/nginx`, `/etc/mag-nginx`, `/etc/mag-acme`,
+  `/etc/magbot`, `/etc/default/mag-room`, `/etc/mag-stack`, `/etc/mag-audit`,
+  `/var/lib/mag-audit`, the MAG and Gitea units, cron, and
+  `/var/lib/tailscale`;
+
+and writes each run as an independent restic repository
+`/var/backups/mag-full/<stamp>-<kind>/repo`, then checks it, restores it to
+a scratch folder and compares a SHA256 manifest. Only then is it marked
+`VERIFIED` and older archives rotated: the last three verified archives are
+kept, plus the pre-deploy archive of the current release. Model files,
+GGUFs and VM disks are never in a backup (`*.gguf`, `ggml-*.bin` and
+`*.qcow2` are excluded and their presence fails the run). Bot VMs are
+covered by their own saves (see above). The archives are local and
+unencrypted by password (`--insecure-no-password`); there is no offsite
+copy.
+
+| Unit | When | What |
+| --- | --- | --- |
+| `mag-backup-daily.timer` | 03:30 daily | `backup.sh daily` |
+| `mag-backup-deploy.service` | before every deploy | `backup.sh deploy` |
+| `mag-backup-chat.service` | when Chris asks | `backup.sh manual` |
+| `mag-backup-weekly.timer` | Monday 04:30 | `restic check` of every archive |
+| `mag-backup-monthly.timer` | 1st, 05:15 | `restic check --read-data-subset=10%` |
+| `mag-backup-restore-test.timer` | 1st, 06:30 | full restore to scratch, manifest check |
+| `mag-backup-monitor.timer` | hourly | unhealthy when the last success is older than 26 h |
+| `mag-backup-clear.timer` | 30 s after it is (re)started | `backup.sh clear`; nothing in the room starts it today |
+
+The state is `/var/lib/mag-backup/status.json`. Backup jobs run on CPUs
+42-55 with NUMA node 1 memory, nice 19, idle I/O and a 15 % CPU quota.
+
+**Backup on request.** "Jetzt alles sichern" in the settings, or a bot's
+`backup` tool (`start`, `status`), calls `POST /api/backup`. The room runs
+`magbot-agent-ctl backup`, which starts `mag-backup-chat.service` and
+`mag-bot-saves@chat.service` (a save of every bot VM, kind `chat`) in the
+background. `GET /api/backup` reports whether one is running, the last
+success, health, the last error and every bot's saves.
+
+## Gitea and CI
+
+- Gitea 28.1.0 (`ops/gitea/install.sh`, pinned binary) listens on
+  127.0.0.1:3000 with SQLite in `/var/lib/gitea`. It is reachable on the
+  tailnet and publicly through Tailscale Funnel on the host's `ts.net`
+  name; both go through the shared nginx socket
+  (`ops/gitea-ci/public.nginx.in`, rate limits on login and API).
+  `ops/tailscale/apply-gitea-funnel.sh` sets the serve config (port 443 as
+  raw TCP with PROXY v2 to nginx) and `mag-gitea-funnel.timer` re-asserts it.
+- `ops/gitea/mirror-github.sh` keeps a pull mirror of the GitHub repository.
+- Every bot VM has a Gitea account `magbot-agentN`, restricted, never admin,
+  with a private org `bots-<user>` (`ops/gitea/bot-rights.sh`,
+  `ops/gitea-ci/bot-auth.sh`). VMs reach Gitea at 192.168.122.1:3001
+  (`mag-git-gateway.socket`).
+- CI: `.github/workflows/ci.yml` runs on GitHub for every pull request and
+  push to `main`; `.gitea/workflows/ci.yml` runs the same steps on the host
+  runner `mag-gitea-runner.service` (user `mag-runner`, CPUs 42-55, 6 GB,
+  no access to room state, credentials, models or backups). The steps are
+  listed in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Deploy (`ops/deploy.sh`)
 
-Build, stage, switch, verify `/readyz` and nginx, roll back on failure. No
-drain and no model gating.
+Build, snapshot, stage, switch, verify, roll back on failure. No drain and
+no model gating:
+
+1. Build the release targets with Ninja on CPUs 28-55
+   (`ops/build-targets.sh`), and the Go gateway when its sources changed.
+2. nginx preflight; the pre-deploy backup (`mag-backup-deploy.service`);
+   a rollback copy of units, binaries and the room state in
+   `/var/backups/mag-stack/<release>`.
+3. Stage `/opt/mag-stack/releases/<release>` (binaries, `web/`, `ops/`,
+   `SHA256SUMS`, `SOURCE_COMMIT`).
+4. Stage nginx, switch `/opt/mag-stack/current`, install `magbot`, the sudo
+   wrappers and units, reload the VM firewall, restart the audit gateway
+   (only when it changed), the room and the WebRTC gateway, wait for
+   `/readyz`, activate and smoke-test nginx. Any failure up to here restores
+   the previous release.
+5. Independent layers, each allowed to fail with a warning: the model layer
+   (`ops/models/install.sh`, never restarts a running model), `ops/stt`,
+   `ops/tts`, `ops/scene`, `ops/idol` (when its environment exists),
+   `ops/bots`, the health and VM-save timers, `ops/boot/ensure-boot.sh` and
+   release pruning (the new release and one fallback are kept).
+
+A deploy never waits for a model or a running answer and never fails
+because a bot is downloading, loading, paused or stopped. A turn it cuts off
+is handled as described under [Prompt log](#prompt-log-and-kv-cache).
+
+## Reboot and restart behaviour
+
+`ops/boot/ensure-boot.sh` runs after every deploy and enables for boot
+every unit that is running: the room and its gateways, the audit layer,
+mag-modeld, mag-idol, mag-scene, mag-stt, mag-bots-publish,
+mag-cpu-tune, Gitea and its runner and funnel, nginx, tailscaled, libvirtd,
+ssh and all timers. Model units are not enabled: mag-modeld starts each
+verified model itself after boot. `needrestart` is told to leave the MAG
+services alone, so package updates never restart them.
+
+Bot VMs are set to autostart at spawn; `ensure-boot.sh` keeps autostart on
+for the VMs of the room's bots and for the libvirt networks.
+
+What resumes:
+
+| After | What happens |
+| --- | --- |
+| room restart (deploy) | turns cut off before anything was visible run again; resets and VM restores in progress go on; MI50 jobs and scene renders are picked up again and mirrored into their messages; a whole-room scene whose objects are done is assembled |
+| Idol worker restart | running stages keep running and are followed again; the queue keeps its order |
+| scene worker restart | a running film render keeps running and is followed again |
+| reboot | mag-modeld verifies stamps and starts the models; 3D jobs continue at their first missing stage, videos after their last finished step, pictures start again; films go on at the first missing frame; the queue order is restored from each job's `order`; the MI50 cap is clamped to 72 W before the worker starts; VMs boot; missed timers (`Persistent=true`) run |
+| a VM save cut off | the next save or restore of that VM commits the side overlay back first |
+
+Nothing writes a 3D job off as "interrupted".

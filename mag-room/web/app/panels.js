@@ -22,7 +22,7 @@
       default: return 'nicht erreichbar';
     }
   }
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf dich', warming: 'wärmt auf', resetting: 'leert Kontext' };
+  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf dich', login: 'wartet auf deine Anmeldung', paying: 'wartet an der Kasse', warming: 'wärmt auf', resetting: 'leert Kontext' };
   // The exact weights, e.g. "gpt-oss-120b-heretic-v2 MXFP4".
   const modelName = (b) => (b.model?.file ? b.model.file.replace(/-([A-Za-z0-9_]+)$/, ' $1') : b.model?.label || '');
   const siteLink = (b) => (b.site ? el('a', { href: b.site + '/', target: '_blank', rel: 'noopener', text: b.site.replace(/^https?:\/\//, '') }) : null);

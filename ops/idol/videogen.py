@@ -15,7 +15,8 @@ The two experts of A14B (high noise, then low noise) are GGUF Q6_K
 (shift 5, as it was distilled; two per expert),
 no classifier-free guidance; every finished step is kept (state.pt), so an
 interrupted stage goes on after its last step. The card has no bf16 and no fast attention:
-the experts compute in fp16, attention is exact but built for a block of
+the experts compute in fp16 (each block's result kept inside fp16's range),
+attention is exact but built for a block of
 queries at a time, and the text encoder (UMT5) reads the words in fp32
 first and leaves the card again. Prints "MAG-VIDEO k/n" as it gets on and
 "MAG-VIDEO-STAGE <words>" between its parts; MAG-ERROR in words.
@@ -164,10 +165,15 @@ def main():
     blocks = int(json.loads((WEIGHTS / "transformer" / "config.json").read_text()).get("num_layers", 40))
     total, ran_blocks = STEPS * blocks, [state["done"] * blocks]
 
-    def ran(*_):
+    def ran(_block, _inputs, output):
         ran_blocks[0] += 1
         if ran_blocks[0] % 4 == 0 or ran_blocks[0] == total:
             print("MAG-VIDEO %d/%d" % (min(ran_blocks[0], total), total), flush=True)
+        # The blocks carry their sum in fp16 (the card has no bf16): a value
+        # past fp16's range would turn into inf and then NaN, a black video.
+        if isinstance(output, torch.Tensor) and output.dtype == torch.float16:
+            return output.nan_to_num(0.0, 65000.0, -65000.0).clamp_(-65000.0, 65000.0)
+        return None
 
     def load(key):
         say("Videomodell laden")
@@ -202,6 +208,9 @@ def main():
                 noise = expert(hidden_states=model_input, timestep=t.expand(latents.shape[0]), encoder_hidden_states=embeds,
                                encoder_hidden_states_image=None, return_dict=False)[0]
             latents = scheduler.step(noise.float(), t, latents, return_dict=False)[0]
+            if not torch.isfinite(latents).all():
+                print("MAG-ERROR Das Videomodell hat sich in fp16 verrechnet (ungültige Werte in Schritt %d)." % (i + 1), flush=True)
+                sys.exit(4)
             del noise, model_input
             keep(width=width, height=height, embeds=embeds, condition=condition, latents=latents, scheduler=scheduler, done=i + 1)
     expert = None

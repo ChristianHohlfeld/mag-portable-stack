@@ -241,6 +241,33 @@ static std::string chromium() {
   throw std::runtime_error("Golden image Chromium missing");
 }
 static std::string js(const std::string &s) { return mj::dump(Val(s)); }
+
+// Everything on screen one can act on, numbered top to bottom (what a person
+// would click or type into: links, buttons, fields, menus), with a short
+// label and the point at its middle. The elements are kept in the isolated
+// world, so a click or a type can name one by its number afterwards. A
+// password field's value is never read.
+static const char *kElements = R"JS((()=>{
+const sel='a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=option],[role=combobox],[role=switch],[contenteditable=true],[onclick],label[for]';
+const out=[],els=[];
+for(const e of document.querySelectorAll(sel)){
+ const r=e.getBoundingClientRect();
+ if(r.width<4||r.height<4||r.bottom<0||r.top>innerHeight||r.right<0||r.left>innerWidth)continue;
+ const st=getComputedStyle(e);
+ if(st.visibility==='hidden'||st.display==='none'||+st.opacity===0)continue;
+ const cx=Math.min(Math.max(r.left+r.width/2,1),innerWidth-2),cy=Math.min(Math.max(r.top+r.height/2,1),innerHeight-2);
+ const top=document.elementFromPoint(cx,cy);
+ if(top&&top!==e&&!e.contains(top)&&!top.contains(e))continue;
+ const secret=e.type==='password';
+ let label=(e.getAttribute('aria-label')||e.innerText||(secret?'':e.value)||e.placeholder||e.title||e.alt||e.name||e.id||'').replace(/\s+/g,' ').trim().slice(0,80);
+ if(!label){const img=e.querySelector('img[alt]');if(img)label=img.alt.trim().slice(0,80);}
+ const tag=e.tagName.toLowerCase();
+ const kind=tag==='input'?(e.type||'text'):tag==='a'?'link':(e.getAttribute('role')||tag);
+ els.push(e);
+ out.push({n:els.length,kind,label,x:Math.round(cx),y:Math.round(cy),password:secret||undefined,checked:(e.checked===true)||undefined});
+ if(els.length>=150)break;}
+window.__magEls=els;
+return {url:location.href,title:document.title,scroll:Math.round(scrollY),height:document.documentElement.scrollHeight,vh:innerHeight,elements:out};})())JS";
 #include "browser_udp.hpp"
 int main(int argc, char **argv) {
   try {
@@ -397,7 +424,7 @@ int main(int argc, char **argv) {
                          "t.includes('are you a robot')||"
                          "t.includes('security check')||"
                          "t.includes('captcha'))})()})");
-      state["udp_transport"] = "MGB5"; // MGB5: terminal_open repaints a running shell
+      state["udp_transport"] = "MGB6"; // MGB6: numbered elements, click by number or point, wait
       state["udp_port"] = 9227;
       try {
         const Val nav = c.call("Page.getNavigationHistory");
@@ -482,6 +509,17 @@ int main(int argc, char **argv) {
           p["format"] = jpeg ? "jpeg" : "png";
           if (jpeg) p["quality"] = 72;
           p["captureBeyondViewport"] = false;
+          // A smaller picture for a step in the chat: ?scale=0.5.
+          if (const std::string scale = value("scale"); !scale.empty()) {
+            const double f = std::clamp(atof(scale.c_str()), 0.2, 1.0);
+            Val clip = Val::object();
+            clip["x"] = 0.0;
+            clip["y"] = 0.0;
+            clip["width"] = 1440.0;
+            clip["height"] = 900.0;
+            clip["scale"] = f;
+            p["clip"] = clip;
+          }
           response(fd, 200,
                    unbase64(str(c.call("Page.captureScreenshot", p), "data")),
                    jpeg ? "image/jpeg" : "image/png");
@@ -531,6 +569,31 @@ int main(int argc, char **argv) {
             out["errors"] = Val::array();
             out["console"] = Val::array();
           }
+        } else if (r.path == "/elements") {
+          out = c.eval(kElements);
+          Val meta = snapshot();
+          out["blocked"] = meta.find("blocked") ? *meta.find("blocked") : Val(false);
+          out["text"] = c.eval("(document.body?.innerText||'').replace(/\\n{3,}/g,'\\n\\n').slice(0,2500)");
+        } else if (r.path == "/wait") {
+          // Until the page is loaded and, when given, a text is on it; at most 15 s.
+          double ms = 1500;
+          if (auto n = body.find("ms"); n && n->type == Val::NUM) ms = n->asNum();
+          ms = std::clamp(ms, 100.0, 15000.0);
+          const std::string want = value("text");
+          bool found = want.empty();
+          const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds((long)ms);
+          do {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            try {
+              const bool ready = c.eval("document.readyState").asStr() == "complete";
+              if (!want.empty())
+                found = c.eval("(document.body?.innerText||'').toLowerCase().includes(" + js(want) + ".toLowerCase())").asBool();
+              if (ready && !want.empty() && found) break;
+            } catch (...) {
+            }
+          } while (std::chrono::steady_clock::now() < until);
+          out = snapshot();
+          out["found"] = found;
         } else if (r.path == "/locate") {
           // Live highlight: viewport box of the element the next action
           // targets (selector, button/link text, or the focused field).
@@ -550,19 +613,36 @@ int main(int argc, char **argv) {
                        "vw:innerWidth,vh:innerHeight}})()");
         } else if (r.path == "/click") {
           std::string selector = value("selector"), text = value("text");
-          if (selector.empty() && text.empty())
-            throw std::runtime_error("Selector or text required");
-          std::string find =
-              !selector.empty()
-                  ? "document.querySelector(" + js(selector) + ")"
-                  : "[...document.querySelectorAll('button,a,input,label,[role="
-                    "button]')].find(e=>e.innerText?.trim()===" +
-                        js(text) + ")";
-          auto pos = c.eval("(()=>{let e=" + find +
-                            ";if(!e)throw Error('Element not "
-                            "found');e.scrollIntoView({block:'center'});let "
-                            "r=e.getBoundingClientRect();return "
-                            "{x:r.x+r.width/2,y:r.y+r.height/2}})()");
+          const Val *num = body.find("n"), *px = body.find("x"), *py = body.find("y");
+          Val pos;
+          if (px && py && px->type == Val::NUM && py->type == Val::NUM) {
+            // A point of the screen, as the last look showed it (1440x900).
+            if (px->asNum() < 0 || px->asNum() >= 1440 || py->asNum() < 0 || py->asNum() >= 900)
+              throw std::runtime_error("Point outside the browser window (1440x900)");
+            pos = Val::object();
+            pos["x"] = px->asNum();
+            pos["y"] = py->asNum();
+          } else {
+            std::string find;
+            if (num && num->type == Val::NUM)
+              find = "(()=>{const e=(window.__magEls||[])[" + std::to_string((int)num->asNum() - 1) +
+                     "];if(!e||!e.isConnected)throw Error('Element " + std::to_string((int)num->asNum()) +
+                     " is not there any more; look at the page again');return e})()";
+            else if (!selector.empty())
+              find = "document.querySelector(" + js(selector) + ")";
+            else if (!text.empty())
+              // The exact visible text first, then a label that contains it (any case).
+              find = "(()=>{const all=[...document.querySelectorAll('button,a,input,label,summary,[role=button],[role=link],[role=menuitem],[role=tab]')]"
+                     ".filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0});"
+                     "const t=" + js(text) + ".trim().toLowerCase(),name=e=>(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().toLowerCase();"
+                     "return all.find(e=>name(e)===t)||all.find(e=>name(e).includes(t))})()";
+            else
+              throw std::runtime_error("n, x/y, selector or text required");
+            pos = c.eval("(()=>{let e=" + find +
+                         ";if(!e)throw Error('Element not found; look at the page for its number');"
+                         "e.scrollIntoView({block:'center'});let r=e.getBoundingClientRect();"
+                         "return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
+          }
           // Visible approach for the live view: hover first, short pause.
           {
             Val mv = pos;
@@ -627,10 +707,26 @@ int main(int argc, char **argv) {
           out = snapshot();
         } else if (r.path == "/type") {
           auto selector = value("selector");
-          if (!selector.empty())
+          const Val *num = body.find("n");
+          if (num && num->type == Val::NUM) {
+            // The field by its number: clicked like a person would, its old text selected (and so replaced).
+            Val pos = c.eval("(()=>{const e=(window.__magEls||[])[" + std::to_string((int)num->asNum() - 1) +
+                             "];if(!e||!e.isConnected)throw Error('Element " + std::to_string((int)num->asNum()) +
+                             " is not there any more; look at the page again');e.scrollIntoView({block:'center'});"
+                             "const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
+            for (auto type : {"mouseMoved", "mousePressed", "mouseReleased"}) {
+              Val p = pos;
+              p["type"] = type;
+              p["button"] = std::string(type) == "mouseMoved" ? "none" : "left";
+              p["clickCount"] = 1;
+              c.call("Input.dispatchMouseEvent", p);
+            }
+            c.eval("(()=>{const e=(window.__magEls||[])[" + std::to_string((int)num->asNum() - 1) +
+                   "];if(e){e.focus();if(e.select)e.select();else document.execCommand('selectAll')}})()");
+          } else if (!selector.empty())
             c.eval("(()=>{let e=document.querySelector(" + js(selector) +
                    ");if(!e)throw Error('Element not "
-                   "found');e.focus();e.value='';})()");
+                   "found');e.focus();if(e.select)e.select();})()");
           // Type in small chunks so the live view shows text appearing
           // (about 2.5 s at most, independent of the text length).
           const std::string text = value("text");
@@ -681,13 +777,27 @@ int main(int argc, char **argv) {
           out = snapshot();
         } else if (r.path == "/key") {
           auto key = value("key");
+          // The key code Chromium acts on, and the text a key types (Enter
+          // submits a form only with "\r", like the live view's input).
+          static const std::map<std::string, std::pair<int, const char *>> codes = {
+              {"Enter", {13, "\r"}}, {"Tab", {9, ""}}, {"Escape", {27, ""}}, {"Backspace", {8, ""}},
+              {"ArrowDown", {40, ""}}, {"ArrowUp", {38, ""}}, {"ArrowLeft", {37, ""}}, {"ArrowRight", {39, ""}},
+              {"PageDown", {34, ""}}, {"PageUp", {33, ""}}, {"Home", {36, ""}}, {"End", {35, ""}}, {" ", {32, " "}}};
           Val p = Val::object();
           p["type"] = "keyDown";
           p["key"] = key;
-          p["code"] = key;
+          p["code"] = key == " " ? "Space" : key;
+          if (auto it = codes.find(key); it != codes.end()) {
+            p["windowsVirtualKeyCode"] = (double)it->second.first;
+            if (*it->second.second) p["text"] = it->second.second;
+          }
           c.call("Input.dispatchKeyEvent", p);
-          p["type"] = "keyUp";
-          c.call("Input.dispatchKeyEvent", p);
+          Val up = Val::object();
+          up["type"] = "keyUp";
+          up["key"] = p["key"];
+          up["code"] = p["code"];
+          if (p.find("windowsVirtualKeyCode")) up["windowsVirtualKeyCode"] = p["windowsVirtualKeyCode"];
+          c.call("Input.dispatchKeyEvent", up);
           out = snapshot();
         } else {
           response(fd, 404, "{\"error\":\"Unknown browser route\"}");

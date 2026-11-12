@@ -538,6 +538,29 @@ HTTPS (`/api/screen`) and the terminal to single commands
 (`/api/vm/<bot>/run`); the file view (`/api/vm/<bot>/files`) always goes
 through the wrappers.
 
+The bot's own browser tools go to the same controller over HTTP (port 9225,
+a bearer token per VM; protocol `MGB6`, a controller of an older protocol is
+replaced at the next call). `/elements` numbers every visible element one
+can act on (links, buttons, fields, menus; covered ones left out) with a
+label and the point at its middle and keeps them in the isolated world;
+`/click` takes such a number, a point of the 1440x900 window, a selector or
+a visible text (exact, then contained); `/type` clicks a numbered field and
+replaces its text; `/key` sends real key codes (Enter submits); `/wait`
+waits for the load and a text. After each action the tool returns the page
+as `browser_look` sees it, and a half-size JPEG of the window goes to
+`STATE/shots/<message>-<step>.jpg` (`GET /api/shot/…`; the step has
+`shot`), deleted with its message. A password field's value is never read.
+
+`browser_login` waits like a consent card (`action: login`, site, reason).
+Chris either posts his login to `POST /api/login/<card>` (owner only): the
+room finds the user and password fields by `/elements`, types them with
+`/type` (a site that asks for the user on a page of its own gets Enter and
+is looked at again), presses Enter and checks that no password field is
+left; nothing of it is stored or logged, and the strings are wiped after.
+Or he opens the bot's live browser from the card, logs in himself (passkey,
+SMS code, captcha) and taps "Fertig, weiter" (`decision: done`). Then the
+tool returns the page to the bot. Cookies stay in the VM's Chrome profile.
+
 ### Bot sites
 
 A bot's site is `<name>.bot.stardenburg.de`, tailnet only. nginx

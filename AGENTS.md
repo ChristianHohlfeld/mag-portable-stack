@@ -179,6 +179,15 @@ Browser and terminal run over the VM's realtime link: `mag-browser` in the
 VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
 channels to the page. Pictures over HTTPS and single commands are only the
 fallback where UDP cannot get through; never let them replace the link.
+A bot works its browser like a person at the screen: `browser_look` gives
+every element it can act on, numbered with label and point (and a picture
+for the step in the chat), and it clicks or types by number, by point or by
+visible text, presses keys and waits. A login, captcha or code is never
+typed by a model: `browser_login` puts a card at its step, where Chris types
+his login into a form that the room fills into the VM's page (never stored,
+logged or shown to a model) or takes the bot's browser over himself; then
+the bot sees the page and goes on. Sessions and cookies stay in the VM's
+Chrome profile. A model's thoughts are never shown in the chat.
 The bots read the whole chat: text files inline, 3D orders and their
 results, images and documents. A document is read for them once: the text of
 a PDF (OCR on the first pages of a scan), a Word, OpenDocument or PowerPoint

@@ -546,8 +546,9 @@ answer in the chat is made whole before anybody asks, already while it
 comes in (while nothing is read and the page is in view, cut as the tap
 will cut it; the first two parts in the device's best quality, the rest in
 as many steps as the device makes in the time they play; about four
-minutes of sound are kept; of the five answers before it the first
-words), so the tap that most often comes speaks at
+minutes of sound are kept; of the five answers before it, and of every
+older answer whose "Vorlesen" is scrolled into view or a screen away, the
+first words), so the tap that most often comes speaks at
 once and plays to the end without a pause even on a phone that makes
 speech slower than it plays. An open page reloads only for a release
 that changes its own files or the voice (their content is the cache key

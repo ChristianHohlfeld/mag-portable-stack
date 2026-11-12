@@ -733,7 +733,10 @@
   let preparing = 0;
   function paint() {
     setButtons();
-    // The newest answer, also while it still comes in (what of it is complete); at most every 400 ms.
+    later();
+  }
+  // The newest answer, also while it still comes in (what of it is complete); at most every 400 ms.
+  function later() {
     if (preparing) return;
     preparing = setTimeout(() => {
       preparing = 0;
@@ -744,8 +747,19 @@
       if (!newest) return;
       prepare(newest);
       for (const m of answers.slice(-5).reverse()) if (m.state === 'done') prepare(m, true);
+      // And the first words of every older answer whose "Vorlesen" is on the screen or a screen away:
+      // scrolled back, the answer that can be tapped starts at once as well (nearest the end first).
+      const bots = new Set(answers.map((m) => m.id)), near = innerHeight, seen = [];
+      for (const b of document.querySelectorAll('button[data-speak]')) {
+        if (!bots.has(b.dataset.speak)) continue;
+        const r = b.getBoundingClientRect();
+        if (r.height && r.bottom > -near && r.top < 2 * near) seen.push(S.messages.get(b.dataset.speak));
+      }
+      for (const m of seen.reverse().slice(0, 8)) if (m?.state === 'done') prepare(m, true);
     }, 400);
   }
+  // Scrolling (in the list of messages or anywhere) brings other answers into view.
+  document.addEventListener('scroll', later, { capture: true, passive: true });
   MAG.speaking = { paint, stop, busy: () => !!current };
   // Voices and tempo for the settings: [{ who, name, voice, rate }], the choices, and a setter.
   MAG.voices = {

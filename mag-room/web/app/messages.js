@@ -110,7 +110,7 @@
       asking,
       step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null,
       // The browser as this step left it: small in the line, large when the step is open.
-      shot && latestShot(m) === index ? el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' }) : null));
+      shot && latestShot(m) === index ? el('span', { class: 'shot-row' }, el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' })) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
     node.append(el('div', { class: 'body' },
@@ -912,7 +912,7 @@
   }
 
   // ---- activity row: who is doing what right now --------------------------
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf deine Freigabe', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
+  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf dich (Karte oben)', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
   function paintActivity() {
     const rows = [];
     for (const b of S.bots) {
@@ -961,7 +961,7 @@
     const body = node.querySelector('.body'), old = body.querySelector(':scope > [data-part="' + part + '"]'), fresh = buildStep(m, part);
     if (old) { fresh.open = old.open; grow(() => old.replaceWith(fresh)); }
     else grow(() => body.append(fresh));
-    if (fresh.querySelector('.shot-mini')) node.querySelectorAll('.shot-mini').forEach((img) => { if (!fresh.contains(img)) img.remove(); });
+    if (fresh.querySelector('.shot-row')) node.querySelectorAll('.shot-row').forEach((row) => { if (!fresh.contains(row)) row.remove(); });
     markStreaming(node, m);
   });
   MAG.on('step_output', (m, part, text) => {

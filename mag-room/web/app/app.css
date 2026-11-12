@@ -276,8 +276,9 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .step .ask button.yes { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
 .step .ask button.no { color: var(--bad); }
 .step .ask button:disabled { opacity: .5; }
-.step img.shot-mini { flex-basis: 100%; max-width: 220px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); margin: 4px 0 2px; }
-.step[open] img.shot-mini { display: none; }
+.step .shot-row { flex-basis: 100%; display: block; }
+.step img.shot-mini { display: block; width: 100%; max-width: 220px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); margin: 4px 0 2px; }
+.step[open] .shot-row { display: none; }
 .step .body img.shot { display: block; width: 100%; max-width: 720px; border-radius: 10px; border: 1px solid var(--line); margin: 4px 0 8px; }
 .step .ask form.login { display: flex; flex-wrap: wrap; gap: 6px; }
 .step .ask form.login input { flex: 1 1 180px; font-size: 16px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }

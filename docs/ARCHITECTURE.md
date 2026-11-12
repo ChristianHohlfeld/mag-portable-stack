@@ -265,7 +265,9 @@ room does not rely on that going well (`llm.hpp`):
   <channel|>` and gpt-oss's `<|channel|>analysis<|message|> … <|end|>` are
   thoughts, a raw tool call and a turn made up for somebody else are dropped,
   every other tag disappears (`Clean`; code blocks and inline code are left
-  alone). No tag reaches the chat, a thought, or the bot's own log.
+  alone). No tag reaches the chat, a thought, or the bot's own log. The
+  thoughts stay with the message (`reasoning`) but the page never shows
+  them: they are raw and often English.
 - **Circles.** A text whose end is the same passage three times over (or the
   same long passage a fourth time) is a model that lost its way: the room
   closes the connection, which ends the generation, and keeps the text up to

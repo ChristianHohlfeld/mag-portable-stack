@@ -585,10 +585,12 @@ as `browser_look` sees it, and a half-size JPEG of the window goes to
 
 `browser_login` first goes to the login form itself (`tools::login_form`:
 a page without a user or password field gets its sign-in link or button
-clicked, at most three times) and then waits like a consent card
+clicked, at most three times; a two-step page that first wants the way
+the code comes gets its first such button) and then waits like a consent card
 (`action: login`, the site from the page's address, reason, `fields` the
 form asks for now, `saved` logins of the site). Every login typed into the
-card is kept at once (whether the page then takes it or not) in
+card is kept at once (whether the page then takes it or not; a code of a
+two-step page is typed into its field with Enter and never kept) in
 `STATE/pay/logins.enc`, sealed like the cards, per site and account; the
 next card of that site offers it ("Gespeicherten Login verwenden",
 `{"saved": id}`), and the settings ("Logins", `/api/vault/logins`) list,

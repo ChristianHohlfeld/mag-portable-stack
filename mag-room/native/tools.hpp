@@ -339,29 +339,35 @@ inline Result look(Ctx &ctx, const std::string &vm) {
 // "password" (Amazon asks for the e-mail first, then the password), or none.
 inline Val login_form(Ctx &ctx, const std::string &vm) {
   static const std::regex user_field("mail|user|benutzer|login|konto|account|telefon|phone|handy|kunden|ap_email", std::regex::icase),
-      sign_in("^(hallo, anmelden|anmelden|einloggen|login|log in|sign in|sign-in|konto und listen|mein konto|zur anmeldung)\\b", std::regex::icase);
+      sign_in("^(hallo, anmelden|anmelden|einloggen|login|log in|sign in|sign-in|konto und listen|mein konto|zur anmeldung)\\b", std::regex::icase),
+      code_field("code|otp|einmal|verifizierung|verification|bestätigung|pin|tan", std::regex::icase),
+      send_code("code (an|per|via) |code senden|send (the )?code|otp senden|code anfordern|textnachricht|sms senden", std::regex::icase);
   Val out = Val::object();
   for (int hop = 0; hop < 4; ++hop) {
     const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
     if (r.status != 200) break;
     const Val v = jparse(r.body);
     out["url"] = jstr(v, "url");
-    bool user = false, pass = false;
-    int link = 0;
+    bool user = false, pass = false, code = false;
+    int link = 0, sender = 0;
     if (const Val *els = v.find("elements"); els && els->isArr())
       for (auto &e : els->asArr()) {
         const std::string kind = jstr(e, "kind"), label = trim(jstr(e, "label"));
         if (jbool(e, "password")) pass = true;
+        else if ((kind == "text" || kind == "tel" || kind == "number") && std::regex_search(label, code_field) && !std::regex_search(label, user_field)) code = true;
         else if (kind == "email" || ((kind == "text" || kind == "tel") && std::regex_search(label, user_field))) user = true;
+        else if (!sender && (kind == "button" || kind == "submit" || kind == "link") && std::regex_search(label, send_code)) sender = (int)jnum(e, "n");
         else if (!link && (kind == "link" || kind == "button" || kind == "a") && std::regex_search(label, sign_in)) link = (int)jnum(e, "n");
       }
     Val fields = Val::array();
     if (user) fields.push("user");
     if (pass) fields.push("password");
+    if (code) fields.push("code");
     out["fields"] = fields;
-    if (user || pass || !link || hop == 3) break;
+    // A two-step page that first wants the way the code comes: the first way it offers is asked for.
+    if (user || pass || code || (!link && !sender) || hop == 3) break;
     Val click = Val::object();
-    click["n"] = (double)link;
+    click["n"] = (double)(sender ? sender : link);
     if (ctx.guests.browser(vm, "POST", "/click", mj::dump(click), 45, ctx.cancel).status != 200) break;
     Val wait = Val::object();
     wait["ms"] = 4000.0;

@@ -147,6 +147,19 @@
           (x) => { button.disabled = false; note.textContent = x.message; });
     };
     const fields = ask.fields || [], wantsUser = !fields.length || fields.includes('user'), wantsPass = !fields.length || fields.includes('password') || fields.includes('user');
+    // A two-step page: the code from SMS, WhatsApp or the app goes into the page; it is not kept.
+    if (fields.includes('code')) {
+      const code = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Code', 'aria-label': 'Code' });
+      const go = el('button', { class: 'yes', type: 'submit', text: 'Code eintragen' });
+      return el('span', { class: 'ask', onclick: keepOpen },
+        el('b', { text: name + ' braucht den Bestätigungscode für ' + (ask.site || 'die Anmeldung') }),
+        el('small', { class: 'note', text: 'Die Seite hat einen Code geschickt (SMS, WhatsApp oder App). Trag ihn hier ein.' }),
+        owner ? el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ code: code.value }, go).then(() => { code.value = ''; }); } }, code, go) : null,
+        owner ? el('span', { class: 'btns' },
+          el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Gib den Code hier selbst ein. Danach macht ' + name + ' weiter.', () => decide('done')); } }),
+          el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
+        note);
+    }
     const user = el('input', { type: 'text', name: 'username', autocomplete: 'username', placeholder: 'E-Mail oder Benutzer', autocapitalize: 'off', spellcheck: false, hidden: !wantsUser });
     const pass = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', placeholder: 'Passwort', hidden: !wantsPass });
     const go = el('button', { class: 'yes', type: 'submit', text: 'Anmelden' });

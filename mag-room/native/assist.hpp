@@ -24,6 +24,7 @@
 
 #include <condition_variable>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -152,6 +153,24 @@ public:
     if (granted) *granted = yes;
     if (yes) return "Freigegeben (" + why + "): " + kind_label(kind) + " – " + what + ". Führe genau das jetzt aus, nichts darüber hinaus.";
     return "Nicht freigegeben (" + why + "): " + kind_label(kind) + " – " + what + ". Führe es nicht aus; sag Chris kurz, was offen bleibt.";
+  }
+
+  // The last decisions, newest first, for the settings.
+  Val journal_tail(size_t n = 20) {
+    std::deque<Val> last;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      std::ifstream f(ledger());
+      std::string line;
+      while (std::getline(f, line)) {
+        last.push_back(jparse(line));
+        if (last.size() > n) last.pop_front();
+      }
+    }
+    Val out = Val::array();
+    for (auto it = last.rbegin(); it != last.rend(); ++it)
+      if (it->isObj()) out.push(*it);
+    return out;
   }
 
   // The owner's answer to a pending card. False: no such card waits.

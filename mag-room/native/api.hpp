@@ -102,6 +102,7 @@ public:
         }
         v["routines"] = list;
         v["rules"] = assist_.rules();
+        if (who.owner()) v["journal"] = assist_.journal_tail();
         return http::send_json(fd, 200, v);
       }
       if (p == "/api/plugins") {

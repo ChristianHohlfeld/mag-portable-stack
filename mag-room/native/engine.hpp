@@ -2647,6 +2647,7 @@ private:
               ask["site"] = clip(site, 120, "…");
               ask["what"] = clip(trim(jstr(args, "reason")), 300, "…");
               ask["fields"] = Assist::at(form, "fields").isArr() ? Assist::at(form, "fields") : Val::array();
+              if (jbool(form, "resend")) ask["resend"] = true;
               if (vault) ask["saved"] = vault->logins(site);
               const std::string decision = assist->await_card(ask, cancel.get(), card);
               if (decision == "done") {

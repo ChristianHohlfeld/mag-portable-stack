@@ -147,14 +147,34 @@
           (x) => { button.disabled = false; note.textContent = x.message; });
     };
     const fields = ask.fields || [], wantsUser = !fields.length || fields.includes('user'), wantsPass = !fields.length || fields.includes('password') || fields.includes('user');
+    // A two-step page: the code from SMS, WhatsApp or the app goes into the page; it is not kept.
+    if (fields.includes('code')) {
+      const code = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Code', 'aria-label': 'Code' });
+      const go = el('button', { class: 'yes', type: 'submit', text: 'Code eintragen' });
+      return el('span', { class: 'ask', onclick: keepOpen },
+        el('b', { text: name + ' braucht den Bestätigungscode für ' + (ask.site || 'die Anmeldung') }),
+        el('small', { class: 'note', text: 'Die Seite hat einen Code geschickt (SMS, WhatsApp oder App). Trag ihn hier ein.' }),
+        owner ? el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ code: code.value }, go).then(() => { code.value = ''; }); } }, code, go) : null,
+        owner ? el('span', { class: 'btns' },
+          el('button', { text: 'Code (erneut) senden lassen', onclick: (e) => {
+            e.preventDefault();
+            const b = e.currentTarget;
+            b.disabled = true;
+            MAG.api('POST', '/api/login/' + ask.id, { resend: true }).then(() => { note.textContent = 'Die Seite schickt den Code; trag ihn oben ein.'; }, (x) => { note.textContent = x.message; }).finally(() => { setTimeout(() => { b.disabled = false; }, 20000); });
+          } }),
+          el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Gib den Code hier selbst ein. Danach macht ' + name + ' weiter.', () => decide('done')); } }),
+          el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
+        note);
+    }
     const user = el('input', { type: 'text', name: 'username', autocomplete: 'username', placeholder: 'E-Mail oder Benutzer', autocapitalize: 'off', spellcheck: false, hidden: !wantsUser });
     const pass = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', placeholder: 'Passwort', hidden: !wantsPass });
     const go = el('button', { class: 'yes', type: 'submit', text: 'Anmelden' });
     const form = el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ user: user.value, password: pass.value }, go).then(() => { pass.value = ''; }); } }, user, pass, go);
     const saved = (ask.saved || []).map((l) => el('button', { class: 'yes', text: 'Gespeicherten Login verwenden: ' + (l.user || ask.site),
       onclick: (e) => { e.preventDefault(); send({ saved: l.id }, e.currentTarget); } }));
-    const other = saved.length ? el('details', { class: 'other' }, el('summary', { text: 'Anderen Login eingeben' }), form) : form;
-    const stage = !fields.length ? 'Kein Anmeldefeld gefunden; trag es ein oder übernimm den Browser.' : fields.includes('user') ? '' : 'Die Seite fragt jetzt nach dem Passwort.';
+    // Where the page shows no login field (a passkey, a captcha, a page of its own), the browser is the way; the form waits folded.
+    const other = saved.length || !fields.length ? el('details', { class: 'other' }, el('summary', { text: saved.length ? 'Anderen Login eingeben' : 'Login hier eintragen' }), form) : form;
+    const stage = !fields.length ? 'Die Seite zeigt gerade kein Anmeldefeld: übernimm den Browser.' : fields.includes('user') ? '' : 'Die Seite fragt jetzt nach dem Passwort.';
     return el('span', { class: 'ask', onclick: keepOpen },
       el('b', { text: name + ' braucht eine Anmeldung bei ' + (ask.site || 'einer Seite') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,

@@ -340,7 +340,20 @@ public:
       const Val card = assist_.waiting_card(p.substr(11));
       if (!card.isObj() || jstr(card, "action") != "login") return http::send_error(fd, 409, "Diese Anmeldung wartet nicht mehr");
       Val in = jparse(r.body);
-      std::string user = jstr(in, "user"), pass = jstr(in, "password");
+      std::string user = jstr(in, "user"), pass = jstr(in, "password"), code = jstr(in, "code");
+      if (jbool(in, "resend")) {
+        // "Code senden": the page's own button that sends the code (again); the card keeps waiting.
+        const std::string why = send_code(jstr(room_.bot(jstr(card, "bot")), "vm"));
+        return why.empty() ? http::send_ok(fd) : http::send_error(fd, 422, why);
+      }
+      if (!code.empty()) {
+        // A code of a two-step login (SMS, WhatsApp, app): typed into the page, never kept.
+        const std::string why = fill_code(jstr(room_.bot(jstr(card, "bot")), "vm"), code);
+        std::fill(code.begin(), code.end(), '\0');
+        if (!why.empty()) return http::send_error(fd, 422, why);
+        assist_.decide(jstr(card, "id"), "done");
+        return http::send_ok(fd);
+      }
       if (const std::string saved = jstr(in, "saved"); !saved.empty()) {
         Val login = vault_.open_login(saved);
         if (!login.isObj()) return http::send_error(fd, 404, "Dieser Login ist nicht mehr im Tresor");
@@ -849,6 +862,48 @@ private:
     room_.add(note);
   }
   std::mutex assemble_mu_;
+
+  // Clicks the page's button that sends a two-step code (again).
+  std::string send_code(const std::string &vm) {
+    if (!vm::valid_name(vm)) return "Dieser Bot hat keinen Browser.";
+    const auto r = guests_.browser(vm, "GET", "/elements", "", 30, nullptr);
+    if (r.status != 200) return "Der Browser des Bots antwortet nicht.";
+    static const std::regex send("code (an|per|via) |code senden|send (the )?code|otp senden|code anfordern|textnachricht|sms senden|erneut senden|resend", std::regex::icase);
+    const Val v = jparse(r.body);
+    if (const Val *els = v.find("elements"); els && els->isArr())
+      for (auto &e : els->asArr())
+        if (std::regex_search(jstr(e, "label"), send)) {
+          Val click = Val::object();
+          click["n"] = jnum(e, "n");
+          return guests_.browser(vm, "POST", "/click", mj::dump(click), 45, nullptr).status == 200 ? "" : "Der Knopf ließ sich nicht klicken.";
+        }
+    return "Die Seite bietet gerade keinen Knopf zum Senden des Codes. Übernimm den Browser selbst.";
+  }
+
+  // Types a code of a two-step login into the page's code field and presses Enter.
+  std::string fill_code(const std::string &vm, const std::string &code) {
+    if (!vm::valid_name(vm)) return "Dieser Bot hat keinen Browser.";
+    const auto r = guests_.browser(vm, "GET", "/elements", "", 30, nullptr);
+    if (r.status != 200) return "Der Browser des Bots antwortet nicht.";
+    static const std::regex code_field("code|otp|einmal|verifizierung|verification|bestätigung|pin|tan", std::regex::icase);
+    int n = 0;
+    const Val v = jparse(r.body);
+    if (const Val *els = v.find("elements"); els && els->isArr())
+      for (auto &e : els->asArr()) {
+        const std::string kind = jstr(e, "kind");
+        if (!n && (kind == "text" || kind == "tel" || kind == "number") && std::regex_search(jstr(e, "label"), code_field)) n = (int)jnum(e, "n");
+      }
+    if (!n) return "Auf der Seite ist kein Feld für den Code zu sehen. Übernimm den Browser selbst.";
+    Val body = Val::object();
+    body["n"] = (double)n;
+    body["text"] = code;
+    body["enter"] = true;
+    if (guests_.browser(vm, "POST", "/type", mj::dump(body), 60, nullptr).status != 200) return "Der Code ließ sich nicht eintragen.";
+    Val wait = Val::object();
+    wait["ms"] = 4000.0;
+    guests_.browser(vm, "POST", "/wait", mj::dump(wait), 30, nullptr);
+    return "";
+  }
 
   // Types a login into the page a bot's browser shows: the user field (when
   // there is one and a user was given; a site that asks for it on a page of

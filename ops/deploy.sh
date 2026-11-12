@@ -35,6 +35,9 @@ BACKUP="/var/backups/mag-stack/$RELEASE_ID"
 STATE=/var/lib/magbot/room
 ROOM=http://127.0.0.1:8766
 NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
+# A trial install without a domain, certificate or tailnet (./install.sh
+# --probe) deploys everything but the ingress: the room answers on loopback.
+nginx_sync() { [[ ${MAG_DEPLOY_NO_INGRESS:-0} == 1 ]] && return 0; bash "$NGINX_SYNC" "$@"; }
 UNITS=/etc/systemd/system
 # Who and where this host is (ops/host.env, /etc/mag-stack/host.env; the
 # latter is written once from the template, the checkout's owner as owner).
@@ -96,7 +99,7 @@ if [[ ! -x $RTC || -n $(find "$SOURCE/mag-room/webrtc" -name '*.go' -newer "$RTC
 fi
 
 # --------------------------------------------------- 2. preflight + snapshot
-bash "$NGINX_SYNC" preflight
+nginx_sync preflight
 install -d -m 0755 /opt/mag-stack/releases
 install -d -m 0700 "$BACKUP"
 # Encrypted pre-deploy snapshot (restic, ~10 s). A backup problem is reported
@@ -157,7 +160,7 @@ rollback() {
     systemctl restart mag-audit-gateway.service || :
     systemctl restart mag-120.service mag-browser-webrtc.service || :
   fi
-  MAG_NGINX_TXN="$BACKUP" bash "$NGINX_SYNC" rollback || :
+  MAG_NGINX_TXN="$BACKUP" nginx_sync rollback || :
   if (( phase >= 2 )); then
     wait_http "$ROOM/readyz" 30 || echo 'deploy: previous room did not come back; see journalctl -u mag-120' >&2
   fi
@@ -165,7 +168,7 @@ rollback() {
 
 export MAG_NGINX_TXN="$BACKUP"
 phase=1
-bash "$NGINX_SYNC" stage
+nginx_sync stage
 phase=2
 ln -sfn "$RELEASE" /opt/mag-stack/.current-next
 mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
@@ -235,9 +238,9 @@ systemctl restart mag-120.service
 systemctl restart mag-browser-webrtc.service
 wait_http "$ROOM/readyz" 60 || { echo 'deploy: room did not answer /readyz' >&2; exit 1; }
 soft wait_http http://127.0.0.1:18784/health 20
-bash "$NGINX_SYNC" activate
-bash "$NGINX_SYNC" smoke
-bash "$NGINX_SYNC" commit
+nginx_sync activate
+nginx_sync smoke
+nginx_sync commit
 # The release is live and verified: nothing below may roll it back.
 phase=3
 log "release $RELEASE_ID is live"

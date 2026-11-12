@@ -543,7 +543,10 @@ static void step(Bot &b) {
   // Resume a download nobody is working on: one file at a time, only when
   // no process has it open (a second writer would corrupt it), and the
   // optional drafter and vision projector only once the model itself is complete.
+  // A host that must not download (a trial install: /etc/mag-stack/no-model-download)
+  // leaves every model missing.
   for (Artifact *a : {&b.model, &b.draft, &b.mmproj}) {
+    if (access("/etc/mag-stack/no-model-download", F_OK) == 0) break;
     if (!a->configured || a->url.empty() || a->complete() || a->verify == Artifact::OK) continue;
     if (a != &b.model && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file

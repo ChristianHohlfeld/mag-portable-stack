@@ -1,0 +1,7 @@
+# ROCm 6.3 torch for the MI50 (gfx906), exactly as in the venv on mag:
+# URL and SHA256 (from https://download.pytorch.org/whl/rocm6.3/ on 2026-11-12).
+# setup.sh keeps a copy of each in ~/idol-mi50/wheelhouse (it is in the system
+# backup), so a rebuild does not depend on the index still serving them.
+https://download-r2.pytorch.org/whl/rocm6.3/torch-2.7.1%2Brocm6.3-cp312-cp312-manylinux_2_28_x86_64.whl b0c10342f64a34998ae8d5084aa1beae7e11defa46a4e05fe9aa6f09ffb0db37
+https://download-r2.pytorch.org/whl/rocm6.3/torchvision-0.22.1%2Brocm6.3-cp312-cp312-manylinux_2_28_x86_64.whl 0dce205fb04d9eb2f6feb74faf17cba9180aff70a8c8ac084912ce41b2dc0ab7
+https://download-r2.pytorch.org/whl/pytorch_triton_rocm-3.3.1-cp312-cp312-linux_x86_64.whl 977423eee5c542a3f8aa4f527aec1688c4d485f207089cb595a8e638fcc3888a

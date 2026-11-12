@@ -32,7 +32,9 @@ for spec in 'xatlas:xatlas' 'PIL:Pillow' 'fast_simplification:fast-simplificatio
   module=${spec%%:*}
   package=${spec#*:}
   if ! "$PY" -c "import ${module}" >/dev/null 2>&1; then
-    "$PY" -m pip install --no-input --disable-pip-version-check --no-deps "$package"
+    # The version the venv was locked at (env/requirements.lock).
+    pin=$(grep -iE "^${package//-/[-_]}==" /opt/mag-stack/current/ops/idol/env/requirements.lock | head -1 | cut -d' ' -f1)
+    "$PY" -m pip install --no-input --disable-pip-version-check --no-deps "${pin:-$package}"
   fi
 done
 "$PY" - <<'PY'
@@ -72,7 +74,7 @@ if [[ -d $TRIPO/src && ! -x $TRIPO/venv/bin/python ]]; then
   site=$("$PY" -c 'import site; print(site.getsitepackages()[0])')
   mine=$("$TRIPO/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
   echo "$site" > "$mine/zz-idol-venv.pth"
-  sudo -u "$MAG_OWNER" "$TRIPO/venv/bin/pip" install -q --no-deps einops jaxtyping typeguard wadler-lindig peft omegaconf 'antlr4-python3-runtime==4.9.3' accelerate psutil \
+  sudo -u "$MAG_OWNER" "$TRIPO/venv/bin/pip" install -q --no-deps --require-hashes -r /opt/mag-stack/current/ops/idol/env/triposg.lock \
     || echo 'TripoSG environment incomplete; the mesh is made from the splat' >&2
 fi
 # A video from a picture (videogen.py): Wan 2.2 I2V-A14B in an environment of
@@ -86,7 +88,7 @@ if [[ ! -x $VIDEO/venv/bin/python ]]; then
   site=$("$PY" -c 'import site; print(site.getsitepackages()[0])')
   mine=$("$VIDEO/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
   echo "$site" > "$mine/zz-idol-venv.pth"
-  sudo -u "$MAG_OWNER" "$VIDEO/venv/bin/pip" install -q --no-deps gguf ftfy wcwidth peft accelerate sentencepiece \
+  sudo -u "$MAG_OWNER" "$VIDEO/venv/bin/pip" install -q --no-deps --require-hashes -r /opt/mag-stack/current/ops/idol/env/video.lock \
     || echo 'Video environment incomplete; videos stay off' >&2
 fi
 install -d -o "$MAG_OWNER" -g "$MAG_OWNER" -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp

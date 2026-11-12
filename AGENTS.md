@@ -145,6 +145,11 @@ the golden image). The last four stay. A restore stops the VM and puts a save
 in its place; the disk it replaces is kept as a save first, so a restore is
 undone by restoring that. It is in the bot's record like a reset and goes on
 after a restart; the conversation and memories stay. A reset leaves the saves.
+A backup of everything is one request away: "Jetzt alles sichern" in the
+settings, or a bot's `backup` tool when Chris asks in the chat. It starts
+`mag-backup-chat.service` (restic: room, Gitea, configuration; never models
+or VM images) and `mag-bot-saves@chat.service` (a save of every bot VM) in
+the background; restoring stays Chris's (a bot's sheet, `ops/backup/restore.sh`).
 Browser and terminal run over the VM's realtime link: `mag-browser` in the
 VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
 channels to the page. Pictures over HTTPS and single commands are only the

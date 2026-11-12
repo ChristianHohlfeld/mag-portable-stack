@@ -99,6 +99,7 @@ public:
         return http::send_json(fd, 200, v);
       }
       if (p == "/api/system") return system_info(fd);
+      if (p == "/api/backup") return http::send_json(fd, 200, backup::status(room_, guests_));
       if (starts_with(p, "/api/vm/")) {
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
         if (ends_with(p, "/files")) return vm_files(fd, r);
@@ -238,6 +239,11 @@ public:
       const std::string bot = p.substr(8, p.size() - 8 - 6);
       if (!room_.bot(bot).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
       const std::string why = engine_.reset_vm(bot);
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+    }
+    if (r.method == "POST" && p == "/api/backup") {
+      // Everything now: the room, Gitea and configuration, and every bot VM.
+      const std::string why = backup::start(guests_);
       return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
     }
     if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/save")) {

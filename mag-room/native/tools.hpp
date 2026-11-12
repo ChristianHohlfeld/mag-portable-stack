@@ -2,6 +2,7 @@
 // stays cacheable). Each call returns the text the model reads; what the
 // user sees (real command, live output, runtime) is the step in the message.
 #pragma once
+#include "backup.hpp"
 #include "room.hpp"
 #include "scene.hpp"
 #include "site.hpp"
@@ -93,6 +94,12 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("when":{"type":"string","description":"save: when the skill applies"},"steps":{"type":"string","description":"save: the steps"},)j"
                R"j("verify":{"type":"string","description":"save: how to check the result"},)j"
                R"j("approval":{"type":"string","description":"save: what needs Chris's approval first"}},"required":["action"]})j"));
+  list.push(fn("backup",
+               "A backup of the whole MAG system, when Chris asks for one: the room (chat, files, memories, skills, settings), Gitea and the "
+               "configuration as an encrypted snapshot, and a save of every bot's VM (files, programs, browser data, site). action start "
+               "begins it in the background (minutes); action status tells how the last ones went. Restoring is Chris's: he does it in a "
+               "bot's sheet or on the host, never you.",
+               R"({"type":"object","properties":{"action":{"type":"string","enum":["start","status"]}},"required":["action"]})"));
   list.push(fn("models_3d",
                "List the 3D models in the chat (results of photo to 3D, uploaded .glb files) and the figures each one shows. "
                "Call it before scene_3d.",
@@ -201,6 +208,7 @@ inline std::string title(const std::string &name, const Val &args) {
     return action == "save" ? "Speichert den Skill " + one(jstr(args, "name"), 60) : action == "read" ? "Liest den Skill " + one(jstr(args, "name"), 60) : "Sieht die Skills durch";
   }
   if (name == "models_3d") return "Sieht die 3D-Modelle durch";
+  if (name == "backup") return jstr(args, "action") == "start" ? "Startet eine Sicherung von allem" : "Sieht nach den Sicherungen";
   if (name == "scene_3d") return "Baut die 3D-Szene " + one(jstr(args, "title", "ohne Titel"), 80);
   if (name == "image_generate") return "Malt ein Bild: " + one(jstr(args, "prompt"), 80);
   if (name == "video_generate") return "Macht ein Video: " + one(jstr(args, "prompt"), 80);
@@ -495,6 +503,15 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     skill["by"] = jstr(ctx.bot, "id");
     const std::string why = ctx.room.save_skill(skill);
     return why.empty() ? Result{"Skill gespeichert: " + wanted + ". Er beschreibt Arbeit und erlaubt nichts: Freigaben gelten wie immer.", true} : fail(why);
+  }
+  if (name == "backup") {
+    if (jstr(args, "action") == "start") {
+      const std::string why = backup::start(ctx.guests);
+      if (!why.empty()) return fail(why);
+      return {"Die Sicherung läuft im Hintergrund: Raum, Gitea und Konfiguration (restic, etwa eine Minute) und jede Bot-VM "
+              "(einige Minuten je VM; die VMs laufen dabei weiter). Sag Chris, dass sie läuft; mit action status siehst du später, wie sie ausging.", true};
+    }
+    return {backup::report(ctx.room, ctx.guests), true};
   }
   if (name == "image_generate") {
     if (!ctx.imagine) return fail("Bilder malen ist hier nicht eingerichtet.");

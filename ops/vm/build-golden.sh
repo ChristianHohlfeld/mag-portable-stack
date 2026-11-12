@@ -15,14 +15,18 @@
 # ops/vm/vm-chrome-policy.json.
 #
 # Pinned: the cloud image. Not pinnable: Ubuntu archive updates and Google
-# Chrome stable (Google's apt repo serves only the current build). Both
-# versions are recorded in golden.qcow2.manifest next to the image.
+# Google Chrome at a fixed version (CHROME_VERSION, its SHA256 below): the
+# .deb is fetched once from Google's pool into the cache and handed to the
+# build boot from there (Google's pool keeps only recent builds, so the cache
+# copy is what makes a rebuild repeatable; it is in the system backup). The
+# image holds the package (apt-mark hold, no Google apt source), so a bot VM
+# never updates it. Both versions are recorded in golden.qcow2.manifest.
 #
 #   sudo bash ops/vm/build-golden.sh            build only if golden.qcow2 is absent
 #   sudo bash ops/vm/build-golden.sh --force    rebuild (refused while bot overlays exist)
 #   bash ops/vm/build-golden.sh --print-pin     show the pinned image
 # Env: MAGBOT_ROOT (default /var/lib/libvirt/images/magbot),
-#      MAG_GOLDEN_CACHE (download cache, default /var/cache/mag-golden),
+#      MAG_GOLDEN_CACHE (pinned downloads, default /var/lib/mag-golden),
 #      MAG_GOLDEN_TIMEOUT (seconds for the customise boot, default 3600),
 #      MAG_GOLDEN_ACCEL=tcg (no KVM; several times slower).
 # Never touches running bot VMs, their overlays or the room.
@@ -34,9 +38,14 @@ UBUNTU_IMAGE=ubuntu-24.04-server-cloudimg-amd64.img
 UBUNTU_URL=https://cloud-images.ubuntu.com/releases/noble/release-$UBUNTU_SERIAL/$UBUNTU_IMAGE
 # From https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS
 UBUNTU_SHA256=04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
+# From https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages (2026-11-12)
+CHROME_VERSION=157.0.8103.78-1
+CHROME_DEB=google-chrome-stable_${CHROME_VERSION}_amd64.deb
+CHROME_URL=https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/$CHROME_DEB
+CHROME_SHA256=4d740636b5c96f687798602c5aad6a5a270f44dd02e48db0638ae77aa4867b1b
 GOLDEN_VIRTUAL_SIZE=12G   # bot overlays are >= 20 GiB (vm.cpp default_disk_gib)
 MAGBOT_ROOT=${MAGBOT_ROOT:-/var/lib/libvirt/images/magbot}
-CACHE=${MAG_GOLDEN_CACHE:-/var/cache/mag-golden}
+CACHE=${MAG_GOLDEN_CACHE:-/var/lib/mag-golden}
 TIMEOUT=${MAG_GOLDEN_TIMEOUT:-3600}
 FORCE=0
 case "${1:-}" in
@@ -83,9 +92,23 @@ if [[ ! -s $base ]] || ! printf '%s  %s\n' "$UBUNTU_SHA256" "$base" | sha256sum 
   mv -f "$base.part" "$base"
 fi
 log "cloud image $UBUNTU_SERIAL verified"
+chrome_deb="$CACHE/$CHROME_DEB"
+if [[ ! -s $chrome_deb ]] || ! printf '%s  %s\n' "$CHROME_SHA256" "$chrome_deb" | sha256sum -c --quiet - >/dev/null 2>&1; then
+  log "downloading Chrome $CHROME_VERSION"
+  curl -fL --retry 3 --connect-timeout 20 "$CHROME_URL" -o "$chrome_deb.part" ||
+    { rm -f "$chrome_deb.part"; echo "golden: Chrome $CHROME_VERSION is no longer in Google's pool; put $CHROME_DEB (SHA256 $CHROME_SHA256) into $CACHE (a system backup has it)" >&2; exit 1; }
+  printf '%s  %s\n' "$CHROME_SHA256" "$chrome_deb.part" | sha256sum -c --quiet - ||
+    { rm -f "$chrome_deb.part"; echo 'golden: Chrome SHA256 mismatch' >&2; exit 1; }
+  mv -f "$chrome_deb.part" "$chrome_deb"
+fi
+log "Chrome $CHROME_VERSION verified"
+# The build boot fetches the .deb from here (QEMU user networking: 10.0.2.2 is this host's loopback).
+serve_port=$(( 20000 + RANDOM % 20000 ))
+python3 -m http.server --bind 127.0.0.1 --directory "$CACHE" "$serve_port" >/dev/null 2>&1 &
+serve_pid=$!
 
 work=$(mktemp -d "$MAGBOT_ROOT/base/.golden-build.XXXXXXXX")
-cleanup() { rm -rf -- "$work"; }
+cleanup() { kill "$serve_pid" 2>/dev/null || :; rm -rf -- "$work"; }
 trap cleanup EXIT
 qemu-img convert -f qcow2 -O qcow2 "$base" "$work/disk.qcow2"
 qemu-img resize -q "$work/disk.qcow2" "$GOLDEN_VIRTUAL_SIZE"
@@ -137,9 +160,10 @@ $policy
 runcmd:
   - [sh, -c, 'locale-gen de_DE.UTF-8 en_US.UTF-8']
   - [sh, -c, 'install -d -m 0755 /etc/apt/keyrings /opt/magbot/browsers /var/lib/magbot']
-  - [sh, -c, 'curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg']
-  - [sh, -c, 'echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list']
-  - [sh, -c, 'apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q google-chrome-stable']
+  - [sh, -c, 'echo repo_add_once=false > /etc/default/google-chrome']
+  - [sh, -c, 'curl -fsS -o /tmp/$CHROME_DEB http://10.0.2.2:$serve_port/$CHROME_DEB && echo "$CHROME_SHA256  /tmp/$CHROME_DEB" | sha256sum -c -']
+  - [sh, -c, 'apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q /tmp/$CHROME_DEB && apt-mark hold google-chrome-stable']
+  - [sh, -c, 'rm -f /etc/apt/sources.list.d/google-chrome.list /etc/cron.daily/google-chrome']
   - [sh, -c, 'test -x /opt/google/chrome/chrome && test -x /usr/bin/Xvfb && test -x /usr/bin/certutil && test -x /usr/sbin/qemu-ga']
   - [systemctl, enable, qemu-guest-agent]
   - [sh, -c, 'rm -f /var/lib/magbot/ready']

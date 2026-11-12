@@ -16,12 +16,26 @@ as() { sudo -u "$user" -H "$@"; }
 IDOL_SDK_COMMIT=4702a7f00850e34b6e83a2170cc123c3e9570744
 TRIPOSG_COMMIT=fc5c409
 install -d -o "$user" -g "$user" "$BASE" "$BASE/weights"
-# 1. The venv: torch 2.7.1 for ROCm 6.3 (gfx906 works with it), then the rest exactly.
+# 1. The venv: torch 2.7.1 for ROCm 6.3 (gfx906 works with it) from the
+#    wheelhouse (fetched once, each wheel checked against torch.lock), then
+#    the rest exactly and hash-checked (requirements.lock).
+WH=$BASE/wheelhouse
+as install -d "$WH"
+wheels=()
+while read -r url sum; do
+  [[ $url == https://* ]] || continue
+  file=$WH/$(basename "${url//%2B/+}")
+  if ! { [[ -s $file ]] && printf '%s  %s\n' "$sum" "$file" | sha256sum -c --quiet - >/dev/null 2>&1; }; then
+    as curl -fL --retry 10 --retry-delay 5 -C - -o "$file.part" "$url"
+    printf '%s  %s\n' "$sum" "$file.part" | sha256sum -c --quiet - || { rm -f "$file.part"; echo "idol: $(basename "$file") SHA256 mismatch" >&2; exit 1; }
+    as mv "$file.part" "$file"
+  fi
+  wheels+=("$file")
+done < "$here/torch.lock"
 if [[ ! -x $BASE/venv/bin/python ]]; then
   as python3 -m venv "$BASE/venv"
-  as "$BASE/venv/bin/pip" install -q --index-url https://download.pytorch.org/whl/rocm6.3 \
-    torch==2.7.1+rocm6.3 torchvision==0.22.1+rocm6.3 pytorch-triton-rocm==3.3.1
-  as "$BASE/venv/bin/pip" install -q --no-deps -r "$here/requirements.lock"
+  as "$BASE/venv/bin/pip" install -q --no-deps "${wheels[@]}"
+  as "$BASE/venv/bin/pip" install -q --no-deps --require-hashes -r "$here/requirements.lock"
 fi
 # 2. idol-sdk with the MI50 patch, editable.
 if [[ ! -d $BASE/idol-sdk/.git ]]; then

@@ -25,7 +25,7 @@ fi
 run() { echo "+ $*"; if [[ $APPLY -eq 1 ]]; then "$@"; fi; }
 [[ $EUID -eq 0 ]] || { echo "bitte mit sudo"; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-for f in ops/audit/mitm_audit_addon.py ops/audit/mag-audit.nft ops/audit/apply-nft.sh ops/audit/blocklist.txt \
+for f in ops/audit/mitm_audit_addon.py ops/audit/mitmproxy.lock ops/audit/mag-audit.nft ops/audit/apply-nft.sh ops/audit/blocklist.txt \
          ops/audit/vm-proxy-setup.sh ops/audit/detect-vm-net.sh ops/audit/mag-audit-tail \
          ops/audit/systemd/mag-audit-gateway.service ops/audit/systemd/mag-audit-webproxy.service \
          ops/audit/systemd/mag-audit-webproxy.10-binary.conf ops/audit/systemd/mag-audit-nft.service; do
@@ -76,7 +76,7 @@ if [[ ! -x /opt/mag-audit/venv/bin/mitmdump ]]; then
   command -v python3 >/dev/null
   python3 -c 'import venv' 2>/dev/null || run apt-get install -y python3-venv
   run python3 -m venv /opt/mag-audit/venv
-  run /opt/mag-audit/venv/bin/pip install --quiet 'mitmproxy>=10,<12'
+  run /opt/mag-audit/venv/bin/pip install --quiet --no-deps --require-hashes -r "$SRC/ops/audit/mitmproxy.lock"
 fi
 if [[ $APPLY -eq 1 && ! -f /var/lib/mag-audit/mitmproxy/mitmproxy-ca-cert.pem ]]; then
   echo "   CA erzeugen"

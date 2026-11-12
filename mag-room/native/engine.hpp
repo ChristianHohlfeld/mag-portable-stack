@@ -2184,6 +2184,7 @@ private:
     bool blocked = false;    // a card ended without a yes (consent, login): a real blocker
     int drives = 0;          // times the room sent the bot back to its goal in this turn
     bool login_wall = false; // the browser shows a login, a password field or a code page
+    bool yielded = false;    // another bot carries the task out: this turn ends and is not shown
     std::string tool_sig;
     int steps = 0;
     size_t asked_at = 0;     // parts of the message that were there when Chris last wrote into this turn
@@ -2592,6 +2593,7 @@ private:
           for (auto &o : all.asArr()) if (jstr(o, "id") == lead) who = jstr(o, "name");
           result = {who + " erledigt diese Aufgabe schon. Mach sie nicht doppelt: ergänze höchstens kurz mit Worten, was " + who +
                         " fehlt, sonst antworte PASS.", false};
+          t.yielded = true;
         } else if (bad_args) {
           result = tools::fail("Die Argumente dieses Aufrufs waren kein gültiges JSON-Objekt (unvollständig oder falsch geschlossen); er wurde nicht ausgeführt. "
                                "Rufe das Werkzeug noch einmal mit vollständigen Argumenten auf, wenn du es noch brauchst.");
@@ -2748,6 +2750,7 @@ private:
         }
       }
       if (cancelled) break;
+      if (t.yielded) break; // the other bot does it; this one says nothing more
       if (mono_ms() > deadline || step == room_.cfg.max_steps) {
         failed = true;
         error = step == room_.cfg.max_steps ? "Schrittlimit erreicht; schreibe eine Nachricht, wenn ich weitermachen soll."
@@ -2770,6 +2773,8 @@ private:
     emit_text(b, t, "", name, reason, true);
     ensure_message(b, t, reason);
     if (t.id.empty()) return;
+    // A bot that wanted to do what the other one already does leaves no message in the chat.
+    if (t.yielded) room_.update(t.id, [](Val &m) { m["yielded"] = true; });
     show_thoughts(t);
     std::string text;
     bool wants_more = false;

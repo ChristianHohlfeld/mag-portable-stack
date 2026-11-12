@@ -766,6 +766,8 @@
       const texts = (m.parts || []).length ? m.parts : [{ k: 'text', text: m.text || '' }];
       if (m.role === 'bot' && m.state !== 'streaming' && !(m.attachments || []).length && texts.every((p) => p.k === 'text' && !tidy(p.text || '')))
         node.hidden = true;
+      // The other bot carried the task out; this one stood back.
+      if (m.yielded || (m.state !== 'streaming' && (m.parts || []).some((p) => p.k === 'step' && / erledigt diese Aufgabe schon/.test(p.output || '')))) node.hidden = true;
     }
     if (atts) node.append(atts);
     const note = footer(m);

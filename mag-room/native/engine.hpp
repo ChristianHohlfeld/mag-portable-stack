@@ -1507,7 +1507,8 @@ private:
       set_phase(b, "tool", "Sieht sich " + job.name + " an");
       const std::string ask = "(Notiz des Raums, nicht von Chris: Beschreibe das Bild " + job.name +
                               ", das direkt vor dieser Notiz steht, und nur dieses, kein anderes Bild aus dem Gespräch. "
-                              "Zwei bis vier sachliche Sätze für jemanden, der es nicht sehen kann: was zu sehen ist, lesbarer Text, "
+                              "Beginne mit dem, was es zeigt, in ein bis drei Wörtern und einem Doppelpunkt (etwa „Roter Stuhl: …“), "
+                              "dann zwei bis vier sachliche Sätze für jemanden, der es nicht sehen kann: was zu sehen ist, lesbarer Text, "
                               "auffällige Details. Antworte nur mit der Beschreibung, ohne Werkzeug.)";
       Val msgs = request_messages(b, b.wire["messages"]);
       Val &last = msgs.arr->back();

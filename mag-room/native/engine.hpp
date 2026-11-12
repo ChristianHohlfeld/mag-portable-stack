@@ -1852,10 +1852,22 @@ private:
 
   // Tools that do something (as opposed to reading or remembering): one bot carries out a request.
   static bool acts(const std::string &tool) {
-    static const std::set<std::string> doing = {"shell", "write_file", "share_file", "consent", "routine", "image_generate",
+    // consent and routine ask or plan; they do not make a bot the one that carries the task out.
+    static const std::set<std::string> doing = {"shell", "write_file", "share_file", "image_generate",
                                                 "video_generate", "photo_to_3d", "scene_3d", "browser_login", "browser_pay"};
     return doing.count(tool) || (starts_with(tool, "browser_") && tool != "browser_read") || starts_with(tool, "s23_") ||
            Plugins::is_tool(tool);
+  }
+
+  // A text that asks Chris for a login, a password or a code instead of calling browser_login.
+  static bool wants_login(const std::string &text) {
+    const std::string low = lower(text);
+    const auto has = [&](std::initializer_list<const char *> words) {
+      for (const char *w : words) if (low.find(w) != std::string::npos) return true;
+      return false;
+    };
+    return has({"passwort", "zugangsdaten", "code", "anmeld", "einlogg", "login", "verifizier"}) &&
+           has({"?", "bitte", "schick", "gib mir", "nenn", "teile mir", "brauche"});
   }
 
   // A text that says what the bot will do instead of doing it.
@@ -2511,7 +2523,7 @@ private:
         // after a failed step, without a word, or saying what it will do
         // next, is sent back to the goal (three times a turn at most). A
         // card that ended without a yes is a real blocker and ends the work.
-        if (reason == "human" && t.steps > 0 && !t.blocked && t.drives < 3 && t.login_wall) {
+        if (reason == "human" && !t.blocked && t.drives < 3 && vm::valid_name(jstr(me, "vm")) && (t.login_wall || (!t.steps && wants_login(content)))) {
           ++t.drives;
           logf("engine: " + b.id + " stopped at a login page; the room has it call browser_login");
           Val note = Val::object();

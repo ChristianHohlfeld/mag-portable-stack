@@ -357,6 +357,32 @@
           cardsCard.append(el('details', { class: 'mem skill add' }, el('summary', {}, el('b', { text: 'Karte hinzufügen' })), el('div', { class: 'form' }, number, exp, holder, save)));
         }).catch(() => {});
         loadCards();
+
+        // Logins Chris typed into a login card, kept sealed per site and account; offered again on that site's next card.
+        const loginsCard = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Logins' }), loginsCard,
+          el('p', { class: 'fine', text: 'Jeder Login aus einer Anmeldekarte wird verschlüsselt im Tresor gespeichert (AES-256-GCM) und beim nächsten Mal für dieselbe Seite angeboten; der Raum trägt ihn ein, die Bots sehen ihn nie. Passkeys und Codes laufen weiter über „Selbst im Browser“.' }));
+        const loadLogins = () => MAG.api('GET', '/api/vault/logins').then((out) => {
+          loginsCard.replaceChildren();
+          if (!out.logins.length) loginsCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keiner. Er kommt mit der ersten Anmeldekarte, die du ausfüllst.' }))));
+          for (const l of out.logins) {
+            const shown = el('code', { class: 'secret', hidden: true });
+            const user = el('input', { type: 'text', value: l.user, autocomplete: 'off', placeholder: 'Benutzer', 'aria-label': 'Benutzer' });
+            const pass = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Neues Passwort (leer: bleibt)', 'aria-label': 'Neues Passwort' });
+            loginsCard.append(el('details', { class: 'mem skill' },
+              el('summary', {}, el('b', { text: l.site }), el('small', { text: ' · ' + (l.user || 'ohne Benutzer') + (l.saved ? ' · ' + MAG.day(l.saved * 1000) : '') })),
+              shown,
+              el('div', { class: 'form' }, user, pass),
+              el('span', { class: 'pair' },
+                el('button', { class: 'pill', text: 'Passwort zeigen', onclick: (e) => {
+                  if (!shown.hidden) { shown.hidden = true; shown.textContent = ''; return; }
+                  call('POST', '/api/vault/logins/' + l.id + '/reveal').then((v) => { shown.textContent = v.password; shown.hidden = false; setTimeout(() => { shown.hidden = true; shown.textContent = ''; }, 20000); });
+                } }),
+                el('button', { class: 'pill', text: 'Speichern', onclick: () => call('PUT', '/api/vault/logins/' + l.id, { user: user.value, password: pass.value }).then(() => { MAG.toast('Login geändert'); loadLogins(); }) }),
+                el('button', { class: 'pill danger', text: 'Löschen', onclick: () => call('DELETE', '/api/vault/logins/' + l.id).then(loadLogins) }))));
+          }
+        }).catch(() => {});
+        loadLogins();
       }
 
       // What the bots wrote down for each other: how they do recurring work.

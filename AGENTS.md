@@ -193,8 +193,9 @@ every element it can act on, numbered with label and point (and a picture
 for the step in the chat), and it clicks or types by number, by point or by
 visible text, presses keys and waits. A login, captcha or code is never
 typed by a model: `browser_login` puts a card at its step, where Chris types
-his login into a form that the room fills into the VM's page (never stored,
-logged or shown to a model) or takes the bot's browser over himself; then
+his login into a form that the room fills into the VM's page (kept sealed
+in the vault per site and account and offered again on that site's next
+card, never logged or shown to a model) or takes the bot's browser over himself; then
 the bot sees the page and goes on. Sessions and cookies stay in the VM's
 Chrome profile. A model's thoughts are never shown in the chat.
 At a checkout a bot calls `browser_pay`: the purchase goes through

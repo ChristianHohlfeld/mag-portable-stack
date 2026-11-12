@@ -5,6 +5,11 @@
 // a card is its brand and last four digits; a model sees nothing but that.
 // At a checkout the room types the card into the page of the bot's browser
 // (Api::fill_card), after the purchase was allowed (consent, kind buy).
+//
+// Logins, the same way: every login Chris types into a login card is kept,
+// per site and account, sealed in STATE/pay/logins.enc (whether it worked or
+// not), and offered again on the next login card of that site ("use the
+// saved login?"); the room types it in. A model never sees a password.
 #pragma once
 #include "assist.hpp"
 
@@ -79,6 +84,90 @@ public:
     return Val();
   }
 
+  // ---- logins ---------------------------------------------------------------
+  // amazon.de from "https://www.amazon.de/ap/signin?…", "Amazon.de" or "www.amazon.de".
+  static std::string site_of(std::string s) {
+    s = lower(trim(s));
+    if (const size_t at = s.find("://"); at != std::string::npos) s = s.substr(at + 3);
+    s = s.substr(0, s.find_first_of("/?#: "));
+    if (starts_with(s, "www.")) s = s.substr(4);
+    return s;
+  }
+
+  // Site and account of each login; never the password.
+  Val logins(const std::string &site = "") {
+    std::lock_guard<std::mutex> lk(mu_);
+    Val out = Val::array();
+    const Val all = load("logins.enc");
+    const std::string want = site_of(site);
+    for (auto &l : all.asArr()) {
+      if (!want.empty() && jstr(l, "site") != want && !ends_with(want, "." + jstr(l, "site")) && !ends_with(jstr(l, "site"), "." + want)) continue;
+      Val one = Val::object();
+      one["id"] = jstr(l, "id");
+      one["site"] = jstr(l, "site");
+      one["user"] = jstr(l, "user");
+      one["saved"] = jnum(l, "saved");
+      out.push(one);
+    }
+    return out;
+  }
+
+  // Kept (the same site and account is replaced); returns its id, "" if it could not be kept.
+  std::string keep_login(const std::string &site_in, const std::string &user, const std::string &password) {
+    const std::string site = site_of(site_in);
+    if (site.empty() || (user.empty() && password.empty())) return "";
+    std::lock_guard<std::mutex> lk(mu_);
+    Val all = load("logins.enc"), kept = Val::array();
+    std::string id;
+    for (auto &l : all.asArr()) {
+      if (jstr(l, "site") == site && jstr(l, "user") == user) { id = jstr(l, "id"); continue; }
+      kept.push(l);
+    }
+    Val l = Val::object();
+    l["id"] = id.empty() ? random_hex(6) : id;
+    l["site"] = site;
+    l["user"] = user;
+    l["password"] = password;
+    l["saved"] = (double)now_s();
+    kept.push(l);
+    return save(kept, "logins.enc") ? jstr(l, "id") : "";
+  }
+
+  // Changed by Chris in the settings (an empty password keeps the old one).
+  bool change_login(const std::string &id, const std::string &user, const std::string &password) {
+    std::lock_guard<std::mutex> lk(mu_);
+    Val all = load("logins.enc");
+    bool found = false;
+    for (auto &l : *all.arr)
+      if (jstr(l, "id") == id) {
+        found = true;
+        if (!user.empty()) l["user"] = user;
+        if (!password.empty()) l["password"] = password;
+        l["saved"] = (double)now_s();
+      }
+    return found && save(all, "logins.enc");
+  }
+
+  bool remove_login(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    Val all = load("logins.enc"), kept = Val::array();
+    bool found = false;
+    for (auto &l : all.asArr()) {
+      if (jstr(l, "id") == id) found = true;
+      else kept.push(l);
+    }
+    return found && save(kept, "logins.enc");
+  }
+
+  // The whole login, for typing it into a page (or showing it to Chris); null when there is none.
+  Val open_login(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const Val all = load("logins.enc");
+    for (auto &l : all.asArr())
+      if (jstr(l, "id") == id) return l;
+    return Val();
+  }
+
   static std::string brand(const std::string &n) {
     if (n.empty()) return "Karte";
     if (n[0] == '4') return "Visa";
@@ -104,15 +193,15 @@ private:
     }
     return key_;
   }
-  Val load() {
-    const std::string sealed = trim(slurp(dir() + "/cards.enc"));
+  Val load(const std::string &file = "cards.enc") {
+    const std::string sealed = trim(slurp(dir() + "/" + file));
     if (sealed.empty()) return Val::array();
     const Val all = jparse(gcm_open(key(), sealed));
     return all.isArr() ? all : Val::array();
   }
-  bool save(const Val &all) {
+  bool save(const Val &all, const std::string &file = "cards.enc") {
     const std::string sealed = gcm_seal(key(), mj::dump(all));
-    return !sealed.empty() && write_atomic(dir() + "/cards.enc", sealed + "\n", 0600);
+    return !sealed.empty() && write_atomic(dir() + "/" + file, sealed + "\n", 0600);
   }
   static bool luhn(const std::string &digits) {
     int sum = 0;

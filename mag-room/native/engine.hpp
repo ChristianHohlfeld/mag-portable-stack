@@ -13,6 +13,7 @@
 #include "group_dispatcher.hpp"
 #include "llm.hpp"
 #include "assist.hpp"
+#include "vault.hpp"
 #include "mcp.hpp"
 #include "room.hpp"
 #include "tools.hpp"
@@ -40,6 +41,8 @@ public:
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   // Set by main: approvals per action and routines.
   Assist *assist = nullptr;
+  // Set by main: Chris's sealed cards and logins (the bots see none of it).
+  Vault *vault = nullptr;
 
   void start() {
     int index = 0;
@@ -2625,22 +2628,31 @@ private:
                 if (ask.isObj()) s["approval"] = ask;
                 else s.obj->erase(std::remove_if(s.obj->begin(), s.obj->end(), [](const auto &kv) { return kv.first == "approval"; }), s.obj->end());
               });
-              set_phase(b, ask.isObj() ? "approval" : "tool", title);
+              const std::string kind = ask.isObj() ? jstr(ask, "action") : "";
+              set_phase(b, !ask.isObj() ? "tool" : kind == "login" ? "login" : kind == "pay" ? "paying" : "approval", title);
               if (ask.isObj() && on_approval) on_approval(name, title);
             };
             if (c.name == "browser_login" && assist && vm::valid_name(jstr(me, "vm"))) {
               // A login wall: Chris fills it through the card (the room types it into the
               // VM's browser, the model never sees it) or takes the browser over himself.
+              // First the room goes to the form itself (the sign-in link clicked), so the card
+              // asks for what the page asks for now; a saved login for the site is offered.
+              const Val form = tools::login_form(ctx, jstr(me, "vm"));
               Val ask = Val::object();
               ask["bot"] = b.id;
               ask["action"] = "login";
               ask["label"] = "Anmeldung";
-              ask["site"] = clip(trim(jstr(args, "site")), 120, "…");
+              std::string site = Vault::site_of(jstr(form, "url"));
+              if (site.empty() || site == "about:blank") site = Vault::site_of(jstr(args, "site"));
+              ask["site"] = clip(site, 120, "…");
               ask["what"] = clip(trim(jstr(args, "reason")), 300, "…");
+              ask["fields"] = Assist::at(form, "fields").isArr() ? Assist::at(form, "fields") : Val::array();
+              if (vault) ask["saved"] = vault->logins(site);
               const std::string decision = assist->await_card(ask, cancel.get(), card);
               if (decision == "done") {
                 tools::Result seen = tools::look(ctx, jstr(me, "vm"));
-                result = {"Chris hat die Anmeldung bei " + jstr(ask, "site") + " erledigt. Die Seite jetzt:\n" + seen.text, true};
+                result = {"Chris hat die Anmeldung bei " + jstr(ask, "site") + " erledigt. Die Seite jetzt:\n" + seen.text +
+                              "\nMach jetzt mit dem Ziel weiter. Will die Seite noch einen Code (2FA), rufe browser_login noch einmal auf.", true};
               } else {
                 result = {decision == "stopped" ? "abgebrochen (Stop)" : decision == "timeout" ? "Chris hat sich in 15 Minuten nicht angemeldet. Sag ihm kurz, dass du dort auf ihn wartest."
                           : "Chris hat die Anmeldung abgelehnt. Mach dort nicht weiter.", false};

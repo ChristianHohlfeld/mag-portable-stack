@@ -127,6 +127,7 @@ print(json.dumps({'files': out, 'cut': cut}))
     return false;
   };
   Vault vault(room);
+  engine.vault = &vault;
   Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist, vault);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);

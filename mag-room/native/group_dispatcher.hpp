@@ -10,7 +10,8 @@
 //    conversation runs server-side on its own like a human chat; a bot may
 //    choose an invisible PASS when it has nothing to say right now,
 //  - when every bot PASSes in a row the chat rests until the next message,
-//  - optional round budget MAG_ROOM_BOT_ROUNDS (0 = unlimited, the default),
+//  - optional round budget MAG_ROOM_BOT_ROUNDS (0 = unlimited, the default;
+//    counted in engine.hpp),
 //  - a new human message or Stop pre-empts every pending follow-up.
 #include <algorithm>
 #include <cctype>
@@ -22,10 +23,7 @@ namespace group_chat {
 
 struct Bot {
   std::string id, name;
-  bool coder = false; // code-specialised model (e.g. Flint on NUMA1)
 };
-
-constexpr int kMaxFollowups = 0; // 0 = unlimited
 
 inline std::string lower(std::string s) {
   for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -69,7 +67,7 @@ inline bool addresses_all(const std::string &text) {
 }
 
 // Names a bot can be called by: full name and its first token
-// ("Qwen3-Coder-Next" -> "qwen3-coder-next", "qwen3"). Tokens < 3 chars
+// ("Lena-Mini" -> "lena-mini", "lena"). Tokens < 3 chars
 // are ignored so "Q" or "ai" never match ordinary prose.
 inline std::vector<std::string> aliases(const Bot &b) {
   std::vector<std::string> out;
@@ -82,7 +80,7 @@ inline std::vector<std::string> aliases(const Bot &b) {
 }
 
 // `needle` occurs as a word in `t` outside every longer bot name that
-// contains it ("qwen3" inside "qwen3-coder-next" does not count).
+// contains it ("lena" inside "lena-mini" does not count).
 inline bool occurs_outside(std::string t, const std::string &needle,
                            const std::vector<Bot> &roster) {
   for (const auto &o : roster) {
@@ -156,84 +154,6 @@ inline std::vector<std::string> mentioned(const std::string &text, const std::ve
   return out;
 }
 
-inline bool looks_like_code(const std::string &text) {
-  const std::string t = lower(text);
-  if (t.find("```") != std::string::npos) return true;
-  for (const char *k : {"code", "coden", "programm", "skript", "script", "funktion",
-                        "function", "bug", "debug", "refactor", "html", "css",
-                        "python", "javascript", "typescript", "c++", "rust", "java",
-                        "sql", "regex", "compile", "kompil", "implementier", "repo",
-                        "github", "api", "klasse", "class ", "three.js", "app ",
-                        "webseite", "website", "spiel", "game", "terminal", "bash"})
-    if (t.find(k) != std::string::npos) return true;
-  return false;
-}
-
-// Preferred first speaker (ordering hint): code -> coder model,
-// otherwise the first general bot; fallback the first roster bot.
-inline std::string pick_speaker(const std::string &text, const std::vector<Bot> &roster) {
-  if (roster.empty()) return "";
-  const bool code = looks_like_code(text);
-  for (const auto &b : roster)
-    if (b.coder == code) return b.id;
-  return roster.front().id;
-}
-
-// Earliest position at which a bot is called by one of its names, npos if
-// never. Used to let "Noah und Lena, ..." start with Noah.
-inline size_t mention_pos(const std::string &text, const Bot &b,
-                          const std::vector<Bot> &roster) {
-  const std::string t = lower(text);
-  size_t best = std::string::npos;
-  for (const auto &al : aliases(b)) {
-    if (!occurs_outside(t, al, roster)) continue;
-    for (size_t p = t.find(al); p != std::string::npos; p = t.find(al, p + 1)) {
-      const size_t e = p + al.size();
-      const bool left = p == 0 || !word_char((unsigned char)t[p - 1]) || t[p - 1] == '@';
-      const bool right = e >= t.size() || !word_char((unsigned char)t[e]);
-      if (left && right) { best = std::min(best, p); break; }
-    }
-  }
-  return best;
-}
-
-// Speaking order for a human message several bots answer. Like people in a
-// group chat they do not start in unison: the bot named first speaks first
-// ("Noah und Lena ..."); code goes to the coder; otherwise the lead
-// alternates, so it is not always the same bot opening.
-inline std::vector<std::string> speaking_order(const std::string &text,
-                                               const std::vector<std::string> &ids,
-                                               const std::vector<Bot> &roster,
-                                               const std::string &last_lead) {
-  if (ids.size() < 2) return ids;
-  std::vector<std::pair<size_t, std::string>> named;
-  for (const auto &id : ids)
-    for (const auto &b : roster)
-      if (b.id == id) {
-        const size_t p = mention_pos(text, b, roster);
-        if (p != std::string::npos) named.push_back({p, id});
-      }
-  std::string lead;
-  if (!named.empty()) {
-    lead = std::min_element(named.begin(), named.end())->second;
-  } else if (looks_like_code(text)) {
-    for (const auto &b : roster)
-      if (b.coder && std::find(ids.begin(), ids.end(), b.id) != ids.end()) { lead = b.id; break; }
-  }
-  if (lead.empty()) {
-    lead = ids.front();
-    for (const auto &id : ids)
-      if (id != last_lead) { lead = id; break; }
-  }
-  std::vector<std::string> out{lead};
-  std::sort(named.begin(), named.end());
-  for (const auto &n : named)
-    if (std::find(out.begin(), out.end(), n.second) == out.end()) out.push_back(n.second);
-  for (const auto &id : ids)
-    if (std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
-  return out;
-}
-
 // Should-I-respond gate: the follow-up answer is the bare token PASS.
 // Strip wrapping brackets/markup/punctuation: "[PASS]", "(pass)", "<PASS>".
 inline std::string bare_token(const std::string &s) {
@@ -254,7 +174,7 @@ inline std::string norm_reply(const std::string &text) {
   return out;
 }
 // Meta lines a model writes instead of PASS. Never chat content: live
-// 2026-11-06/07 Ornith Lena chipped in with "Kein Content" (posted), and the
+// 2026-11-06/07 Lena chipped in with "Kein Content" (posted), and the
 // three copies in her own wire made her repeat it; Noah answered with a bare
 // room control marker "[[MAG:ENDE]]" (words "mag ende").
 inline const std::vector<std::string> &silent_markers() {
@@ -305,7 +225,7 @@ inline bool name_only(const std::string &text, const std::vector<std::string> &n
 }
 
 // While streaming: could this still end up as a bare name ("No", "[Noah",
-// "Noah (qwen-nu")? Then hold the bubble; it may turn out to be silent.
+// "Noah (gpt-o")? Then hold the bubble; it may turn out to be silent.
 inline bool maybe_name_only(const std::string &partial, const std::vector<std::string> &names) {
   const std::string c = lower(bare_token(partial));
   if (c.empty()) return true;
@@ -323,7 +243,7 @@ inline bool maybe_name_only(const std::string &partial, const std::vector<std::s
   }
   return false;
 }
-// "PASS" on its own first line followed by more text: Flint on the append-only
+// "PASS" on its own first line followed by more text: a model on the append-only
 // complement wire sometimes continues with an invented transcript
 // ("PASS\n\n- User: ..."). The first line decides.
 inline bool leading_pass(const std::string &text) {
@@ -358,51 +278,6 @@ inline bool maybe_pass(const std::string &partial) {
       if (m.rfind(t, 0) == 0 || norm_reply(t) == m) return true;
   return t.rfind("pass", 0) == 0 && t.size() <= 8 &&
          (t.size() == 4 || !word_char((unsigned char)t[4]));
-}
-
-// Bot-to-bot next speaker: a direct @mention takes priority. Without one,
-// alternate to another bot and let the recipient decide whether to PASS.
-// The budget is counted per completed bot-to-bot turn; max <= 0 = unlimited.
-inline std::string next_followup(const std::vector<Bot> &roster,
-                                 const std::vector<std::string> &spoken,
-                                 const std::string &speaker, int followups_used,
-                                 int max_followups = kMaxFollowups,
-                                 const std::string &reply = "") {
-  (void)spoken;
-  if (max_followups > 0 && followups_used >= max_followups) return "";
-  for (const auto &id : addressed(reply, roster))
-    if (id != speaker) return id;
-  for (const auto &b : roster)
-    if (b.id != speaker) return b.id;
-  return "";
-}
-
-inline const char *gate_instruction() {
-  return "\n[Gruppenchat]\nIhr unterhaltet euch ganz natürlich wie Menschen in "
-         "einem Gruppenchat. Lies die letzte Nachricht, geh darauf ein, frag nach, "
-         "erzähl, widersprich, wenn du anderer Meinung bist, sprich andere mit "
-         "Namen oder @ an. Wenn du gerade wirklich nichts sagen magst, antworte "
-         "nur PASS. Das wird nicht angezeigt.";
-}
-
-// Staggered answer to a human message: `lead` has already answered it (the
-// line above). React like a person who has just read that answer.
-inline std::string after_instruction(const std::string &lead, bool may_pass) {
-  std::string s = "\n[Gruppenchat]\n" + lead +
-      " hat auf die Nachricht schon geantwortet (siehe oben). Antworte jetzt du, "
-      "wie ein Mensch, der das gerade gelesen hat: bezieh dich darauf, wenn es "
-      "passt, ergänze, widersprich oder frag nach, aber wiederhole nichts, was " +
-      lead + " schon gesagt hat.";
-  if (may_pass) s += " Hast du wirklich nichts hinzuzufügen, antworte nur PASS. Das wird nicht angezeigt.";
-  return s;
-}
-
-// Direct turn after earlier complements in the same wire: the old PASS gate
-// text is still in the history and Flint kept answering PASS to greetings
-// (live 20:04, 20:32). Lift it explicitly for this message.
-inline const char *direct_instruction() {
-  return "\n[Gruppenchat]\nDiese Nachricht richtet sich direkt an dich: "
-         "antworte normal. PASS ist hier nicht erlaubt.";
 }
 
 } // namespace group_chat

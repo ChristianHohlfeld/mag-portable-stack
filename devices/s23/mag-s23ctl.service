@@ -3,7 +3,7 @@ Description=MAG S23 control (parallel to s23pub, not a replacement)
 After=network-online.target
 # No [Install] and no WantedBy. Start it by hand only after Chris confirms
 # that it is running beside s23pub. This unit does not listen on port 8720
-# and has no relationship to cloudflared, mag-llm, or mag-llm-iq3.
+# and has no relationship to cloudflared.
 
 [Service]
 Type=simple

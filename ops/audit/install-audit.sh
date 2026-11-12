@@ -12,10 +12,9 @@ set -euo pipefail
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 APPLY=0; [[ "${1:-}" == "--apply" ]] && APPLY=1
 # The gateway is the native C++ binary (build/mag-audit-gateway) behind the
-# repo unit ops/audit/systemd/mag-audit-gateway.service. A running gateway is
-# managed by ops/deepseek/iq3-parallel.sh: this installer then leaves its unit
-# and binary alone and only (re)installs proxy, nftables, CA and VM package.
-# On a blank host (ops/bootstrap.sh) it installs the built binary first.
+# repo unit ops/audit/systemd/mag-audit-gateway.service; deploy.sh keeps it
+# current. A running gateway is left alone here; on a blank host the built
+# binary is installed first.
 NATIVE_BIN=/opt/mag-audit/bin/mag-audit-gateway
 GATEWAY_ACTIVE=0
 systemctl is-active --quiet mag-audit-gateway.service 2>/dev/null && GATEWAY_ACTIVE=1
@@ -26,10 +25,10 @@ fi
 run() { echo "+ $*"; if [[ $APPLY -eq 1 ]]; then "$@"; fi; }
 [[ $EUID -eq 0 ]] || { echo "bitte mit sudo"; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-for f in ops/audit/mag_audit_gateway.py ops/audit/mitm_audit_addon.py ops/audit/mag-audit.nft \
+for f in ops/audit/mitm_audit_addon.py ops/audit/mag-audit.nft ops/audit/apply-nft.sh ops/audit/blocklist.txt \
          ops/audit/vm-proxy-setup.sh ops/audit/detect-vm-net.sh ops/audit/mag-audit-tail \
          ops/audit/systemd/mag-audit-gateway.service ops/audit/systemd/mag-audit-webproxy.service \
-         ops/audit/systemd/mag-audit-nft.service ops/mag-120.d/20-room-audit.conf; do
+         ops/audit/systemd/mag-audit-webproxy.10-binary.conf ops/audit/systemd/mag-audit-nft.service; do
   [[ -f "$SRC/$f" ]] || { echo "fehlt: $SRC/$f"; exit 1; }
 done
 id magbot >/dev/null 2>&1 || { echo "User magbot fehlt"; exit 1; }
@@ -59,7 +58,8 @@ run install -d -o root -g root -m 0755 /opt/mag-audit /etc/mag-audit/vm
 if [[ ! -f /etc/mag-audit/secrets.list ]]; then run install -o root -g mag-audit -m 0640 /dev/null /etc/mag-audit/secrets.list; fi
 
 echo "== 3. Programme nach /opt/mag-audit"
-run install -m 0644 "$SRC/ops/audit/mag_audit_gateway.py" "$SRC/ops/audit/mitm_audit_addon.py" /opt/mag-audit/
+run install -m 0644 "$SRC/ops/audit/mitm_audit_addon.py" /opt/mag-audit/
+[[ -e /etc/mag-audit/blocklist.txt ]] || run install -o root -g mag-audit -m 0644 "$SRC/ops/audit/blocklist.txt" /etc/mag-audit/blocklist.txt
 run install -m 0755 "$SRC/ops/audit/mag-audit-tail" /usr/local/bin/mag-audit-tail
 if [[ $GATEWAY_ACTIVE -eq 0 && -x "$SRC/build/mag-audit-gateway" ]]; then
   run install -d -m 0755 /opt/mag-audit/bin
@@ -118,29 +118,11 @@ if [[ $GATEWAY_ACTIVE -eq 0 ]]; then
   run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-gateway.service" /etc/systemd/system/
 fi
 run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-webproxy.service" "$SRC/ops/audit/systemd/mag-audit-nft.service" /etc/systemd/system/
-run install -d /etc/systemd/system/mag-120.service.d
-run install -m 0644 "$SRC/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
-run rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
-NOPROXY="127.0.0.1,localhost,::1,$VM_SUBNET,$VM_HOST_IP"
-if [[ $APPLY -eq 1 ]]; then
-  cat > /etc/systemd/system/mag-120.service.d/21-audit-net.conf <<EOF
-# erzeugt von ops/audit/install-audit.sh – VM-Netz/Bridge direkt, alles andere über den Audit-Proxy
-[Service]
-Environment="NO_PROXY=$NOPROXY"
-Environment="no_proxy=$NOPROXY"
-EOF
-else
-  echo "+ 21-audit-net.conf: NO_PROXY=$NOPROXY"
-fi
+run install -D -m 0644 "$SRC/ops/audit/systemd/mag-audit-webproxy.10-binary.conf" /etc/systemd/system/mag-audit-webproxy.service.d/10-binary.conf
+# The room's proxy settings (NO_PROXY for the VM network) are in ops/mag-120.service itself.
 
 echo "== 8. nftables (eigene Tabelle inet mag_audit; mag_agents und /etc/nftables.conf bleiben unberührt)"
-UID_AUDIT=$(id -u mag-audit 2>/dev/null || echo 65533)
-UID_MAGBOT=$(id -u magbot)
-sed -e "s/@UID_MAG_AUDIT@/$UID_AUDIT/g" -e "s/@UID_MAGBOT@/$UID_MAGBOT/g" \
-    -e "s|@VM_IFACES@|$VM_IFACES|g" -e "s|@VM_SUBNET@|$VM_SUBNET|g" \
-    "$SRC/ops/audit/mag-audit.nft" > "$TMP/mag-audit.nft"
-nft -c -f "$TMP/mag-audit.nft" && echo "   Syntax OK"
-run install -D -o root -g root -m 0640 "$TMP/mag-audit.nft" /etc/nftables.d/mag-audit.nft
+if [[ $APPLY -eq 1 ]]; then bash "$SRC/ops/audit/apply-nft.sh"; else echo "+ ops/audit/apply-nft.sh"; fi
 if ! grep -q 8888 <<<"$(nft list table inet mag_agents 2>/dev/null || true)"; then
   echo "   HINWEIS: Tabelle mag_agents erlaubt VM->Host :8888 erst nach dem Deploy dieses Branches"
   echo "            (ops/mag-agents.nft). Bis dahin haben die VMs keinen Web-Zugriff."
@@ -160,7 +142,7 @@ if [[ -d $ROOM ]]; then
   [[ -d $ROOM/files ]] && run setfacl -R -m g:mag-audit-readers:rX "$ROOM/files" && run setfacl -d -m g:mag-audit-readers:rX "$ROOM/files"
 fi
 
-echo "== 10. Dienste starten (Gateway :8080; Ornith :8191/:8192 oder Qwen :8091)"
+echo "== 10. Dienste starten (Gateway :8080 vor den Modellservern :8191/:8192)"
 run systemctl daemon-reload
 run systemctl enable --now mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
 if [[ $APPLY -eq 1 ]]; then

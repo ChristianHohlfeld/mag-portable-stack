@@ -1,33 +1,18 @@
 #!/usr/bin/env bash
-# Action runners on the MAG host (idempotent, run as root; ops/update.sh and the
-# auto-update call it after each successful deploy).
-#  - Gitea runner (GitHub-style workflows in .gitea/workflows, runs-on: [self-hosted, mag]),
-#    registered automatically against the local Gitea.
-#  - GitHub runner (runs-on: [self-hosted, mag]) only when the owner has put a
-#    registration token into /etc/credstore/mag-github-runner.token.
-# Jobs run as unprivileged users with CPU/RAM caps; they never see the models,
-# room state, credentials or backups. Legacy jobs formerly deployed by writing to
-# /var/lib/mag-deploy/request. GitHub green alone now drives auto-update
-# (fast-forward main, build, deploy.sh with backup and automatic rollback).
-# Disable the GitHub runner: sudo touch /etc/mag-stack/runners.disabled
-# Disable the Gitea runner: sudo touch /etc/mag-stack/gitea-runner.disabled
+# The Gitea Actions runner on the MAG host (idempotent, run as root): GitHub-
+# style workflows in .gitea/workflows (runs-on: [self-hosted, mag]), registered
+# against the local Gitea on loopback. Jobs run as the unprivileged user
+# mag-runner with CPU/RAM caps; they never see the models, room state,
+# credentials or backups. Releases are deployed on purpose (ops/deploy.sh),
+# never by a runner. Disable: sudo touch /etc/mag-stack/gitea-runner.disabled
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 here="$(cd -- "$(dirname "$0")" && pwd)"
 # shellcheck source=gitea-local.sh
 source "$here/gitea-local.sh"
 log() { echo "runners: $*"; }
-# The Gitea host runner is the merge gate. Do not replace this install with
-# ops/gitea-ci/install.sh: that cutover needs a GitHub credential and used to
-# disable the deploy request path. runners.disabled stops only the optional
-# GitHub runner. gitea-runner.disabled stops the Gitea runner. The deploy
-# request path stays installed either way.
-
 GITEA_RUNNER_VER=5.1.1
 GITEA_RUNNER_SHA=07b7304cafac138152a9d34790c100af9493278ef63f097de47fa16071d768a1
-GH_RUNNER_VER=2.338.0
-GH_RUNNER_SHA=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-GH_REPO_URL=https://github.com/ChristianHohlfeld/mag-portable-stack
 
 fetch() { # url sha out
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --max-time 300 "$1" -o "$3"
@@ -35,18 +20,10 @@ fetch() { # url sha out
 }
 ensure_user() { # name home
   id "$1" >/dev/null 2>&1 || useradd --system --create-home --home-dir "$2" --shell /usr/sbin/nologin "$1"
-  usermod -aG mag-deploy "$1"
   install -d -m 0750 -o "$1" -g "$1" "$2" "$2/work"
 }
 
-# Deploy trigger shared by both runners.
-getent group mag-deploy >/dev/null || groupadd --system mag-deploy
-install -d -m 0750 -o root -g mag-deploy /var/lib/mag-deploy
-[[ -f /var/lib/mag-deploy/request ]] || install -m 0660 -o root -g mag-deploy /dev/null /var/lib/mag-deploy/request
-chgrp mag-deploy /var/lib/mag-deploy/request; chmod 0660 /var/lib/mag-deploy/request
-install -m 0644 "$here/mag-deploy-request.path" /etc/systemd/system/mag-deploy-request.path
 restart_gitea=0
-
 
 # Gitea runner. Register only against loopback after the Actions connect
 # path answers. A public Funnel URL 404s that path.
@@ -133,55 +110,10 @@ else
   log 'Gitea not installed/active; Gitea runner skipped'
 fi
 
-# Optional GitHub runner. A GitHub outage must not skip the Gitea runner enable
-# below. The body is a subshell with its own errexit: `if ! fn` / `fn ||` would
-# otherwise keep going after a checksum mismatch, extract the archive, write
-# .version, and consume the registration token. Gitea CI and runners.disabled
-# skip this runner only.
-install_github_runner() (
-  set -euo pipefail
-  local GH=/var/lib/mag-ghrunner
-  if [[ -e /etc/mag-stack/gitea-ci.enabled || -e /etc/mag-stack/runners.disabled ]]; then
-    log 'GitHub runner skipped'
-    return 0
-  fi
-  [[ -s /etc/credstore/mag-github-runner.token || -s $GH/runner/.runner ]] || return 0
-  ensure_user mag-ghrunner "$GH"
-  if [[ ! -x $GH/runner/config.sh ]] || ! grep -Fq "$GH_RUNNER_VER" "$GH/runner/.version" 2>/dev/null; then
-    tmp="$(mktemp -d /var/tmp/mag-ghrunner.XXXXXXXX)"
-    trap 'rm -rf -- "$tmp"' EXIT
-    fetch "https://github.com/actions/runner/releases/download/v${GH_RUNNER_VER}/actions-runner-linux-x64-${GH_RUNNER_VER}.tar.gz" "$GH_RUNNER_SHA" "$tmp/r.tgz" \
-      || return 1
-    install -d -m 0750 -o mag-ghrunner -g mag-ghrunner "$GH/runner"
-    tar -xzf "$tmp/r.tgz" -C "$GH/runner" || return 1
-    echo "$GH_RUNNER_VER" > "$GH/runner/.version"
-    chown -R mag-ghrunner:mag-ghrunner "$GH/runner"
-    "$GH/runner/bin/installdependencies.sh" >/dev/null || log 'GitHub runner dependency install reported errors'
-  fi
-  if [[ ! -s $GH/runner/.runner ]]; then
-    (cd "$GH/runner" && runuser -u mag-ghrunner -- ./config.sh --unattended --url "$GH_REPO_URL" \
-      --token "$(cat /etc/credstore/mag-github-runner.token)" --name mag-host --labels mag \
-      --work "$GH/work" --disableupdate --replace) || log 'GitHub runner registration failed (token expired? tokens live 1 hour)'
-    rm -f /etc/credstore/mag-github-runner.token
-  fi
-  if [[ -s $GH/runner/.runner ]]; then
-    install -m 0644 "$here/mag-github-runner.service" /etc/systemd/system/mag-github-runner.service
-  fi
-)
-if ! install_github_runner; then
-  log 'GitHub runner skipped; Gitea runner install continues'
-fi
-
 systemctl daemon-reload
-# Retire the Gitea/GitHub runner-triggered deploy path. Only GitHub green
-# is pulled by the independent mag-auto-update.timer.
-systemctl disable --now mag-deploy-request.path >/dev/null 2>&1 || true
 if [[ ! -e /etc/mag-stack/gitea-runner.disabled && -e /etc/systemd/system/mag-gitea-runner.service ]]; then
   systemctl enable --now mag-gitea-runner.service
   # Restart only on a new binary/config/unit so a running job is not cut off.
   if (( restart_gitea )); then systemctl restart mag-gitea-runner.service; fi
-fi
-if [[ ! -e /etc/mag-stack/gitea-ci.enabled && ! -e /etc/mag-stack/runners.disabled && -e /etc/systemd/system/mag-github-runner.service ]]; then
-  systemctl enable --now mag-github-runner.service
 fi
 log 'done'

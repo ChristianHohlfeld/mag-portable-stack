@@ -114,7 +114,7 @@ public:
     if (to.empty()) {
       std::vector<group_chat::Bot> roster;
       for (auto &b : bots.asArr())
-        if (jbool(b, "enabled", true)) roster.push_back({jstr(b, "id"), jstr(b, "name"), false});
+        if (jbool(b, "enabled", true)) roster.push_back({jstr(b, "id"), jstr(b, "name")});
       to = group_chat::addressed(jstr(message, "text"), roster);
       if (to.empty())
         for (auto &b : roster) to.push_back(b.id);

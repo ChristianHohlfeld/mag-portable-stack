@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remove half-created bot VMs: a libvirt domain, disk directory or unit with
 # no matching vm/pending_vm/unavailable_vm in the room. Healthy bots and in-progress spawns
-# stay. agents.json is never modified. mag-llm and mag-llm-iq3 are not touched.
+# stay. agents.json is never modified.
 set -uo pipefail
 ROOM=${MAG_ROOM_STATE:-/var/lib/magbot/room}
 AGENTS=$ROOM/agents.json

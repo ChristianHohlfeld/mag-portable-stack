@@ -19,13 +19,13 @@ fi
 [[ ! -e /etc/mag-backup || ( -d /etc/mag-backup && ! -L /etc/mag-backup ) ]] || exit 1
 install -d -m 0700 -o root -g root /etc/mag-backup /var/lib/mag-backup/work /var/backups/mag-restic /var/backups/mag-full
 install -d -m 0711 -o root -g root /var/lib/mag-backup
-# Never generate a password file. Old encrypted repositories must be
-# explicitly converted with migrate-passwordless.sh BEFORE installation.
+# Never generate a password file: the local repositories are passwordless
+# (restic >= 0.17); one that still has a password is refused.
 restic --help | grep -Fq -- '--insecure-no-password' ||
   { echo 'Install restic >=0.17 before switching to passwordless mode' >&2; exit 1; }
 if [[ -f /var/backups/mag-restic/config ]]; then
   RESTIC_REPOSITORY=/var/backups/mag-restic restic --insecure-no-password snapshots --json >/dev/null ||
-    { echo 'Repository still uses a password; run migrate-passwordless.sh first' >&2; exit 1; }
+    { echo 'Repository /var/backups/mag-restic still uses a password; move it aside first' >&2; exit 1; }
 fi
 if [[ -e /etc/mag-backup/config.env ]]; then
   [[ -f /etc/mag-backup/config.env && ! -L /etc/mag-backup/config.env ]] || exit 1

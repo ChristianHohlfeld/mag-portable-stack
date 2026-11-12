@@ -16,7 +16,7 @@ while (( $# )); do
  *) echo "Unknown argument $1" >&2; exit 2;;
  esac
 done
-case "$part" in room|gitea|pages|cron|tailscale|config|all) ;; *) exit 2;; esac
+case "$part" in room|gitea|cron|tailscale|config|all) ;; *) exit 2;; esac
 case "$repo" in local) ;; offsite) echo 'S3 offsite was removed; only --repo local exists' >&2; exit 2;; *) exit 2;; esac
 [[ "$snapshot" == latest || "$snapshot" =~ ^[a-f0-9]{8,64}$ || "$snapshot" =~ ^[0-9]{8}T[0-9]+Z-(daily|deploy|clear)$ ]] || exit 2
 [[ $use_lock == 0 ]] || backup_lock
@@ -54,11 +54,10 @@ paths=()
 case "$part" in
  room) paths=(var/lib/magbot/room);;
  gitea) paths=(var/lib/gitea etc/gitea);;
- pages) paths=(var/lib/mag-pages etc/mag-pages);;
  cron) paths=(etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
  tailscale) paths=(var/lib/tailscale);;
- config) paths=(etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover var/lib/mag-llm opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
- all) paths=(var/lib/magbot/room var/lib/gitea etc/gitea var/lib/mag-pages etc/mag-pages etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover var/lib/mag-llm opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs var/lib/tailscale);;
+ config) paths=(etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
+ all) paths=(var/lib/magbot/room var/lib/gitea etc/gitea etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs var/lib/tailscale);;
 esac
 destination="${target:-/}"
 # Preflight EVERY service prerequisite before copying ANY live path, so a

@@ -88,12 +88,6 @@ assert_payload() {
       echo 'Backup missing TLS certificate that exists on the host' >&2; return 1;
     }
   fi
-  if [[ -d "$src/etc/mag-pages" ]]; then
-    [[ -d "$tree/etc/mag-pages" ]] || { echo 'Backup missing /etc/mag-pages' >&2; return 1; }
-  fi
-  if [[ -d "$src/var/lib/mag-pages" ]]; then
-    [[ -d "$tree/var/lib/mag-pages" ]] || { echo 'Backup missing Pages webroots' >&2; return 1; }
-  fi
   if find "$tree" -type f \( -name '*.gguf' -o -name 'ggml-*.bin' -o -name '*.qcow2' \) | grep -q .; then
     echo 'Backup included a model, GGUF or VM image' >&2; return 1
   fi
@@ -149,7 +143,7 @@ if [[ -f "$src/var/lib/gitea/data/gitea.db" ]]; then
     ".timeout 10000" ".backup '$payload/var/lib/gitea/data/gitea.db'"
   sqlite3 "$payload/var/lib/gitea/data/gitea.db" 'PRAGMA integrity_check;' | grep -qx ok
 fi
-for p in /etc/gitea /var/lib/mag-pages /etc/mag-pages /etc/mag-acme \
+for p in /etc/gitea /etc/mag-acme \
   /etc/mag-nginx /etc/nginx /etc/magbot /etc/default/mag-room \
   /etc/mag-stack /etc/credstore/mag-guest-oauth /etc/credstore/mag-secrets-key \
   /etc/mag-audit /var/lib/mag-audit /var/lib/mag-deploy \
@@ -162,7 +156,6 @@ done
 # Cron and Tailscale private node identity are backed up only inside encrypted
 # restic. Keep backup credentials, model weights and slot cache excluded.
 mkdir -p "$payload/opt/mag-stack"
-# DeepSeek verification stamps/status are no longer part of active backups.
 if [[ -L "$src/opt/mag-stack/current" ]]; then
   readlink "$src/opt/mag-stack/current" > "$payload/opt/mag-stack/current-release.txt"
 fi

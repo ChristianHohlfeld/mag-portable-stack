@@ -208,7 +208,8 @@ p_libvirt() {
   systemctl enable --now libvirtd
   virsh net-info default >/dev/null 2>&1 || virsh net-define /usr/share/libvirt/networks/default.xml
   virsh net-autostart default
-  virsh net-info default | grep -q 'Active:.*yes' || virsh net-start default
+  # (no grep -q in a pipe: under pipefail its early exit fails the pipe)
+  [[ $(virsh net-info default) =~ Active:[[:space:]]+yes ]] || virsh net-start default
 }
 
 p_golden() {

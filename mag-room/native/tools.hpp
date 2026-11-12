@@ -119,7 +119,8 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"({"type":"object","properties":{"fact":{"type":"string"}},"required":["fact"]})"));
   list.push(fn("consent",
                "Ask before a consequential action: sending something to others (mail, message, form), buying (money), deleting data that is "
-               "not yours or cannot come back, publishing outside, setting up a routine. Chris's rules decide: allowed at once, refused, or "
+               "not yours or cannot come back, publishing outside, setting up a routine. Not for opening, reading, searching or logging in: "
+               "those need no approval (a login is browser_login). Chris's rules decide: allowed at once, refused, or "
                "he gets a card in the chat and you wait for his yes. You call it yourself, right before the action, with exactly what will "
                "happen; never ask him in words instead (he cannot call tools, and a yes in the chat is no approval). Do only what it allowed. "
                "Card numbers and passwords never go into it or anywhere else.",

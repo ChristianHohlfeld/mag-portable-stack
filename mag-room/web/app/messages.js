@@ -759,9 +759,13 @@
     } else {
       const body = el('div', { class: 'body' });
       (m.parts || []).forEach((p, i) => body.append(buildPart(m, i)));
-      if (!(m.parts || []).length && m.text) body.append(markdown(m.text));
+      if (!(m.parts || []).length && m.text) body.append(markdown(m.role === 'bot' ? tidy(m.text) : m.text));
       node.append(body);
       placePages(m, body);
+      // A finished answer of nothing but what is not shown (a request in words, a written-out call) is no message.
+      const texts = (m.parts || []).length ? m.parts : [{ k: 'text', text: m.text || '' }];
+      if (m.role === 'bot' && m.state !== 'streaming' && !(m.attachments || []).length && texts.every((p) => p.k === 'text' && !tidy(p.text || '')))
+        node.hidden = true;
     }
     if (atts) node.append(atts);
     const note = footer(m);
@@ -771,10 +775,43 @@
     markStreaming(node, m);
     return node;
   }
+  // What a bot wrote, as the chat shows it (old messages too): a line it
+  // wrote again in English next to the German one, a tool call it wrote out
+  // as JSON instead of calling it, a request for approval in words (the card
+  // is the only way) and a bare <br> are not shown.
+  const EN = new Set("the i i'll i'm i've will to and of a is it you your this that for with on let me first try find again now then open login sign in click button page we let's".split(' '));
+  const DE = new Set('ich die der das und zu ist nicht ein eine mit auf für du dich dein deine jetzt bitte den dem es wird werde sie wir kann noch auch einloggen anmelden öffne klicke seite'.split(' '));
+  function tidy(text) {
+    if (!text) return text;
+    // A fenced block that is a tool call written out (JSON with an action or a function name).
+    text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n```/g, (all, inner) => {
+      try { const v = JSON.parse(inner); return v && typeof v === 'object' && (v.action || v.name || v.arguments || v.tool) ? '' : all; } catch { return all; }
+    });
+    const lines = text.split('\n');
+    const lang = (line) => {
+      const words = line.toLowerCase().match(/[a-zäöüß']+/g) || [];
+      let en = 0, de = 0;
+      for (const w of words) { if (EN.has(w)) en++; if (DE.has(w)) de++; }
+      return en >= 2 && en > de * 2 ? 'en' : de > en ? 'de' : '';
+    };
+    const german = lines.some((l) => lang(l) === 'de');
+    let inCode = false;
+    const kept = lines.filter((line) => {
+      if (/^\s*```/.test(line)) { inCode = !inCode; return true; }
+      if (inCode) return true;
+      const t = line.trim();
+      if (/^<br\s*\/?>$/i.test(t)) return false;
+      if (/\bconsent\b/i.test(t)) return false;
+      if (/^\{.*\}$/.test(t)) { try { JSON.parse(t); return false; } catch { /* text */ } }
+      return !(german && lang(t) === 'en');
+    });
+    return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  MAG.tidy = tidy;
   function buildPart(m, index) {
     const p = m.parts[index];
     if (p.k === 'step') return buildStep(m, index);
-    const node = markdown(p.text, m.state === 'streaming');
+    const node = markdown(m.role === 'bot' ? tidy(p.text) : p.text, m.state === 'streaming');
     node.dataset.part = index;
     return node;
   }

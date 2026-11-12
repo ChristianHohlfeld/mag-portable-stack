@@ -665,7 +665,7 @@
   // Reads a message aloud, or stops if it is the one being read.
   MAG.speak = function (m, button) {
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
-    toggle(m.id, m.text, m.role === 'user' ? 'chris' : m.from);
+    toggle(m.id, m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text, m.role === 'user' ? 'chris' : m.from);
   };
   // The newest answers are made ready before anybody asks for them, whole,
   // while they come in and nothing else is read: the tap that most often
@@ -712,7 +712,7 @@
     if (!m || current || !piperPossible || !S.features?.tts || document.visibilityState !== 'visible' || !piper.config) return;
     const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
     if (!prof.voice || !piper.ready.size) return;
-    const text = normalize(m.text || '');
+    const text = normalize((m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text) || '');
     if (!text) return;
     // A newer answer comes first: what is still waiting to be made for an older one is dropped (what is made stays).
     if (!head) {

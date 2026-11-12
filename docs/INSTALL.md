@@ -30,6 +30,18 @@ Builds and downloads run on CPUs 28-55. The whole install takes hours, most of
 it downloads: about 400 GB of models (mag-modeld fetches and checks them after
 the `deploy` phase, in the background) and about 120 GB of Idol weights.
 
+## A trial install
+
+`sudo ./install.sh --probe` installs on a throwaway server everything that
+runs without a tailnet, a domain, KVM or a GPU: packages, users, the build,
+the audit layer, Gitea and its runner, the model runtime, speech, voices,
+Blender and the release with all its services. It leaves out Tailscale, TLS,
+the golden image, the bot VMs, Idol, Funnel and backups, downloads no model
+(`/etc/mag-stack/no-model-download`), puts a placeholder owner into
+`access.json` and lets the services use every CPU. The room answers on
+127.0.0.1:8766; the last phase checks every service and ends with
+`PROBE OK`. Ubuntu 24.04 x64 with 2 vCPUs, 4 GB RAM and 50 GB disk is enough.
+
 ## What the server must have
 
 - Ubuntu 24.04 (noble), x86_64, KVM (`/dev/kvm`).

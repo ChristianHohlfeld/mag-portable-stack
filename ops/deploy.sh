@@ -207,6 +207,10 @@ install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
 install -m 0644 "$SOURCE/ops/mag-agent-drift.service" "$SOURCE/ops/mag-agent-drift.timer" $UNITS/
 # nginx comes back by itself after a crash or a failed bind at boot.
 install -D -m 0644 "$SOURCE/ops/nginx/nginx-restart.conf" $UNITS/nginx.service.d/mag-restart.conf
+# Gitea's Funnel retry (made by ops/tailscale/apply-gitea-funnel.sh) runs the release.
+if [[ -e $UNITS/mag-gitea-funnel.service ]]; then
+  sed "s#@ROOT@#/opt/mag-stack/current#g" "$SOURCE/ops/tailscale/mag-gitea-funnel.service" > $UNITS/mag-gitea-funnel.service
+fi
 # The web proxy of the bots runs the release's addon (10-binary.conf).
 if [[ -e $UNITS/mag-audit-webproxy.service ]]; then
   install -D -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-webproxy.10-binary.conf" $UNITS/mag-audit-webproxy.service.d/10-binary.conf

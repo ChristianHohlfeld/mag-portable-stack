@@ -150,6 +150,16 @@ settings, or a bot's `backup` tool when Chris asks in the chat. It starts
 `mag-backup-chat.service` (restic: room, Gitea, configuration; never models
 or VM images) and `mag-bot-saves@chat.service` (a save of every bot VM) in
 the background; restoring stays Chris's (a bot's sheet, `ops/backup/restore.sh`).
+The whole system has a backup of its own for new hardware (`ops/backup/system.sh`,
+weekly Sunday 05:00, "Gesamtsystem sichern" in the settings, a bot's `backup`
+with scope system): restic of the root file system with a description of the
+host (packages, disks, libvirt definitions, a consistent Gitea database, the
+model manifest) and a fresh save of every VM; models only with `--with-models`
+and never onto mag's own disk. It goes to `MAG_SYSTEM_REPO`
+(/etc/mag-backup/system.env), else a disk at /mnt/mag-backup, else
+/var/backups/mag-system (two states, only with room to spare: no protection
+against a broken disk). `ops/backup/system-restore.sh` brings it back on a
+fresh Ubuntu 24.04.
 Browser and terminal run over the VM's realtime link: `mag-browser` in the
 VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
 channels to the page. Pictures over HTTPS and single commands are only the

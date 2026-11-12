@@ -1,0 +1,14 @@
+[Unit]
+Description=MAG backup of the whole system (restic; ops/backup/system.sh)
+After=local-fs.target libvirtd.service
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+CPUAffinity=28-55
+Nice=19
+IOSchedulingClass=idle
+Environment=GOMAXPROCS=8
+Environment=HOME=/root
+ExecStart=/usr/local/lib/mag-backup/system.sh
+TimeoutStartSec=12h

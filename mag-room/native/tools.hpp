@@ -97,9 +97,10 @@ inline Val schemas(bool has_vm, bool phone = false) {
   list.push(fn("backup",
                "A backup of the whole MAG system, when Chris asks for one: the room (chat, files, memories, skills, settings), Gitea and the "
                "configuration as an encrypted snapshot, and a save of every bot's VM (files, programs, browser data, site). action start "
-               "begins it in the background (minutes); action status tells how the last ones went. Restoring is Chris's: he does it in a "
-               "bot's sheet or on the host, never you.",
-               R"({"type":"object","properties":{"action":{"type":"string","enum":["start","status"]}},"required":["action"]})"));
+               "begins it in the background (minutes); action status tells how the last ones went. scope system instead backs up the whole "
+               "server (operating system, services, every bot VM, all data; models by their manifest) for a restore on new hardware "
+               "(an hour or more). Restoring is Chris's: he does it in a bot's sheet or on the host, never you.",
+               R"({"type":"object","properties":{"action":{"type":"string","enum":["start","status"]},"scope":{"type":"string","enum":["all","system"],"description":"default all"}},"required":["action"]})"));
   list.push(fn("models_3d",
                "List the 3D models in the chat (results of photo to 3D, uploaded .glb files) and the figures each one shows. "
                "Call it before scene_3d.",
@@ -505,6 +506,12 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     return why.empty() ? Result{"Skill gespeichert: " + wanted + ". Er beschreibt Arbeit und erlaubt nichts: Freigaben gelten wie immer.", true} : fail(why);
   }
   if (name == "backup") {
+    if (jstr(args, "action") == "start" && jstr(args, "scope") == "system") {
+      const std::string why = backup::start(ctx.guests, true);
+      if (!why.empty()) return fail(why);
+      return {"Die Sicherung des Gesamtsystems läuft im Hintergrund (Betriebssystem, Dienste, jede Bot-VM, alle Daten; Modelle nach "
+              "ihrem Verzeichnis). Sie dauert eine Stunde oder länger; mit action status siehst du später, wie sie ausging.", true};
+    }
     if (jstr(args, "action") == "start") {
       const std::string why = backup::start(ctx.guests);
       if (!why.empty()) return fail(why);

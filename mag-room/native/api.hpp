@@ -243,7 +243,7 @@ public:
     }
     if (r.method == "POST" && p == "/api/backup") {
       // Everything now: the room, Gitea and configuration, and every bot VM.
-      const std::string why = backup::start(guests_);
+      const std::string why = backup::start(guests_, jstr(jparse(r.body), "scope") == "system");
       return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
     }
     if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/save")) {

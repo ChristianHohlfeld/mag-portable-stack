@@ -1,0 +1,9 @@
+[Unit]
+Description=MAG weekly backup of the whole system
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=15m
+Unit=mag-backup-system.service
+[Install]
+WantedBy=timers.target

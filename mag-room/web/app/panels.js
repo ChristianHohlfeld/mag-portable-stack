@@ -392,7 +392,13 @@
             b.running ? el('span', {}, el('span', { class: 'spin' }), ' Sicherung läuft …') : 'Zuletzt: ' + (b.last_success ? MAG.day(b.last_success * 1000) : 'nie') + (b.healthy ? '' : ' (veraltet)'),
             el('small', { text: (b.last_error ? 'Letzter Fehler: ' + b.last_error + ' · ' : '') + 'VMs: ' + (vms.join(' · ') || 'keine') })),
             el('button', { class: 'btn', text: 'Jetzt alles sichern', disabled: b.running, onclick: () => call('POST', '/api/backup').then(() => { MAG.toast('Sicherung läuft'); setTimeout(draw, 1500); }) })));
-          if (b.running) setTimeout(() => backup.isConnected && draw(), 15000);
+          // The whole server, for a new machine: weekly, and here.
+          const s = b.system || {}, where = { local: 'auf mags eigener Platte (schützt nicht vor einem Plattenschaden)', usb: 'auf der USB-Platte', configured: 'am eingerichteten Ziel' }[s.target];
+          backup.append(el('div', { class: 'set' }, el('div', { class: 'txt' },
+            s.running ? el('span', {}, el('span', { class: 'spin' }), ' Gesamtsystem wird gesichert …') : 'Gesamtsystem: ' + (s.last_success ? MAG.day(s.last_success * 1000) + (where ? ' · ' + where : '') : 'noch nie'),
+            el('small', { text: s.healthy === false && s.last_error ? 'Fehler: ' + s.last_error : 'Betriebssystem, Dienste, jede VM, alle Daten; für neue Hardware. Wöchentlich, Sonntag früh.' })),
+            el('button', { class: 'btn', text: 'Gesamtsystem sichern', disabled: !!s.running, onclick: () => call('POST', '/api/backup', { scope: 'system' }).then(() => { MAG.toast('Gesamtsicherung läuft'); setTimeout(draw, 1500); }) })));
+          if (b.running || s.running) setTimeout(() => backup.isConnected && draw(), 15000);
         }).catch(() => backup.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Sicherung nicht lesbar.' })))));
         draw();
       }

@@ -3,6 +3,8 @@
 // (mag-backup-chat.service, ops/backup) and a save of every bot VM
 // (mag-bot-saves@chat.service, magbot save-all). Both run in the background
 // as units of their own; this only starts them and tells how they went.
+// The whole system (ops/backup/system.sh: everything for new hardware) is
+// a backup of its own, weekly and on request (mag-backup-system.service).
 #pragma once
 #include "room.hpp"
 #include "vm.hpp"
@@ -22,10 +24,14 @@ inline bool running() {
   }
   return false;
 }
+inline bool system_running() {
+  const std::string state = unit_state("mag-backup-system.service");
+  return state == "activating" || state == "active";
+}
 // "" when it started (or was already running), else why not.
-inline std::string start(vm::Guests &guests) {
-  if (running()) return "";
-  const RunResult r = guests.backup();
+inline std::string start(vm::Guests &guests, bool system = false) {
+  if (system ? system_running() : running()) return "";
+  const RunResult r = guests.backup(system);
   return r.code == 0 ? "" : "Die Sicherung ließ sich nicht starten: " + clip(trim(r.out), 200);
 }
 inline std::string when(double epoch) {
@@ -46,6 +52,11 @@ inline Val status(Room &room, vm::Guests &guests) {
   v["last_kind"] = jstr(s, "last_kind");
   v["healthy"] = jbool(s, "healthy") && now_s() - (int64_t)jnum(s, "last_success") < 26 * 3600;
   if (!jstr(s, "last_error").empty()) v["last_error"] = jstr(s, "last_error");
+  // The whole system: when, where to (local, usb, configured) and how it ended.
+  Val sys = read_json("/var/lib/mag-backup/system-status.json");
+  if (!sys.isObj()) sys = Val::object();
+  sys["running"] = system_running();
+  v["system"] = sys;
   Val bots = Val::array();
   for (auto &b : room.bots().asArr()) {
     const std::string vm = jstr(b, "vm");
@@ -67,6 +78,11 @@ inline std::string report(Room &room, vm::Guests &guests) {
   out += "Letzte Sicherung von Raum, Gitea und Konfiguration (restic): " + when(jnum(v, "last_success")) +
          (jbool(v, "healthy") ? " (aktuell)" : " (älter als einen Tag)") + "\n";
   if (!jstr(v, "last_error").empty()) out += "Letzter Fehler: " + jstr(v, "last_error") + "\n";
+  const Val &sys = *v.find("system");
+  out += std::string(jbool(sys, "running") ? "Eine Sicherung des Gesamtsystems läuft gerade.\n" : "") +
+         "Letzte Sicherung des Gesamtsystems: " + when(jnum(sys, "last_success")) +
+         (jstr(sys, "target").empty() ? "" : " (Ziel: " + std::string(jstr(sys, "target") == "local" ? "mags eigene Platte, schützt nicht vor einem Plattenschaden" : jstr(sys, "target") == "usb" ? "USB-Platte" : "eingerichtetes Ziel") + ")") + "\n";
+  if (!jbool(sys, "healthy", true) && !jstr(sys, "last_error").empty()) out += "Fehler dabei: " + jstr(sys, "last_error") + "\n";
   for (auto &b : v.find("bots")->asArr()) {
     const Val *saves = b.find("saves");
     out += "VM von " + jstr(b, "name") + ": ";

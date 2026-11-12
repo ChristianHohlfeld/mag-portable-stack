@@ -36,7 +36,7 @@ if [[ -e /etc/mag-backup/aws.env || -L /etc/mag-backup/aws.env ]]; then
   echo 'Note: /etc/mag-backup/aws.env is unused (S3 offsite removed) and may be deleted' >&2
 fi
 install -d -m 0755 /usr/local/lib/mag-backup
-for name in common.sh backup.sh restore.sh maintenance.sh; do
+for name in common.sh backup.sh restore.sh maintenance.sh system.sh system-restore.sh install-restic-0181.sh; do
   install -m 0755 "$here/$name" "/usr/local/lib/mag-backup/$name"
 done
 for unit in "$here"/units/*.service "$here"/units/*.timer; do

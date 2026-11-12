@@ -618,7 +618,10 @@ the mask and orders the cut-out like any photo.
 small indoor metric model) and gives every object where it stood, how tall
 it was and the room around it. Each object is ordered as its own job; when
 the last one is through, the room assembles them into one scene, each actor
-named after the description a seeing bot gave its cut-out.
+named after the description a seeing bot gave its cut-out ("Roter Stuhl: …"
+begins every description). A cut-out nobody has described yet is looked at
+first; after eight minutes the room stands anyway, with "Objekt N" for what
+is still unnamed.
 
 ### Pictures from words (`ops/idol/imagegen.py`)
 
@@ -631,9 +634,15 @@ an ordinary image of the chat. The weights come from `ops/imagegen/fetch.sh`.
 
 Every picture of the chat has "3D" and "Video" below it
 (`POST /api/image/act`). "Video" orders Wan 2.2 I2V-A14B: its two experts as
-GGUF Q6_K with the Lightning 4-step LoRA, 81 frames at 16 fps, about 480p,
-H.264 by ffmpeg. The experts compute in fp16 and take the card one after
-the other. It runs in `~/idol-mi50/video/venv`; the weights come from
+GGUF Q6_K with the Lightning 4-step LoRA (four Euler steps, shift 5, as it
+was distilled; two per expert), 81 frames at 16 fps, about 480p, H.264 by
+ffmpeg. The card has no bf16 and no fast attention: the experts compute in
+fp16 with each block's result kept inside fp16's range (a step that still
+goes wrong ends in words, never as a black video), attention is exact but
+computed a block of queries at a time, UMT5 reads the words in fp32 and
+leaves the card first, the experts take the card one after the other, and
+the VAE works in tiles. Every finished step is kept (`state.pt` in the job),
+so a video interrupted by a reboot goes on after its last step. It runs in `~/idol-mi50/video/venv`; the weights come from
 `ops/video/fetch.sh`, and until they are complete the worker refuses a
 video in words. A bot orders one with `video_generate`.
 

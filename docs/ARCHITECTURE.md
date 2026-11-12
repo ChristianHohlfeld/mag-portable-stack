@@ -343,7 +343,10 @@ more (`Api::assemble`, also after a restart, once per group), the models
 that were made become one scene: `tall`, `lift`, `seen_from` and `at` of
 each actor and `room` of the scene are what `scene.py` builds it from. An
 actor is called what the bot that saw its cut-out began that description
-with ("Roter Stuhl", a second one "Roter Stuhl 2"), else "Objekt N". The
+with ("Roter Stuhl", a second one "Roter Stuhl 2"). A cut-out nobody has
+described yet is looked at first (the bots that see describe new pictures
+when they have no turn of their own); after eight minutes the room is put
+together anyway, with "Objekt N" for what is still unnamed. The
 photo is assumed to be taken about level; a camera that looks steeply down
 puts the floor too low.
 

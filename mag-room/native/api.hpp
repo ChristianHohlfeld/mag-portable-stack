@@ -341,6 +341,11 @@ public:
       if (!card.isObj() || jstr(card, "action") != "login") return http::send_error(fd, 409, "Diese Anmeldung wartet nicht mehr");
       Val in = jparse(r.body);
       std::string user = jstr(in, "user"), pass = jstr(in, "password"), code = jstr(in, "code");
+      if (jbool(in, "resend")) {
+        // "Code senden": the page's own button that sends the code (again); the card keeps waiting.
+        const std::string why = send_code(jstr(room_.bot(jstr(card, "bot")), "vm"));
+        return why.empty() ? http::send_ok(fd) : http::send_error(fd, 422, why);
+      }
       if (!code.empty()) {
         // A code of a two-step login (SMS, WhatsApp, app): typed into the page, never kept.
         const std::string why = fill_code(jstr(room_.bot(jstr(card, "bot")), "vm"), code);
@@ -857,6 +862,23 @@ private:
     room_.add(note);
   }
   std::mutex assemble_mu_;
+
+  // Clicks the page's button that sends a two-step code (again).
+  std::string send_code(const std::string &vm) {
+    if (!vm::valid_name(vm)) return "Dieser Bot hat keinen Browser.";
+    const auto r = guests_.browser(vm, "GET", "/elements", "", 30, nullptr);
+    if (r.status != 200) return "Der Browser des Bots antwortet nicht.";
+    static const std::regex send("code (an|per|via) |code senden|send (the )?code|otp senden|code anfordern|textnachricht|sms senden|erneut senden|resend", std::regex::icase);
+    const Val v = jparse(r.body);
+    if (const Val *els = v.find("elements"); els && els->isArr())
+      for (auto &e : els->asArr())
+        if (std::regex_search(jstr(e, "label"), send)) {
+          Val click = Val::object();
+          click["n"] = jnum(e, "n");
+          return guests_.browser(vm, "POST", "/click", mj::dump(click), 45, nullptr).status == 200 ? "" : "Der Knopf ließ sich nicht klicken.";
+        }
+    return "Die Seite bietet gerade keinen Knopf zum Senden des Codes. Übernimm den Browser selbst.";
+  }
 
   // Types a code of a two-step login into the page's code field and presses Enter.
   std::string fill_code(const std::string &vm, const std::string &code) {

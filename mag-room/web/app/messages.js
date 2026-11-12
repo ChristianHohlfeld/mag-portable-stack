@@ -156,6 +156,12 @@
         el('small', { class: 'note', text: 'Die Seite hat einen Code geschickt (SMS, WhatsApp oder App). Trag ihn hier ein.' }),
         owner ? el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ code: code.value }, go).then(() => { code.value = ''; }); } }, code, go) : null,
         owner ? el('span', { class: 'btns' },
+          el('button', { text: 'Code (erneut) senden lassen', onclick: (e) => {
+            e.preventDefault();
+            const b = e.currentTarget;
+            b.disabled = true;
+            MAG.api('POST', '/api/login/' + ask.id, { resend: true }).then(() => { note.textContent = 'Die Seite schickt den Code; trag ihn oben ein.'; }, (x) => { note.textContent = x.message; }).finally(() => { setTimeout(() => { b.disabled = false; }, 20000); });
+          } }),
           el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Gib den Code hier selbst ein. Danach macht ' + name + ' weiter.', () => decide('done')); } }),
           el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
         note);

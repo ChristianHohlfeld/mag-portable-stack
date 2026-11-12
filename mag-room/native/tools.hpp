@@ -364,6 +364,7 @@ inline Val login_form(Ctx &ctx, const std::string &vm) {
     if (pass) fields.push("password");
     if (code) fields.push("code");
     out["fields"] = fields;
+    if (sender) out["resend"] = true; // the page can send the code (again)
     // A two-step page that first wants the way the code comes: the first way it offers is asked for.
     if (user || pass || code || (!link && !sender) || hop == 3) break;
     Val click = Val::object();

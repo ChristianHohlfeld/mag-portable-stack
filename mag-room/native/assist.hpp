@@ -5,9 +5,13 @@
 // publish, set up a routine) a bot asks the room. The owner's rules decide
 // (settings `assist`: per kind ask/auto/never, the auto mode, money limits
 // per purchase and per day): allowed at once, refused, or a card at the
-// bot's step that waits for Chris (allow or deny, 15 minutes). Every
-// decision is a line of the journal (STATE/assist/ledger.jsonl), from which
-// the day's spending is summed. Plugins that change something keep their
+// bot's step that waits for Chris (allow or deny, 15 minutes); a request
+// written as text is taken back by the engine and asked again through the
+// tool. Every decision (who, what, amount, to, when, allowed or not, whether
+// by the auto mode) is a line of the journal, each line sealed with
+// AES-256-GCM (STATE/assist/ledger.enc; the key STATE/assist/ledger.key,
+// 0600, read only by this process, never in a prompt, a tool or the page);
+// the day's spending is summed from it. Plugins that change something keep their
 // own card (mcp.hpp); this covers what a bot does in its VM's browser or
 // shell, which the room cannot intercept, so the rule lives in the tool and
 // the prompt.
@@ -28,6 +32,8 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+
+#include <openssl/evp.h>
 
 namespace mag {
 
@@ -105,6 +111,7 @@ public:
     const Val r = rules();
     const std::string rule = kind == "other" ? "ask" : jstr(at(r, "rules"), kind.c_str(), "ask");
     std::string decision, why;
+    bool by_auto = false;
     if (rule == "never") {
       decision = "deny";
       why = "Regel: " + kind_label(kind) + " ist nie erlaubt";
@@ -117,6 +124,7 @@ public:
       }
       if (auto_ok) {
         decision = "allow";
+        by_auto = true;
         why = rule == "auto" ? "Regel: ohne Nachfrage" : "Auto-Modus";
       } else {
         const std::string id = random_hex(8);
@@ -148,7 +156,7 @@ public:
         why = decision == "allow" ? "Chris hat erlaubt" : decision == "deny" ? "Chris hat abgelehnt" : decision == "stopped" ? "abgebrochen" : "keine Antwort in 15 Minuten";
       }
     }
-    journal(bot_id, kind, what, to, amount, decision, why);
+    journal(bot_id, kind, what, to, amount, decision, why, by_auto);
     const bool yes = decision == "allow";
     if (granted) *granted = yes;
     if (yes) return "Freigegeben (" + why + "): " + kind_label(kind) + " – " + what + ". Führe genau das jetzt aus, nichts darüber hinaus.";
@@ -163,7 +171,7 @@ public:
       std::ifstream f(ledger());
       std::string line;
       while (std::getline(f, line)) {
-        last.push_back(jparse(line));
+        last.push_back(jparse(unseal(line)));
         if (last.size() > n) last.pop_front();
       }
     }
@@ -317,7 +325,54 @@ private:
   std::set<std::string> done_;                 // jobs of the graphics card already seen done
 
   std::string path() const { return room_.cfg.state_dir + "/routines.json"; }
-  std::string ledger() const { return room_.cfg.state_dir + "/assist/ledger.jsonl"; }
+  std::string ledger() const { return room_.cfg.state_dir + "/assist/ledger.enc"; }
+  std::string key_;   // the journal's key, loaded once
+
+  // The journal's key: 32 random bytes made on first use (0600).
+  const std::string &key() {
+    if (key_.size() == 32) return key_;
+    const std::string file = room_.cfg.state_dir + "/assist/ledger.key";
+    key_ = slurp(file);
+    if (key_.size() != 32) {
+      key_ = random_bytes(32);
+      if (!write_atomic(file, key_, 0600)) logf("assist: the journal's key could not be written");
+    }
+    return key_;
+  }
+
+  // One line sealed: base64 of nonce (12), ciphertext and tag (16).
+  std::string seal(const std::string &plain) {
+    const std::string nonce = random_bytes(12);
+    std::string out(plain.size() + 16, '\0');
+    int len = 0, fin = 0;
+    EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
+    bool ok = c && EVP_EncryptInit_ex(c, EVP_aes_256_gcm(), nullptr, (const unsigned char *)key().data(), (const unsigned char *)nonce.data()) == 1 &&
+              EVP_EncryptUpdate(c, (unsigned char *)&out[0], &len, (const unsigned char *)plain.data(), (int)plain.size()) == 1 &&
+              EVP_EncryptFinal_ex(c, (unsigned char *)&out[0] + len, &fin) == 1 &&
+              EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_GET_TAG, 16, (unsigned char *)&out[0] + len + fin) == 1;
+    if (c) EVP_CIPHER_CTX_free(c);
+    if (!ok) return "";
+    out.resize(len + fin + 16);
+    return b64_encode(nonce + out);
+  }
+
+  // A sealed line opened, or "" when it is not one of ours or was changed.
+  std::string unseal(const std::string &line) {
+    const std::string raw = b64_decode(line);
+    if (raw.size() < 12 + 16) return "";
+    const std::string nonce = raw.substr(0, 12), body = raw.substr(12, raw.size() - 28), tag = raw.substr(raw.size() - 16);
+    std::string out(body.size() + 16, '\0');
+    int len = 0, fin = 0;
+    EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
+    bool ok = c && EVP_DecryptInit_ex(c, EVP_aes_256_gcm(), nullptr, (const unsigned char *)key().data(), (const unsigned char *)nonce.data()) == 1 &&
+              EVP_DecryptUpdate(c, (unsigned char *)&out[0], &len, (const unsigned char *)body.data(), (int)body.size()) == 1 &&
+              EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag.data()) == 1 &&
+              EVP_DecryptFinal_ex(c, (unsigned char *)&out[0] + len, &fin) == 1;
+    if (c) EVP_CIPHER_CTX_free(c);
+    if (!ok) return "";
+    out.resize(len + fin);
+    return out;
+  }
 
   void publish() {
     Val ev = Val::object();
@@ -326,7 +381,7 @@ private:
   }
 
   void journal(const std::string &bot, const std::string &kind, const std::string &what, const std::string &to, double amount,
-               const std::string &decision, const std::string &why) {
+               const std::string &decision, const std::string &why, bool by_auto) {
     Val line = Val::object();
     line["ts"] = (double)now_s();
     line["bot"] = bot;
@@ -336,9 +391,14 @@ private:
     if (amount > 0) line["amount_eur"] = amount;
     line["decision"] = decision;
     line["why"] = why;
+    line["auto"] = by_auto;
     std::lock_guard<std::mutex> lk(mu_);
+    const std::string sealed = seal(mj::dump(line));
+    if (sealed.empty()) { logf("assist: a journal line could not be sealed"); return; }
     std::ofstream f(ledger(), std::ios::app);
-    f << mj::dump(line) << "\n";
+    f << sealed << "\n";
+    f.close();
+    ::chmod(ledger().c_str(), 0600);
   }
 
   // What was allowed to be spent since local midnight.
@@ -353,7 +413,7 @@ private:
     std::ifstream f(ledger());
     std::string line;
     while (std::getline(f, line)) {
-      const Val v = jparse(line);
+      const Val v = jparse(unseal(line));
       if (jstr(v, "action") == "buy" && jstr(v, "decision") == "allow" && jnum(v, "ts") >= since) sum += jnum(v, "amount_eur");
     }
     return sum;

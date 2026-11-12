@@ -623,23 +623,8 @@ private:
 
     bots_ = read_json(cfg.state_dir + "/bots.json");
     if (!bots_.isArr() || bots_.asArr().empty()) {
-      // First start of this version: adopt name, VM and memory of the bots
-      // the previous room kept in agents.json (kept as agents.v1.json).
       bots_ = Val::array();
       Val lena = default_bot("lena", "Lena"), noah = default_bot("noah", "Noah");
-      Val old = read_json(cfg.state_dir + "/agents.json");
-      if (old.isArr()) {
-        for (auto &a : old.asArr()) {
-          const std::string name = lower(jstr(a, "name"));
-          Val *target = name == "lena" ? &lena : name == "noah" ? &noah : nullptr;
-          if (!target) continue;
-          (*target)["vm"] = jstr(a, "vm");
-          if (const Val *mem = a.find("memory"); mem && mem->isArr()) (*target)["memory"] = *mem;
-          if (const Val *pl = a.find("plugins")) (*target)["plugins"] = *pl;
-        }
-        if (!exists(cfg.state_dir + "/agents.v1.json"))
-          write_json(cfg.state_dir + "/agents.v1.json", old);
-      }
       bots_.push(lena);
       bots_.push(noah);
       save_bots_locked();

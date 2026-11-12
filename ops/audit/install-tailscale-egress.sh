@@ -11,4 +11,4 @@ install -D -o root -g root -m 0644 "$here/40-tailscale-api-egress.conf" /etc/sys
 systemctl daemon-reload
 systemctl start mag-tailscale-egress.service
 systemctl enable --now mag-tailscale-egress.timer
-echo 'Installed narrow Tailscale API egress; no audit gateway or mag-llm restart'
+echo 'Installed narrow Tailscale API egress; no audit gateway restart'

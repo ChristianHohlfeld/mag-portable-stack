@@ -12,7 +12,7 @@
 # the audit CA, de_DE.UTF-8 locale, gpg/apparmor_parser, and the Chrome proxy
 # policy directories. The per-host proxy policy itself is written at spawn by
 # vm-proxy-setup.sh; the image ships the default from
-# ops/browser-stack/live/vm-chrome-policy.json.
+# ops/vm/vm-chrome-policy.json.
 #
 # Pinned: the cloud image. Not pinnable: Ubuntu archive updates and Google
 # Chrome stable (Google's apt repo serves only the current build). Both
@@ -25,7 +25,7 @@
 #      MAG_GOLDEN_CACHE (download cache, default /var/cache/mag-golden),
 #      MAG_GOLDEN_TIMEOUT (seconds for the customise boot, default 3600),
 #      MAG_GOLDEN_ACCEL=tcg (no KVM; several times slower).
-# Never touches running bot VMs, their overlays, mag-llm or the room.
+# Never touches running bot VMs, their overlays or the room.
 set -euo pipefail
 HERE=$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)
 ROOT_REPO=$(cd -- "$HERE/../.." && pwd)
@@ -90,7 +90,7 @@ trap cleanup EXIT
 qemu-img convert -f qcow2 -O qcow2 "$base" "$work/disk.qcow2"
 qemu-img resize -q "$work/disk.qcow2" "$GOLDEN_VIRTUAL_SIZE"
 
-policy=$(sed 's/^/      /' "$ROOT_REPO/ops/browser-stack/live/vm-chrome-policy.json")
+policy=$(sed 's/^/      /' "$ROOT_REPO/ops/vm/vm-chrome-policy.json")
 commit=$(git -c safe.directory="$ROOT_REPO" -C "$ROOT_REPO" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 cat > "$work/user-data" <<EOF
 #cloud-config

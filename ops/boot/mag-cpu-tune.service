@@ -8,7 +8,7 @@
 # C3/C6 are already disabled (BIOS C-State=Disabled). Not a fixed clock.
 # - Uncore at its maximum (2.7 GHz): with BIOS Uncore scaling off it only
 #   reached 2.0 GHz under load; token generation is memory-bound and fell
-#   ~25 % (DeepSeek tg 6.3 vs 8.35 t/s, Qwen 5.3 vs 7.0; 2026-10-21).
+#   ~25 % (measured 2026-10-21).
 #   Cores still scale dynamically.
 # Runs before the models so their load and first prefill are tuned too.
 # cpu-perf.service only sets the governor later and keeps these limits.

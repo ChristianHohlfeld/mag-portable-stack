@@ -39,7 +39,7 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/mag-runner /var/lib/mag-deploy
-InaccessiblePaths=-/etc/credstore -/var/backups -/var/lib/magbot -/var/lib/mag-llm -/etc/mag-backup -/var/lib/gitea -/etc/gitea -/var/lib/mag-ghrunner
+InaccessiblePaths=-/etc/credstore -/var/backups -/var/lib/magbot -/etc/mag-backup -/var/lib/gitea -/etc/gitea
 
 [Install]
 WantedBy=multi-user.target

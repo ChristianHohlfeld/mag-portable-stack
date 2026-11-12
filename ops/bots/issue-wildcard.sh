@@ -97,7 +97,7 @@ PY
 crt=$(wildcard_cert || true)
 if [[ -n $crt ]] && openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null 2>&1; then
   install_cert "$crt"
-  echo "MAG bot wildcard TLS current; renewal not due; mag-llm untouched"
+  echo "MAG bot wildcard TLS current; renewal not due"
   exit 0
 fi
 if [[ -n $crt ]] && openssl x509 -in "$crt" -noout -checkend 86400 >/dev/null 2>&1; then
@@ -136,4 +136,4 @@ export ACME_DNS_STORAGE_PATH="$storage"
 crt=$(wildcard_cert || true)
 [[ -n $crt ]] || { echo "lego returned no bot wildcard cert" >&2; exit 1; }
 install_cert "$crt"
-echo "MAG bot wildcard TLS renewed; mag-llm untouched"
+echo "MAG bot wildcard TLS renewed"

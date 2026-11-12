@@ -192,11 +192,15 @@ if ! cmp -s "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/mag-audit-gatew
   mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
   install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" $UNITS/mag-audit-gateway.service
 fi
-install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" $UNITS/mag-cpu-tune.service
-# The self-updater of earlier versions is gone: releases are deployed on purpose.
-if [[ -e $UNITS/mag-auto-update.timer || -e $UNITS/mag-auto-update.service ]]; then
-  systemctl disable --now mag-auto-update.timer >/dev/null 2>&1 || :
-  rm -rf $UNITS/mag-auto-update.timer $UNITS/mag-auto-update.service $UNITS/mag-auto-update.service.d
+install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" "$SOURCE/ops/boot/cpu-perf.service" $UNITS/
+# Half-created bot VMs that no bot refers to are removed (archived) every quarter hour.
+install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
+install -m 0644 "$SOURCE/ops/mag-agent-drift.service" "$SOURCE/ops/mag-agent-drift.timer" $UNITS/
+# nginx comes back by itself after a crash or a failed bind at boot.
+install -D -m 0644 "$SOURCE/ops/nginx/nginx-restart.conf" $UNITS/nginx.service.d/mag-restart.conf
+# The web proxy of the bots runs the release's addon (10-binary.conf).
+if [[ -e $UNITS/mag-audit-webproxy.service ]]; then
+  install -D -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-webproxy.10-binary.conf" $UNITS/mag-audit-webproxy.service.d/10-binary.conf
 fi
 # Backup jobs must stay off the model cores (Noah owns 14-27).
 for unit in "$SOURCE"/ops/backup/units/*.service; do
@@ -246,6 +250,8 @@ fi
 # The bots' sites (<name>.bot.stardenburg.de): vhost and publisher.
 soft bash "$SOURCE/ops/bots/install.sh"
 soft systemctl enable --now mag-stack-check.timer
+# The audit firewall: the model ports for the gateway only (ops/audit/apply-nft.sh).
+[[ ! -e $UNITS/mag-audit-nft.service ]] || soft bash "$SOURCE/ops/audit/apply-nft.sh"
 # Every bot VM is saved each night (magbot save-all; the last four per bot).
 soft systemctl enable --now mag-bot-saves.timer
 soft bash "$SOURCE/ops/boot/ensure-boot.sh"

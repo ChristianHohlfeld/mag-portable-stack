@@ -263,9 +263,9 @@ its key (`STATE/assist/ledger.key`, 0600) is the room's alone and never
 reaches a model, a tool or the page. A bot that asks for approval in words
 is taken back and has to call `consent`; only Chris's tap on the card (an
 owner request) allows, never a model and never a yes in the chat. Card numbers and
-passwords never reach a model, a tool, a log or the chat; paying is Chris's
-own entry in the bot's live browser until a payment vault (Stripe tokens)
-is set up with his account. Routines (`routine`; `STATE/routines.json`) are
+passwords never reach a model, a tool, a log or the chat; a card is typed
+into a page by the room from the sealed vault (`browser_pay`), or Chris pays
+himself in the bot's live browser. Routines (`routine`; `STATE/routines.json`) are
 instructions for a bot at a time or on an event (a picture Chris posts, a
 job he ordered being done); one that is due is a chat message to its bot
 (`from: routine`) answered in a normal turn. A run missed while the room was

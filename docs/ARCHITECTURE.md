@@ -312,10 +312,11 @@ The execution contract is in [`AGENTS.md`](../AGENTS.md). In short:
 
 The list is fixed and in a stable order, so the prompt prefix stays
 cacheable (`tools.hpp`). With a VM: `shell`, `write_file`, `browser_open`,
-`browser_read`, `browser_click`, `browser_type`, `browser_scroll`,
-`browser_back`, `share_file`. For every bot: `web_search`, `read_image`,
-`remember`, `skill`, `backup`, `models_3d`, `image_generate`,
-`photo_to_3d`, `video_generate`, `scene_3d`. The phone tools `s23_status`,
+`browser_look`, `browser_read`, `browser_click`, `browser_type`,
+`browser_key`, `browser_login`, `browser_pay`, `browser_wait`,
+`browser_scroll`, `browser_back`, `share_file`. For every bot: `web_search`,
+`read_image`, `remember`, `consent`, `routine`, `skill`, `backup`,
+`models_3d`, `image_generate`, `photo_to_3d`, `video_generate`, `scene_3d`. The phone tools `s23_status`,
 `s23_screenshot`, `s23_tap`, `s23_swipe`, `s23_text`, `s23_key` are offered
 only while Chris runs the phone's control daemon. Plugin tools follow as
 `mcp__<server>__<tool>`.
@@ -421,9 +422,11 @@ words (`Engine::asks_in_words`) is taken back once per turn and the bot is
 told by a room note to call `consent`; decisions only come from
 `/api/approval` (owner) or the rules. The room cannot intercept a click in a VM's
 browser, so for actions there the rule lives in the tool and the prompt;
-plugin tools keep their enforced card. No payment data is stored: a Stripe
-vault (PaymentMethod ids only, the key as a 0600 file) needs Chris's Stripe
-account and his decision to load Stripe.js from js.stripe.com.
+plugin tools keep their enforced card. Paying goes through `browser_pay`:
+`consent` first, then a pay card where Chris picks a saved card and gives its
+security code; cards are sealed in `STATE/pay/cards.enc` (`vault.hpp`,
+AES-256-GCM, key `STATE/pay/vault.key`, 0600), the security code is never
+stored, the page and the bots see brand and last four digits only.
 
 `routine` (add, list, remove, pause, resume, run) keeps routines in
 `STATE/routines.json`: a name, a bot, an instruction and when (`time` with

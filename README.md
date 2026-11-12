@@ -27,6 +27,7 @@ Read next:
   flow, state, restart behaviour.
 - [docs/INSTALL.md](docs/INSTALL.md): from a blank Ubuntu 24.04 host to a
   running system.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): deploy, rollback, models, VMs,
   backups, logs, TLS, access.
 - [CONTRIBUTING.md](CONTRIBUTING.md): build, checks, pull requests.

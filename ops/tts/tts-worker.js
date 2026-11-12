@@ -194,7 +194,7 @@ const took = {read: 0, widen: 0, create: 0};
 async function widened(url) {
   let t = Date.now();
   const total = await keepAll(url);
-  const out = new Float32Array(total >> 1);
+  const out = new Float32Array(total >> 1), bits = new Uint32Array(out.buffer);
   HALF = HALF || halfTable();
   let reading = readPiece(url, 0);
   for (let n = 0; n * PIECE < total; n++) {
@@ -205,8 +205,13 @@ async function widened(url) {
     }
     reading = (n + 1) * PIECE < total ? readPiece(url, n + 1) : null;
     took.read += Date.now() - t; t = Date.now();
+    // A normal number moves its bits (sign, exponent re-biased, mantissa); zero, tiny, infinite and NaN go through the table.
     const half = new Uint16Array(bytes), at = (n * PIECE) >> 1;
-    for (let i = 0; i < half.length; i++) out[at + i] = HALF[half[i]];
+    for (let i = 0; i < half.length; i++) {
+      const h = half[i], e = h & 0x7c00;
+      if (e !== 0 && e !== 0x7c00) bits[at + i] = ((h & 0x8000) << 16) | (((h & 0x7fff) << 13) + 0x38000000);
+      else out[at + i] = HALF[h];
+    }
     took.widen += Date.now() - t; t = Date.now();
   }
   return out;

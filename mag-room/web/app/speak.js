@@ -618,6 +618,9 @@
     const start = () => piperPlay(pb).catch(() => fallback(pb));
     // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
     if (piper.config && pb.voice && piper.ready.size) { start(); return true; }
+    // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
+    const tongue = (pb.lang || 'de').slice(0, 2), tempo = rateFor(pb.speaker);
+    if (piper.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
     // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
     // wait: the device's own voice reads this one, and the model goes on
     // loading behind it for the next. Only a device without a voice of its
@@ -729,7 +732,71 @@
       prepared.set(key, sound);
       keptFor.set(key, 0);
     });
+    if (!head && m.state === 'done') {
+      const sounds = parts.map((part) => prepared.get(asked(prof.voice.model, prof.rate, lang, part)));
+      if (sounds.every(Boolean)) said.put(m.id, cuts.get(m.id), sounds, prof.voice.model, prof.rate, lang);
+    }
   }
+  // ---- what was said is kept across a reload -------------------------------------
+  // The newest answers, made whole ahead, are kept in Cache Storage as they
+  // were made (16 bit, the last four answers): after a reload the tap on one
+  // of them plays the model's own voice at once, while the model is still
+  // being made ready (seconds on a phone), not the device's voice.
+  const said = (() => {
+    const NAME = 'mag-tts-said', MOST = 4, done = new Set();
+    const address = (id) => location.origin + '/tts-said/' + encodeURIComponent(id);   // a name in the cache, never fetched
+    async function open() { try { return await caches.open(NAME); } catch { return null; } }
+    async function put(id, cut, sounds, model, rate, lang) {
+      const mark = id + '|' + model + '|' + rate + '|' + (cut?.text.length || 0);
+      if (!cut || done.has(mark)) return;
+      done.add(mark);
+      let made;
+      try { made = await Promise.all(sounds); } catch { done.delete(mark); return; }
+      if (!made.every((r) => r?.audio && r.rate === made[0].rate)) return;
+      const meta = new TextEncoder().encode(JSON.stringify({ id, text: cut.text, parts: cut.parts, lens: made.map((r) => r.audio.length), rate: made[0].rate, model, voiceRate: rate, lang, models: piper.config?.models || '' }));
+      const head = (4 + meta.length + 1) & ~1, n = made.reduce((a, r) => a + r.audio.length, 0);
+      const bytes = new Uint8Array(head + 2 * n);
+      new DataView(bytes.buffer).setUint32(0, meta.length, true);
+      bytes.set(meta, 4);
+      const pcm = new Int16Array(bytes.buffer, head, n);
+      let at = 0;
+      for (const r of made) for (let i = 0; i < r.audio.length; i++) pcm[at++] = Math.max(-32768, Math.min(32767, Math.round(r.audio[i] * 32767)));
+      const cache = await open();
+      if (!cache) return;
+      try {
+        await cache.delete(address(id));          // the newest last: the oldest go first
+        await cache.put(address(id), new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } }));
+        const keys = await cache.keys();
+        for (const k of keys.slice(0, Math.max(0, keys.length - MOST))) await cache.delete(k);
+      } catch { /* a full device: not kept */ }
+    }
+    // After a reload: what is kept becomes made sound again, cut as it was cut.
+    async function restore() {
+      const cache = await open();
+      if (!cache) return;
+      for (const k of await cache.keys()) {
+        try {
+          const bytes = new Uint8Array(await (await cache.match(k)).arrayBuffer());
+          const size = new DataView(bytes.buffer).getUint32(0, true);
+          const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + size)));
+          if (meta.models !== (piper.config?.models || '')) { await cache.delete(k); continue; }
+          const head = (4 + size + 1) & ~1, pcm = new Int16Array(bytes.buffer, head, (bytes.length - head) >> 1);
+          let at = 0;
+          meta.parts.forEach((part, i) => {
+            const audio = new Float32Array(meta.lens[i]);
+            for (let j = 0; j < audio.length; j++) audio[j] = pcm[at++] / 32767;
+            const key = asked(meta.model, meta.voiceRate, meta.lang, part);
+            if (prepared.has(key)) return;
+            prepared.set(key, Promise.resolve({ audio, rate: meta.rate, synthMs: 0, provider: 'kept', steps: 0 }));
+            keptFor.set(key, audio.length / meta.rate);
+          });
+          if (!cuts.has(meta.id)) cuts.set(meta.id, { text: meta.text, parts: meta.parts });
+          done.add(meta.id + '|' + meta.model + '|' + meta.voiceRate + '|' + meta.text.length);
+        } catch { try { await cache.delete(k); } catch {} }
+      }
+    }
+    return { put, restore };
+  })();
   let preparing = 0;
   function paint() {
     setButtons();
@@ -786,6 +853,7 @@
   function warmUp() {
     // What is downloaded once must stay: the browser is asked not to clear it when space runs short.
     try { navigator.storage?.persist?.().catch(() => {}); } catch {}
+    loadConfig().then((cfg) => cfg && said.restore()).then(() => setButtons()).catch(() => {});
     const link = navigator.connection;
     if (link && link.saveData) return;
     loadConfig().then((cfg) => {

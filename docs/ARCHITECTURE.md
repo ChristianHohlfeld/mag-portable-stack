@@ -812,7 +812,9 @@ step. One voice and tempo per
 speaker, kept on the device. The page fetches and prepares the model in the
 background after load, so the first "Vorlesen" speaks at once; until then
 the device's own voice reads. The newest answer is synthesised ahead while
-it arrives. Before a sentence goes to the model it is written as it is
+it arrives. The last four answers made whole are kept in Cache Storage as
+16-bit sound (`mag-tts-said`): after a reload a tap on one of them plays
+the model's voice at once, while the model is still being made ready. Before a sentence goes to the model it is written as it is
 spoken (numbers, dates, units, abbreviations).
 
 `ops/tts/bootstrap.sh` fetches and packs the model once (weights moved to

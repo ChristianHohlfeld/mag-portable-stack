@@ -602,7 +602,8 @@ be named.
 `Engine::lead_` is the bot that carries out Chris's current request: the
 first to call an acting tool (shell, files, browser, media, phone, plugins)
 after his message. Another bot's acting tool gets "<lead> erledigt
-diese Aufgabe schon" and nothing runs. A turn of Chris's (or a routine's)
+diese Aufgabe schon", nothing runs, its turn ends there and its message is
+marked `yielded` and not shown. A turn of Chris's (or a routine's)
 that used tools and ends after a failed step, without text or with an
 announcement of what the bot will do next (`announces`) gets a room note
 with the goal (Chris's last request) and is continued, three times a turn

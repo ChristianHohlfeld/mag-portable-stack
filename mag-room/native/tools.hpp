@@ -136,7 +136,7 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("id":{"type":"string","description":"remove/pause/resume/run: the routine's id or name"},"name":{"type":"string"},)j"
                R"j("instruction":{"type":"string","description":"add: what to do each time, as a request to yourself, in German"},)j"
                R"j("bot":{"type":"string","description":"add: which bot does it (id), default you"},)j"
-               R"j("when":{"type":"object","description":"add: one of {"daily":"07:30"}, {"weekdays":"08:00"}, {"days":[1,3],"time":"18:00"} (1 = Monday), {"every_minutes":120}, {"once":"2026-11-14 18:00"}, {"event":"picture"} (Chris posts a picture), {"event":"job_done"} (a 3D model, picture or video he ordered is done)"}},)j"
+               R"j("when":{"type":"object","description":"add: one of {"daily":"07:30"}, {"weekdays":"08:00"}, {"days":[1,3],"time":"18:00"} (1 = Monday), {"every_minutes":120}, {"once":"2026-11-14 18:00"}, {"event":"picture"} (Chris posts a picture), {"event":"job_done"} (a 3D model, picture or video he ordered is done), {"event":"file"} (a new file appears in your VM below /home/bot; optional "path":"Downloads" for one folder and "pattern":"*.pdf" for names; the message names the files; what your own run of it writes does not set it off)"}},)j"
                R"j("required":["action"]})j"));
   list.push(fn("skill",
                "The how-tos you and the other bot share: list them, read one, save one. A skill says when it applies, its steps, how to check "

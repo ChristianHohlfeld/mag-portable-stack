@@ -325,7 +325,7 @@
               ...out.journal.map((j) => el('p', {}, el('small', { text: MAG.day(j.ts * 1000) + ' · ' + (MAG.bot(j.bot)?.name || j.bot) + ' · ' + (j.decision === 'allow' ? 'erlaubt' : 'nicht erlaubt') + ' (' + j.why + ')' }),
                 el('br'), (j.amount_eur ? j.amount_eur.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) + ' · ' : '') + j.what))));
           routinesCard.replaceChildren();
-          if (!out.routines.length) routinesCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keine. Bitte einen Bot im Chat, etwas regelmäßig zu tun („Lena, schick mir jeden Morgen um 7 …“).' }))));
+          if (!out.routines.length) routinesCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keine. Bitte einen Bot im Chat, etwas regelmäßig zu tun („Lena, schick mir jeden Morgen um 7 …“) oder bei einem Ereignis (neues Bild, fertiger Auftrag, neue Datei in seiner VM).' }))));
           for (const one of out.routines) {
             const act = (what) => () => call(what === 'remove' ? 'DELETE' : 'POST', '/api/routines/' + one.id + (what === 'remove' ? '' : '/' + what)).then(loadAssist);
             routinesCard.append(el('details', { class: 'mem skill' },

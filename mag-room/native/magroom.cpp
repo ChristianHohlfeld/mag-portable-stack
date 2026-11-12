@@ -57,6 +57,75 @@ int main() {
     const Val stored = room.add(m);
     engine.on_human(stored, {bot}, true);
   };
+  // For a file routine: the files below /home/bot of the bot's VM, read only.
+  // Dot files and folders, node_modules and unfinished downloads are left
+  // out; a file changed in the last 20 s is marked young. A VM that is off or
+  // does not answer gives null (the guest helper never starts one). Each look
+  // leaves its output log in ~/.mag-shell like every guest command; the look
+  // removes the one of the look before, so they do not pile up.
+  assist.vm_files = [&room, &guests](const std::string &bot) -> Val {
+    const std::string vm = jstr(room.bot(bot), "vm");
+    if (!vm::valid_name(vm) || guests.state(vm) != "ready") return Val();
+    static const std::string script = "exec python3 -c " + shell_quote(R"PY(
+import json, os, stat, time
+home = '/home/bot'
+shell = os.path.join(home, '.mag-shell')
+mark = os.path.join(shell, 'file-routine-look')
+me = os.path.realpath('/proc/self/fd/1')
+try:
+    with open(mark) as f:
+        old = f.read().strip()
+    if old != me and os.path.dirname(old) == shell and old.endswith('.log'):
+        os.remove(old)
+except OSError:
+    pass
+if os.path.dirname(me) == shell:
+    try:
+        with open(mark, 'w') as f:
+            f.write(me)
+    except OSError:
+        pass
+skip_dirs = {'node_modules', '__pycache__', 'site-packages'}
+skip_ends = ('.crdownload', '.part', '.partial', '.download', '.tmp', '~')
+now = time.time()
+out, cut = [], False
+for root, dirs, files in os.walk(home):
+    dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in skip_dirs)
+    for name in sorted(files):
+        if name.startswith('.') or name.endswith(skip_ends):
+            continue
+        p = os.path.join(root, name)
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        out.append([os.path.relpath(p, home), now - max(st.st_mtime, st.st_ctime) < 20])
+        if len(out) >= 15000:
+            cut = True
+            break
+    if cut:
+        break
+print(json.dumps({'files': out, 'cut': cut}))
+)PY");
+    std::string body;
+    bool big = false;
+    const auto res = guests.exec(vm, script, 60, nullptr, [&](const std::string &chunk) {
+      if (body.size() + chunk.size() <= (6u << 20)) body += chunk;
+      else big = true;
+    });
+    if (res.failed_to_start || res.timed_out || res.code != 0 || big) return Val();
+    const Val v = jparse(body);
+    return v.isObj() && v.find("files") ? v : Val();
+  };
+  // Is a bot in a turn (a file routine's own run is still going on)?
+  assist.busy = [&engine](const std::string &bot) {
+    const Val bots = engine.status();
+    for (auto &b : bots.asArr())
+      if (jstr(b, "id") == bot) return jbool(b, "busy");
+    return false;
+  };
   Vault vault(room);
   Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist, vault);
   // A notification when an answer took a while (you probably looked away) or failed.

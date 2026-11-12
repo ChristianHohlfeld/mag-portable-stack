@@ -18,11 +18,14 @@
 //
 // Routines: an instruction for one bot, at a time (daily, on weekdays or
 // days of the week, every n minutes, once) or on an event (a picture Chris
-// posts, a job of the graphics card Chris ordered being done). A routine
+// posts, a job of the graphics card Chris ordered being done, a new file in
+// the bot's VM). A routine
 // that is due becomes a message of the chat ("Routine »…«: …") addressed to
 // its bot, which answers it in a normal turn. STATE/routines.json keeps
 // them with their last run; a run missed while the room was down runs once
-// when it is back (if it is at most 12 hours late). A tick every 30 s.
+// when it is back (if it is at most 12 hours late). A tick every 30 s; the
+// files of a VM are looked at once a minute, only for a bot with a file
+// routine and only while its VM answers.
 #pragma once
 #include "room.hpp"
 
@@ -30,6 +33,7 @@
 #include <ctime>
 #include <deque>
 #include <filesystem>
+#include <fnmatch.h>
 #include <fstream>
 #include <set>
 
@@ -84,10 +88,18 @@ public:
   // Set by main: a routine is due; post it and give its bot the turn.
   std::function<void(const Val &routine, const std::string &why)> fire;
 
+  // Set by main: the files below the home of a bot's VM ({"files": [[path
+  // relative to the home, young]], "cut": more than were listed}), or null
+  // when the bot has no VM or it does not answer. It only reads.
+  std::function<Val(const std::string &bot)> vm_files;
+  // Set by main: is the bot in a turn right now?
+  std::function<bool(const std::string &bot)> busy;
+
   explicit Assist(Room &room) : room_(room) {
     std::error_code ec;
     std::filesystem::create_directories(room_.cfg.state_dir + "/assist", ec);
     std::thread([this] { tick(); }).detach();
+    std::thread([this] { files_tick(); }).detach();
   }
 
   static constexpr const char *kKinds[] = {"send", "buy", "delete", "publish", "routine"};
@@ -258,7 +270,8 @@ public:
 
   // A routine from a bot's description: {name, bot, instruction, when}; when is
   // {"daily": "07:30"} | {"weekdays": "08:00"} | {"days": [1..7], "time"} |
-  // {"every_minutes": n} | {"once": "2026-11-14 18:00"} | {"event": "picture"|"job_done"}.
+  // {"every_minutes": n} | {"once": "2026-11-14 18:00"} | {"event": "picture"|"job_done"} |
+  // {"event": "file", "path"?: a folder below /home/bot, "pattern"?: "*.pdf"}.
   // Returns "" with `out` set, or why not in words.
   std::string add(const Val &in, const std::string &bot_id, Val &out) {
     const std::string name = clip(trim(jstr(in, "name")), 80, ""), text = clip(trim(jstr(in, "instruction")), 2000, "…");
@@ -284,10 +297,25 @@ public:
       const int64_t at = parse_local(t);
       if (at <= now_s()) return "Der Zeitpunkt (JJJJ-MM-TT HH:MM) muss in der Zukunft liegen.";
       w["once"] = (double)at;
-    } else if (const std::string e = jstr(*when, "event"); e == "picture" || e == "job_done") {
+    } else if (const std::string e = jstr(*when, "event"); e == "picture" || e == "job_done" || e == "file") {
       w["event"] = e;
+      if (e == "file") {
+        // Optional: only in one folder below /home/bot, only names like a pattern.
+        std::string dir = trim(jstr(*when, "path"));
+        for (const char *home : {"/home/bot/", "/home/bot", "~/", "~"})
+          if (starts_with(dir, home)) { dir = dir.substr(std::string(home).size()); break; }
+        while (!dir.empty() && dir.front() == '/') dir.erase(0, 1);
+        while (!dir.empty() && dir.back() == '/') dir.pop_back();
+        if (dir.size() > 200 || dir.find("..") != std::string::npos) return "path ist ein Ordner unter /home/bot, zum Beispiel Downloads.";
+        if (!dir.empty()) w["path"] = dir;
+        std::string pattern = trim(jstr(*when, "pattern"));
+        if (pattern.size() > 100 || pattern.find('/') != std::string::npos) return "pattern ist ein Dateiname mit * und ?, zum Beispiel *.pdf.";
+        // "pdf" or ".pdf" mean *.pdf.
+        if (!pattern.empty() && pattern.find_first_of("*?[") == std::string::npos) pattern = std::string(pattern[0] == '.' ? "*" : "*.") + pattern;
+        if (!pattern.empty()) w["pattern"] = pattern;
+      }
     } else {
-      return "when kennt daily, weekdays, days+time, every_minutes, once oder event (picture, job_done).";
+      return "when kennt daily, weekdays, days+time, every_minutes, once oder event (picture, job_done, file).";
     }
     std::unique_lock<std::mutex> lk(routines_mu_);
     Val all = read_json(path());
@@ -351,7 +379,10 @@ public:
       return n % 60 == 0 ? "alle " + std::to_string(n / 60) + " h" : "alle " + std::to_string(n) + " min";
     }
     if (w.find("once")) return "einmal am " + local_label((int64_t)jnum(w, "once"));
-    if (const std::string e = jstr(w, "event"); !e.empty()) return e == "picture" ? "bei jedem Bild von Chris" : "wenn ein Auftrag der Grafikkarte fertig ist";
+    if (const std::string e = jstr(w, "event"); e == "file")
+      return "bei jeder neuen Datei in der VM" + (jstr(w, "path").empty() ? std::string() : " in ~/" + jstr(w, "path")) +
+             (jstr(w, "pattern").empty() ? std::string() : " (" + jstr(w, "pattern") + ")");
+    else if (!e.empty()) return e == "picture" ? "bei jedem Bild von Chris" : "wenn ein Auftrag der Grafikkarte fertig ist";
     std::string d;
     if (const Val *days = w.find("days"); days && days->isArr()) {
       if (days->asArr().size() == 7) d = "täglich";
@@ -379,8 +410,10 @@ private:
   std::map<std::string, Val> cards_;           // card id -> the card, while it waits
   int64_t seen_ms_ = 0;                        // messages up to here were looked at for events
   std::set<std::string> done_;                 // jobs of the graphics card already seen done
+  std::map<std::string, int64_t> running_;     // file routine id -> when its run started, while it runs (mu_)
 
   std::string path() const { return room_.cfg.state_dir + "/routines.json"; }
+  std::string files_path() const { return room_.cfg.state_dir + "/assist/vm-files.json"; }
   std::string ledger() const { return room_.cfg.state_dir + "/assist/ledger.enc"; }
   std::string key_;   // the journal's key, loaded once
 
@@ -580,6 +613,144 @@ private:
     }
     for (auto &r : due) if (fire) fire(r, jstr(r["when"], "event") == "picture" ? "neues Bild" : "Auftrag fertig");
     if (!due.empty()) publish();
+  }
+
+  // ---- a new file in a bot's VM ---------------------------------------------
+  // Once a minute, for each bot with a file routine that is not paused, the
+  // files below /home/bot of its VM are listed (vm_files: no dot files or
+  // folders, no node_modules, no unfinished downloads). A file is new when it
+  // was not in the last listing; STATE/assist/vm-files.json keeps it, so a
+  // restart of the room neither fires for old files nor misses what came
+  // while it was down. The first listing of a bot only notes what is there.
+  // A file younger than 20 s is still being written and waits for the next
+  // look. A VM that is off or does not answer is skipped and its last listing
+  // kept. What appears while the routine's own run goes on is its own and
+  // sets nothing off; what appears within 15 minutes of a run waits and fires
+  // when they are over. So a routine that writes files cannot set itself off
+  // in a circle.
+  void files_tick() {
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::seconds(60));
+      try {
+        due_by_file();
+      } catch (const std::exception &e) {
+        logf(std::string("assist: files: ") + e.what());
+      }
+    }
+  }
+
+  static bool file_matches(const Val &w, const std::string &rel) {
+    const std::string dir = jstr(w, "path"), pattern = jstr(w, "pattern");
+    if (!dir.empty() && !starts_with(rel, dir + "/")) return false;
+    const size_t slash = rel.find_last_of('/');
+    const std::string name = slash == std::string::npos ? rel : rel.substr(slash + 1);
+    return pattern.empty() || fnmatch(pattern.c_str(), name.c_str(), FNM_CASEFOLD) == 0;
+  }
+
+  static std::string files_label(const std::vector<std::string> &files) {
+    std::string out = files.size() == 1 ? "neue Datei " : std::to_string(files.size()) + " neue Dateien: ";
+    for (size_t i = 0; i < files.size() && i < 10; ++i) {
+      std::string p = files[i];
+      for (char &c : p) if ((unsigned char)c < 0x20) c = ' ';
+      out += (i ? ", " : "") + std::string("/home/bot/") + clip(p, 200, "…");
+    }
+    if (files.size() > 10) out += " und " + std::to_string(files.size() - 10) + " weitere";
+    return out;
+  }
+
+  void due_by_file() {
+    if (!vm_files) return;
+    std::map<std::string, std::vector<Val>> by_bot;
+    {
+      std::lock_guard<std::mutex> lk(routines_mu_);
+      const Val all = read_json(path());
+      if (all.isArr())
+        for (auto &r : all.asArr())
+          if (!jbool(r, "paused") && jstr(at(r, "when"), "event") == "file") by_bot[jstr(r, "bot")].push_back(r);
+    }
+    const Val before = read_json(files_path());
+    const Val *old_bots = before.find("bots"), *old_pending = before.find("pending");
+    Val bots = Val::object(), pending = Val::object();
+    bool changed = false;
+    std::vector<std::pair<Val, std::string>> due;
+    const int64_t now = now_s();
+    for (auto &[bot, list] : by_bot) {
+      const Val *old = old_bots ? old_bots->find(bot) : nullptr;
+      const Val listing = vm_files(bot);
+      const Val *files = listing.find("files");
+      if (!files || !files->isArr()) {
+        // Off or not answering: skipped, nothing forgotten.
+        if (old) bots[bot] = *old;
+        for (auto &r : list)
+          if (const Val *p = old_pending ? old_pending->find(jstr(r, "id")) : nullptr) pending[jstr(r, "id")] = *p;
+        continue;
+      }
+      std::set<std::string> seen, now_seen;
+      if (const Val *s = old ? old->find("seen") : nullptr; s && s->isArr())
+        for (auto &p : s->asArr()) if (p.type == Val::STR) seen.insert(p.str);
+      std::vector<std::string> fresh;
+      for (auto &f : files->asArr()) {
+        if (!f.isArr() || f.asArr().empty() || f.asArr()[0].type != Val::STR) continue;
+        const std::string &p = f.asArr()[0].str;
+        const bool young = f.asArr().size() > 1 && f.asArr()[1].truthy(), known = seen.count(p) > 0;
+        if (young && !known) continue; // still being written: next time
+        now_seen.insert(p);
+        if (old && !known) fresh.push_back(p);
+      }
+      // More files than one listing holds: what was seen beyond the cut stays seen.
+      if (jbool(listing, "cut")) for (auto &p : seen) now_seen.insert(p);
+      if (!old || now_seen != seen) changed = true;
+      Val keep = Val::object(), arr = Val::array();
+      for (auto &p : now_seen) arr.push(p);
+      keep["seen"] = arr;
+      bots[bot] = keep;
+      const bool working = busy && busy(bot);
+      for (auto &r : list) {
+        const std::string id = jstr(r, "id");
+        std::vector<std::string> match;
+        if (const Val *p = old_pending ? old_pending->find(id) : nullptr; p && p->isArr())
+          for (auto &x : p->asArr()) if (x.type == Val::STR) match.push_back(x.str);
+        for (auto &p : fresh)
+          if (file_matches(at(r, "when"), p) && std::find(match.begin(), match.end(), p) == match.end()) match.push_back(p);
+        std::lock_guard<std::mutex> lk(mu_);
+        if (const auto run = running_.find(id); run != running_.end()) {
+          // Its own run still goes on: what appears now is its own.
+          if (!working && now - run->second > 90) running_.erase(run);
+          continue;
+        }
+        if (match.empty()) continue;
+        if (now - (int64_t)jnum(r, "last") < 15 * 60) {
+          Val wait = Val::array();
+          for (size_t i = 0; i < match.size() && i < 50; ++i) wait.push(match[i]);
+          pending[id] = wait;
+          changed = true;
+          continue;
+        }
+        due.push_back({r, files_label(match)});
+        running_[id] = now;
+        changed = true;
+      }
+    }
+    // Pending files of a routine that is gone or paused, or a bot without file routines: forgotten.
+    if ((old_bots && old_bots->size() != bots.size()) || (old_pending && old_pending->size() != pending.size())) changed = true;
+    if (changed) {
+      Val out = Val::object();
+      out["bots"] = bots;
+      out["pending"] = pending;
+      write_json(files_path(), out, 0600);
+    }
+    if (due.empty()) return;
+    {
+      std::lock_guard<std::mutex> lk(routines_mu_);
+      Val all = read_json(path());
+      if (all.isArr()) {
+        for (auto &r : *all.arr)
+          for (auto &d : due) if (jstr(r, "id") == jstr(d.first, "id")) r["last"] = (double)now;
+        write_json(path(), all);
+      }
+    }
+    for (auto &d : due) if (fire) fire(d.first, d.second);
+    publish();
   }
 };
 

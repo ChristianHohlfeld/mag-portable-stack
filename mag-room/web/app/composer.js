@@ -9,6 +9,7 @@
   let uploading = 0, sending = false;
   let mode3d = false;
   let modeImage = false;      // a picture from words (FLUX.2 klein on the MI50)
+  let modeVideo = false;      // a video (Wan 2.2): from a picture, or from words with the picture painted first
   let shape = localStorage.getItem('mag-image-shape') || 'square';
   let quality = localStorage.getItem('mag-3d-quality') || 'normal';
 
@@ -23,10 +24,12 @@
   }
   function refresh() {
     const has3dImage = staged.some((s) => s.att.kind === 'image');
-    sendBtn.disabled = sending || uploading > 0 || (mode3d ? !has3dImage : modeImage ? !input.value.trim() : !input.value.trim() && !staged.length);
-    sendBtn.setAttribute('aria-label', mode3d ? '3D-Modell erstellen' : modeImage ? 'Bild erzeugen' : 'Senden');
-    sendBtn.innerHTML = mode3d ? MAG.icons.cube : modeImage ? MAG.icons.image : MAG.icons.send;
-    input.placeholder = mode3d ? 'Foto zu 3D' : modeImage ? 'Was soll auf dem Bild sein?' : 'Nachricht';
+    sendBtn.disabled = sending || uploading > 0 || (mode3d ? !has3dImage : modeImage ? !input.value.trim()
+      : modeVideo ? !input.value.trim() && !has3dImage : !input.value.trim() && !staged.length);
+    sendBtn.setAttribute('aria-label', mode3d ? '3D-Modell erstellen' : modeImage ? 'Bild erzeugen' : modeVideo ? 'Video erzeugen' : 'Senden');
+    sendBtn.innerHTML = mode3d ? MAG.icons.cube : modeImage ? MAG.icons.image : modeVideo ? MAG.icons.play : MAG.icons.send;
+    input.placeholder = mode3d ? 'Foto zu 3D' : modeImage ? 'Was soll auf dem Bild sein?'
+      : modeVideo ? (has3dImage ? 'Was soll im Video passieren?' : 'Was soll im Video zu sehen sein und passieren?') : 'Nachricht';
   }
   function paintStaged() {
     stagedBox.replaceChildren();
@@ -43,6 +46,18 @@
         seg.append(el('button', { class: key === shape ? 'on' : '', text: label, onclick: () => { shape = key; localStorage.setItem('mag-image-shape', key); paintStaged(); } }));
       stagedBox.append(el('div', { class: 'staged' }, MAG.icon('image'), el('span', { text: 'Bild erzeugen' }), seg,
         el('button', { class: 'x', 'aria-label': 'Bild abbrechen', html: MAG.icons.x, onclick: () => { modeImage = false; paintStaged(); } })));
+    }
+    if (modeVideo) {
+      // From a picture (gallery, camera) or from words alone: then the
+      // picture is painted first and the video follows by itself.
+      const picture = staged.some((s) => s.att.kind === 'image');
+      stagedBox.append(el('div', { class: 'staged' }, MAG.icon('play'), el('span', { text: 'Video erzeugen' }),
+        el('button', { class: 'x', 'aria-label': 'Video abbrechen', html: MAG.icons.x, onclick: () => { modeVideo = false; paintStaged(); } })));
+      if (!picture && !uploading)
+        stagedBox.append(el('div', { class: 'staged source' },
+          el('button', { class: 'pill', onclick: () => pick('image/png,image/jpeg,image/webp', false, paintStaged) }, MAG.icon('image'), el('b', { text: 'Galerie' })),
+          el('button', { class: 'pill', onclick: () => shoot(paintStaged) }, MAG.icon('camera'), el('b', { text: 'Kamera' })),
+          el('span', { class: 'nm', text: 'oder nur Worte: erst ein Bild, dann das Video' })));
     }
     if (mode3d) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Qualität' });
@@ -269,12 +284,14 @@
     const text = input.value.trim(), body = { text, attachments: staged.map((s) => s.att.file), client_id: crypto.randomUUID?.() || String(Math.random()) };
     if (mode3d) Object.assign(body, { mode: '3d', quality, text: '' });
     else if (modeImage) Object.assign(body, { mode: 'image', shape, attachments: [] });
+    else if (modeVideo) Object.assign(body, { mode: 'video', attachments: staged.filter((s) => s.att.kind === 'image').slice(0, 1).map((s) => s.att.file) });
     sending = true;
     refresh();
     try {
       await MAG.api('POST', '/api/message', body);
       if (!mode3d) { input.value = ''; sessionStorage.removeItem('mag-draft'); }
       modeImage = false;
+      modeVideo = false;
       staged = [];
       mode3d = false;
       resize();
@@ -302,8 +319,9 @@
     $('#attach').addEventListener('click', (e) => MAG.menu(e.currentTarget, [
       { icon: 'image', label: 'Datei oder Foto', run: () => pick('', false) },
       { icon: 'camera', label: 'Kamera', run: () => shoot() },
-      { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; modeImage = false; paintStaged(); } },
-      { icon: 'image', label: 'Bild erzeugen', run: () => { modeImage = true; mode3d = false; paintStaged(); input.focus(); } },
+      { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; modeImage = modeVideo = false; paintStaged(); } },
+      { icon: 'image', label: 'Bild erzeugen', run: () => { modeImage = true; mode3d = modeVideo = false; paintStaged(); input.focus(); } },
+      { icon: 'play', label: 'Video erzeugen', run: () => { modeVideo = true; mode3d = modeImage = false; paintStaged(); input.focus(); } },
     ]));
     // Files dropped anywhere on the page are attachments, never a navigation.
     window.addEventListener('dragover', (e) => e.preventDefault());

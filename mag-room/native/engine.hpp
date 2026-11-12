@@ -31,7 +31,7 @@ public:
       : room_(room), guests_(guests), scenes_(scenes), plugins_(plugins), phone_(!tools::phone_token(room.cfg).empty()) {}
   ~Engine() { shutdown(); }
   // Set by main: how a bot's picture from words is ordered (Idol::imagine).
-  std::function<std::string(const std::string &, int, int, const std::string &, std::string &)> imagine;
+  std::function<std::string(const std::string &, int, int, const std::string &, std::string &, const std::string &)> imagine; // ..., then_video
   // Set by main: how a bot's video from a picture is ordered (Idol::film).
   std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &)> film;
   // Set by main: how a bot's 3D model from a picture is ordered (Idol::start).
@@ -1227,6 +1227,8 @@ private:
       body = "(Auftrag an Foto zu 3D, kein Auftrag an die Bots: aus diesem Foto wird ein 3D-Modell erstellt.)";
     if (jbool(m, "order_image"))
       body = "(Auftrag an Bild erzeugen, kein Auftrag an die Bots: daraus wird ein Bild gemalt.) " + body;
+    if (jbool(m, "order_video"))
+      body = "(Auftrag an Video erzeugen, kein Auftrag an die Bots: daraus wird ein Video, ohne Bild erst ein Bild und dann das Video.) " + body;
     const bool eyes = sees(b.id);
     size_t index = 0, inlined = 0;
     if (atts && atts->isArr())

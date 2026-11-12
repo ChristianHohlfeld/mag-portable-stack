@@ -116,7 +116,10 @@ public:
   // queue). The message is there at once with its progress and becomes the
   // picture: an ordinary image of the chat, which the bots see and which can
   // go on to photo to 3D. Returns the message id, or "" with `error`.
-  std::string imagine(const std::string &prompt, int width, int height, const std::string &by, std::string &error) {
+  // `then_video`: what should happen in a video made from the picture as
+  // soon as it is there (text to video: the picture comes first).
+  std::string imagine(const std::string &prompt, int width, int height, const std::string &by, std::string &error,
+                      const std::string &then_video = "") {
     if (trim(prompt).empty()) { error = "Was soll auf dem Bild sein?"; return ""; }
     http::ClientOptions opt = options("POST");
     Val ask = Val::object();
@@ -145,10 +148,28 @@ public:
     m3["progress"] = 0;
     m3["prompt"] = jstr(ask, "prompt");
     m3["by"] = by;
+    if (!trim(then_video).empty()) m3["then_video"] = clip(trim(then_video), 1500, "");
     m["model3d"] = m3;
     const std::string id = jstr(room_.add(m), "id");
     watch(id, jstr(job, "id"));
     return id;
+  }
+
+  // A picture painted for a video (text to video) orders that video once,
+  // when it is there; the picture's message notes which video it became.
+  void then_video(const std::string &message_id, const Val &png) {
+    Val m;
+    if (!room_.get(message_id, m) || !m.find("model3d")) return;
+    const std::string prompt = jstr(m["model3d"], "then_video");
+    if (prompt.empty() || !jstr(m["model3d"], "video").empty()) return;
+    std::string error;
+    const std::string id = film(png, prompt, jstr(m["model3d"], "by", "chris"), error);
+    room_.update(message_id, [&](Val &msg) {
+      Val &m3 = msg["model3d"];
+      m3.obj->erase(std::remove_if(m3.obj->begin(), m3.obj->end(), [](const auto &kv) { return kv.first == "then_video"; }), m3.obj->end());
+      if (!id.empty()) m3["video"] = id;
+      else m3["video_error"] = error.empty() ? "Das Video wurde abgelehnt." : error;
+    });
   }
 
   // A waiting job one place forwards ("up") or backwards ("down") in the
@@ -430,6 +451,7 @@ private:
             m3["progress"] = 1;
             if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
+          then_video(message_id, png);
           return;
         }
         if (state == "done") {

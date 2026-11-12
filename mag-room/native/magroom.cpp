@@ -22,7 +22,7 @@ int main() {
   Scenes scenes(room);
   Plugins plugins(room);
   Engine engine(room, guests, scenes, plugins);
-  engine.imagine = [&idol](const std::string &prompt, int w, int h, const std::string &by, std::string &error) { return idol.imagine(prompt, w, h, by, error); };
+  engine.imagine = [&idol](const std::string &prompt, int w, int h, const std::string &by, std::string &error, const std::string &then_video) { return idol.imagine(prompt, w, h, by, error, then_video); };
   // A bot names a picture as the chat shows it; without a name the newest picture.
   const auto picture = [&room](const std::string &name, std::string &error) {
     Val image;

@@ -4,7 +4,7 @@ MAG is a private chat room on one home server. One owner (Chris, on phone
 and desktop) talks with two local language-model bots, Lena and Noah. Both
 run on the CPU with llama.cpp. Each bot has its own KVM virtual machine with
 a shell, a real Chrome and a small web site. An AMD MI50 turns photos into
-3D models, words into pictures and pictures into videos. The bots build
+3D models, words into pictures and pictures (or words) into videos. The bots build
 animated Blender scenes from those models. Dictation runs on the server,
 reading aloud runs on the device. Models, speech and media generation run
 on this host; only web search and plugins Chris connects reach outside.

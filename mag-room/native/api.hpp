@@ -495,6 +495,10 @@ private:
       // A picture from words: for the worker, like a 3D order.
       m["silent"] = true;
       m["order_image"] = true;
+    } else if (mode == "video") {
+      // A video: from the picture that comes with it, or from words alone.
+      m["silent"] = true;
+      m["order_video"] = true;
     } else if (const std::string about = jstr(in, "about"); is_id(about)) {
       // Written at a scene or a 3D model in the chat: the message says what it is about.
       Val ref;
@@ -519,6 +523,32 @@ private:
         note["silent"] = true;
         note["text"] = "";
         m3["kind"] = "image";
+        m3["state"] = "error";
+        m3["error"] = error;
+        m3["stage"] = "Fehler";
+        note["model3d"] = m3;
+        room_.add(note);
+      }
+    }
+    if (mode == "video") {
+      // With a picture the video is made from it; with words alone the
+      // picture is painted first (FLUX.2 klein, wide) and its message orders
+      // the video by itself when it is there. Both wait in the MI50's line.
+      const Val *image = nullptr;
+      for (auto &a : atts.asArr())
+        if (jstr(a, "kind") == "image") { image = &a; break; }
+      std::string error;
+      if (image) out["model3d"] = idol_.film(*image, jstr(in, "text"), "chris", error);
+      else if (trim(jstr(in, "text")).empty()) error = "Was soll im Video zu sehen sein?";
+      else out["model3d"] = idol_.imagine(jstr(in, "text"), 1344, 768, "chris", error, jstr(in, "text"));
+      if (!error.empty()) {
+        Val note = Val::object(), m3 = Val::object();
+        note["from"] = "idol";
+        note["role"] = "service";
+        note["state"] = "error";
+        note["silent"] = true;
+        note["text"] = "";
+        m3["kind"] = "video";
         m3["state"] = "error";
         m3["error"] = error;
         m3["stage"] = "Fehler";

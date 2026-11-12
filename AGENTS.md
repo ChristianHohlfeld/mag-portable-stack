@@ -216,7 +216,10 @@ Every picture of the chat (uploaded, painted, a bot's) goes on from its own
 place: "3D" (a model, which can then be animated at its message) or "Video"
 (Wan 2.2 I2V-A14B, Apache-2.0, GGUF Q6_K with the Lightning 4-step LoRA,
 about five seconds at 480p; a bot's `video_generate` names the picture as
-the chat shows it). 3D, pictures and videos are jobs of one line
+the chat shows it). "Video erzeugen" in the plus menu takes a picture from
+the gallery or the camera, or words alone: then the first frame is painted
+first and its message orders the video by itself (a bot: `video_generate`
+with `paint`). 3D, pictures and videos are jobs of one line
 on the MI50: whoever has the card has it alone (at 72 W), the others wait
 with their place shown (Chris moves them forwards or backwards, or cancels
 them, at their message; the line survives restarts and reboots) and run

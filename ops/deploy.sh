@@ -175,7 +175,8 @@ mv -f /etc/sudoers.d/.magbot-guest.next /etc/sudoers.d/magbot-guest
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" \
   "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" \
   "$SOURCE/ops/mag-agents-network.service" "$SOURCE/ops/mag-git-gateway.socket" \
-  "$SOURCE/ops/mag-git-gateway.service" $UNITS/
+  "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/vm/mag-bot-saves.service" \
+  "$SOURCE/ops/vm/mag-bot-saves.timer" $UNITS/
 # The room unit is complete in one file; drop-ins of earlier releases (model
 # layouts, context budgets) no longer apply. The snapshot above restores them
 # on a rollback.
@@ -242,6 +243,8 @@ fi
 # The bots' sites (<name>.bot.stardenburg.de): vhost and publisher.
 soft bash "$SOURCE/ops/bots/install.sh"
 soft systemctl enable --now mag-stack-check.timer
+# Every bot VM is saved each night (magbot save-all; the last four per bot).
+soft systemctl enable --now mag-bot-saves.timer
 soft bash "$SOURCE/ops/boot/ensure-boot.sh"
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   soft bash "$SOURCE/ops/prune-releases.sh"

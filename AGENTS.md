@@ -137,6 +137,14 @@ same name, with its files and its published site (`magbot reset`, nothing is
 archived). Name, address, model and a pause stay as they were. The reset is
 in the bot's record and goes on after a restart of the room; it works from
 every state of the VM, and asking twice is asking once.
+Each bot VM is saved every night and whenever Chris asks (its sheet):
+`magbot save` copies the VM's overlay on the golden image,
+compressed, to `saves/<vm>/` while the VM runs on (an external snapshot,
+frozen through the guest agent, and a shallow block commit back; never into
+the golden image). The last four stay. A restore stops the VM and puts a save
+in its place; the disk it replaces is kept as a save first, so a restore is
+undone by restoring that. It is in the bot's record like a reset and goes on
+after a restart; the conversation and memories stay. A reset leaves the saves.
 Browser and terminal run over the VM's realtime link: `mag-browser` in the
 VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
 channels to the page. Pictures over HTTPS and single commands are only the

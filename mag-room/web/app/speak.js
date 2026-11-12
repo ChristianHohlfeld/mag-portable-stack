@@ -798,24 +798,34 @@
   }
   // For the film of a scene: what a figure says, in a voice of its own (the
   // k-th of the voices, so two figures do not sound alike), made here on the
-  // device like every reading. Returns { audio: Float32Array, rate } or null.
-  MAG.voices.make = async function (text, k) {
+  // device like every reading. With `seconds` (how long the mouth moves in the
+  // scene) the tempo is fitted so voice and lips end together, within what
+  // still sounds natural (0.8x to 1.3x). Returns { audio: Float32Array, rate } or null.
+  MAG.voices.make = async function (text, k, seconds) {
     if (!piperPossible || !S.features?.tts) return null;
     const cfg = await loadConfig();
     const list = voiceList().filter((v) => v.model);
     if (!cfg || !list.length) return null;
     const v = list[((k | 0) % list.length + list.length) % list.length], clean = normalize(text || '');
     if (!clean) return null;
-    const lang = textLocale(clean).slice(0, 2), sounds = [];
-    for (const part of piperParts(clean, 120, false)) {
-      const res = await ask({ type: 'speak', text: part, model: v.model, rate: 1, lang, steps: topSteps() }, SPEAK_TIMEOUT_MS);
-      if (res?.audio?.length) sounds.push(res);
-    }
-    if (!sounds.length) return null;
-    const rate = sounds[0].rate, audio = new Float32Array(sounds.reduce((n, r) => n + r.audio.length, 0));
-    let at = 0;
-    for (const r of sounds) { audio.set(r.audio, at); at += r.audio.length; }
-    return { audio, rate };
+    const lang = textLocale(clean).slice(0, 2);
+    const say = async (tempo) => {
+      const sounds = [];
+      for (const part of piperParts(clean, 120, false)) {
+        const res = await ask({ type: 'speak', text: part, model: v.model, rate: tempo, lang, steps: topSteps() }, SPEAK_TIMEOUT_MS);
+        if (res?.audio?.length) sounds.push(res);
+      }
+      if (!sounds.length) return null;
+      const rate = sounds[0].rate, audio = new Float32Array(sounds.reduce((n, r) => n + r.audio.length, 0));
+      let at = 0;
+      for (const r of sounds) { audio.set(r.audio, at); at += r.audio.length; }
+      return { audio, rate };
+    };
+    const first = await say(1);
+    if (!first || !(seconds > 0.3)) return first;
+    const natural = first.audio.length / first.rate, tempo = Math.min(1.3, Math.max(0.8, natural / seconds));
+    if (Math.abs(tempo - 1) < 0.04) return first;
+    return (await say(tempo)) || first;
   };
   let warmed = false;
   MAG.on('reset', () => { if (!warmed && piperPossible && S.features?.tts) { warmed = true; setTimeout(warmUp, 2500); } });

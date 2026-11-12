@@ -90,7 +90,10 @@ else the head's proportions place them; small bones (jaw, mouth corners, lids,
 brows) carry the skin, speech goes from the letters to mouth shapes, and it
 blinks now and then. Its film speaks what was said: when Chris asks for the
 film, the page makes the voices on the device (Supertonic, one voice per
-figure) and sends them as the film's sound; nothing is spoken on the server. A figure on two legs moves
+figure) and sends them as the film's sound; nothing is spoken on the server.
+Each voice's tempo is fitted to how long that mouth moves (0.8x to 1.3x), so
+lips and voice start and end together; the same voices play in the chat with
+the scene (its speaker button), following the viewer's clock. A figure on two legs moves
 with recorded motions (`ops/scene/motions.npz`, made by
 `ops/scene/mocap/build.py` from motion capture that is free to use and to
 pass on, credited in `ops/scene/MOTIONS.md`): its bones take the recorded

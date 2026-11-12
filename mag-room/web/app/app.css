@@ -708,3 +708,5 @@ html[data-voice="making"] .act[data-speak]::after { animation: voice-making 1.6s
 .files-acts .pill { display: inline-flex; align-items: center; gap: 5px; }
 article.flash { animation: flash 1.6s ease-out; }
 @keyframes flash { 0%, 30% { background: color-mix(in srgb, var(--accent) 16%, transparent); } }
+.m3 .stage .tools button.sound.on { color: var(--accent); }
+.m3 .stage .tools button.sound:disabled { opacity: .5; }

@@ -474,7 +474,9 @@
     if ('IntersectionObserver' in window) new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (visible) wake(); }).observe(canvas);
     canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; });
     canvas.addEventListener('webglcontextrestored', () => MAG.viewer3d.attach(canvas, canvas.dataset.url, true));
-    canvas._viewer = { reset, toggle };
+    // Where the film is (seconds), for the voices that follow it.
+    const state = () => ({ time: playable ? clock % (scene.duration + rest) : 0, duration: scene.duration, playing: playable && playing });
+    canvas._viewer = { reset, toggle, state };
     stage()?.classList.add('ready');
     stage()?.classList.toggle('film', playable);
     show();

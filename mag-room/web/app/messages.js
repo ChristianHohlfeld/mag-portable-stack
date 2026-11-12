@@ -470,17 +470,25 @@
   // The sound of a scene's film: what its figures say, each in a voice of its
   // own, made on this device and laid where it is said; a WAV as base64, or ''
   // (the film is silent) where no voice can be made here.
-  async function sceneVoices(m3) {
+  // What the figures of a scene say, as one WAV (the voices are made here on
+  // the device, each fitted to how long its mouth moves): sent along with the
+  // film, and played in the chat in step with the scene. Made once per scene.
+  const voiced = new Map(); // message id -> Promise<Uint8Array | null>
+  function sceneVoices(m) {
+    if (!voiced.has(m.id)) voiced.set(m.id, mixVoices(m.model3d).catch(() => null));
+    return voiced.get(m.id);
+  }
+  async function mixVoices(m3) {
     const said = (m3.speech || []).filter((s) => s && s.text);
-    if (!said.length || !MAG.voices?.make) return '';
+    if (!said.length || !MAG.voices?.make) return null;
     let rate = 0, parts = [];
     for (const s of said) {
-      const made = await MAG.voices.make(s.text, s.voice).catch(() => null);
+      const made = await MAG.voices.make(s.text, s.voice, +s.seconds || 0).catch(() => null);
       if (!made) continue;
       rate = rate || made.rate;
       parts.push({ at: Math.max(0, +s.start || 0), audio: made.audio });
     }
-    if (!rate || !parts.length) return '';
+    if (!rate || !parts.length) return null;
     const total = Math.ceil(rate * Math.max(+m3.seconds || 0, ...parts.map((p) => p.at + p.audio.length / rate)));
     const mix = new Float32Array(total);
     for (const p of parts) {
@@ -493,10 +501,38 @@
     bytes.setUint32(16, 16, true); bytes.setUint16(20, 1, true); bytes.setUint16(22, 1, true); bytes.setUint32(24, rate, true);
     bytes.setUint32(28, 2 * rate, true); bytes.setUint16(32, 2, true); bytes.setUint16(34, 16, true); text(36, 'data'); bytes.setUint32(40, 2 * total, true);
     for (let i = 0; i < total; i++) bytes.setInt16(44 + 2 * i, Math.max(-1, Math.min(1, mix[i])) * 32767, true);
-    const raw = new Uint8Array(bytes.buffer);
+    return new Uint8Array(bytes.buffer);
+  }
+  function base64(raw) {
     let bin = '';
     for (let i = 0; i < raw.length; i += 0x8000) bin += String.fromCharCode.apply(null, raw.subarray(i, i + 0x8000));
     return btoa(bin);
+  }
+  // The scene's voices in the chat: they follow the viewer's clock (play,
+  // pause, from the start, the loop), so the lips and the voice go together.
+  function sceneSound(m, canvas, button) {
+    let audio = null, timer = 0;
+    const follow = () => {
+      const st = canvas._viewer?.state?.();
+      if (!audio || !st) return;
+      if (!st.playing || st.time >= st.duration) { if (!audio.paused) audio.pause(); return; }
+      if (Math.abs(audio.currentTime - st.time) > 0.12) audio.currentTime = Math.min(st.time, audio.duration || st.time);
+      if (audio.paused && st.time < (audio.duration || 0)) audio.play().catch(() => {});
+    };
+    const off = () => { clearInterval(timer); timer = 0; audio?.pause(); button.classList.remove('on'); };
+    button.addEventListener('click', async () => {
+      if (timer) return off();
+      button.disabled = true;
+      const wav = await sceneVoices(m);
+      button.disabled = false;
+      if (!wav) return MAG.toast('Die Stimmen sind auf diesem Gerät nicht geladen', true);
+      audio ||= new Audio(URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })));
+      button.classList.add('on');
+      MAG.viewer3d.reset(canvas);
+      audio.currentTime = 0;
+      timer = setInterval(() => { if (!canvas.isConnected) off(); else follow(); }, 80);
+      follow();
+    });
   }
   function buildScene(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 scene ' + m3.state });
@@ -515,7 +551,7 @@
             b.disabled = true;
             // What the figures say is spoken in the film, in voices made here first.
             if (m3.speech?.length && label) label.textContent = 'Stimmen …';
-            const voice = m3.speech?.length ? await sceneVoices(m3).catch(() => '') : '';
+            const wav = m3.speech?.length ? await sceneVoices(m) : null, voice = wav ? base64(wav) : '';
             await order('/film', voice ? { voice } : undefined);
             if (label) label.textContent = 'Film rendern';
             b.disabled = false; } },
@@ -526,7 +562,10 @@
         el('div', { class: 'tools' },
           el('button', { class: 'play', 'aria-label': 'Abspielen oder anhalten', title: 'Abspielen oder anhalten', html: MAG.icons.pause + MAG.icons.play, onclick: () => MAG.viewer3d.toggle(canvas) }),
           el('button', { 'aria-label': 'Von vorn', title: 'Von vorn', html: MAG.icons.reset, onclick: () => MAG.viewer3d.reset(canvas) }),
+          m3.speech?.length ? el('button', { class: 'sound', 'aria-label': 'Mit Stimmen abspielen', title: 'Mit Stimmen abspielen (auf diesem Gerät gemacht)', html: MAG.icons.speak }) : null,
           el('button', { class: 'full', 'aria-label': 'Vollbild', title: 'Vollbild', html: MAG.icons.full + MAG.icons.x, onclick: () => MAG.viewer3d.fullscreen(stage) })));
+      const sound = stage.querySelector('.sound');
+      if (sound) sceneSound(m, canvas, sound);
       card.append(play(glb.file, stage, wish(m, 'Neue Bewegung für diese Szene', 'z. B. „Der Fuchs springt hoch“', m3.prompt)));
       MAG.viewer3d.attach(canvas, fileUrl(glb));
     }

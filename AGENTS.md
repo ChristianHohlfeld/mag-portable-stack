@@ -87,8 +87,10 @@ show a feeling (`say`, `face`) gets a face: the front of its head is rendered
 on the CPU and MediaPipe's face landmarker (Apache-2.0, pinned in
 `ops/scene/face`, installed for Blender's Python) finds mouth, eyes and brows,
 else the head's proportions place them; small bones (jaw, mouth corners, lids,
-brows) carry the skin, speech goes from the letters to mouth shapes, and it
-blinks now and then. Its film speaks what was said: when Chris asks for the
+brows) carry the skin, speech goes from the words to their sounds (German by
+rules, clearly English text by lighter ones, numbers as words; pure Python in
+`ops/scene/phonemes.py`) and from the sounds to mouth shapes that last as long
+as each sound, and it blinks now and then. Its film speaks what was said: when Chris asks for the
 film, the page makes the voices on the device (Supertonic, one voice per
 figure) and sends them as the film's sound; nothing is spoken on the server.
 Each voice's tempo is fitted to how long that mouth moves (0.8x to 1.3x), so

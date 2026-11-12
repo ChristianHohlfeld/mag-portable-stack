@@ -776,7 +776,16 @@ away in an arc. Animals move by a worked-out gait (`animal.py`). Parts of a
 thing (a lid, a door, a turret) are cut at their seam and turn about a
 hinge. A figure that speaks or shows a feeling gets a face (`face.py`:
 MediaPipe's face landmarker, pinned in `ops/scene/face`, else the head's
-proportions); the film's voices are made on the device and sent with the
+proportions). Its lips follow the sounds of what is said, not the letters:
+`phonemes.py` (pure Python, no packages, in Blender's Python) turns German
+text into phonemes by rules (long and short vowels, silent h, sch, ich/ach,
+ng/nk, pf, qu, z, st/sp at the start, the weak e and -er, the diphthongs),
+says numbers as words like the voice does, and takes clearly English text
+(the page's own test) through a lighter set of English rules; each phoneme
+is a mouth shape (open, mid, spread, rounded, lips shut, lip on teeth,
+sibilant, tongue, velar, r, schwa, pause) that lasts as long as the sound,
+a stressed long vowel longer, and the whole is stretched to the length the
+scene gives. The film's voices are made on the device and sent with the
 film request. Each voice's tempo is fitted to how long its mouth moves
 (0.8x-1.3x), so lips and voice start and end together; the scene's speaker
 button plays the same voices in the chat, following the viewer's clock. The film is lit with key, fill and rim light like the scene in

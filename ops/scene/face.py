@@ -10,7 +10,9 @@ face (a gnome's face may be too small or too strange), the face is placed
 by the proportions of a head. Small bones under the head bone then carry
 the skin around them: a jaw that opens, the corners of the mouth, the upper
 lids, the brows. Expressions and speech are their movements over time:
-speech goes from the letters of what is said to mouth shapes (visemes).
+speech goes from what is said to its sounds (phonemes.py: German by rules,
+clearly English text by lighter ones) and from the sounds to mouth shapes
+(visemes) that last as long as each sound.
 """
 import importlib.util
 import math
@@ -25,6 +27,8 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 from mathutils.bvhtree import BVHTree
+
+import phonemes  # what is said, as its sounds (scene.py puts this folder on the path)
 
 PLACES = [os.environ.get("MAG_SCENE_FACE", "/opt/mag-scene/face"), os.path.expanduser("~/.cache/mag-stack/face")]
 # MediaPipe face mesh points: the lips' middle (upper, lower), the corners of the
@@ -261,11 +265,32 @@ def weigh(part, points, named, front):
 
 
 # ---- what a face does over time ---------------------------------------------------
-# Mouth shapes for the letters of German speech: how far the jaw opens, how wide
-# the mouth is drawn (negative: rounded), and how long the sound lasts (seconds).
-VISEMES = {"a": (0.85, 0.15, 0.13), "e": (0.45, 0.55, 0.11), "i": (0.25, 0.75, 0.10), "o": (0.6, -0.55, 0.13), "u": (0.3, -0.85, 0.12),
-           "m": (0.0, 0.0, 0.07), "f": (0.12, 0.2, 0.07), "s": (0.2, 0.35, 0.07), "c": (0.3, 0.1, 0.06), "_": (0.0, 0.0, 0.18)}
-LETTERS = {"ä": "e", "ö": "o", "ü": "u", "y": "i", "b": "m", "p": "m", "m": "m", "f": "f", "v": "f", "w": "f", "s": "s", "z": "s", "ß": "s", "x": "s"}
+# Mouth shapes (visemes) of the sounds of speech: how far the jaw opens and how
+# wide the mouth is drawn (negative: rounded, the lips forward).
+SHAPES = {
+    "open": (0.85, 0.15), "mid": (0.5, 0.5), "spread": (0.22, 0.75), "round": (0.55, -0.6), "round_mid": (0.4, -0.65),
+    "round_close": (0.28, -0.85), "schwa": (0.3, 0.1), "near_open": (0.5, 0.05), "lips": (0.0, 0.0), "teeth": (0.1, 0.2),
+    "hiss": (0.15, 0.4), "hush": (0.18, -0.45), "palatal": (0.2, 0.5), "tongue": (0.22, 0.25), "back": (0.32, 0.15),
+    "r": (0.3, -0.1), "pause": (0.0, 0.0),
+}
+# Every sound: its shape and how long it lasts unstressed (seconds). A stressed
+# vowel lasts longer; a closure (m, b, p) holds the lips shut.
+SOUNDS = {
+    "a": ("open", 0.08), "a:": ("open", 0.14), "æ": ("open", 0.09), "ʌ": ("near_open", 0.08), "ɐ": ("near_open", 0.07),
+    "e:": ("mid", 0.13), "ɛ": ("mid", 0.08), "ɛ:": ("mid", 0.14), "ɜ": ("near_open", 0.11),
+    "i:": ("spread", 0.12), "ɪ": ("spread", 0.07),
+    "o:": ("round", 0.13), "ɔ": ("round", 0.08), "ɔ:": ("round", 0.13), "ɒ": ("round", 0.08),
+    "u:": ("round_close", 0.12), "ʊ": ("round_close", 0.07), "w": ("round_close", 0.05),
+    "y:": ("round_close", 0.12), "ʏ": ("round_close", 0.07), "ø:": ("round_mid", 0.13), "œ": ("round_mid", 0.08),
+    "ə": ("schwa", 0.045),
+    "m": ("lips", 0.07), "b": ("lips", 0.055), "p": ("lips", 0.06),
+    "f": ("teeth", 0.075), "v": ("teeth", 0.06),
+    "s": ("hiss", 0.085), "z": ("hiss", 0.07), "ʃ": ("hush", 0.09), "ç": ("palatal", 0.08), "j": ("palatal", 0.05),
+    "t": ("tongue", 0.05), "d": ("tongue", 0.045), "n": ("tongue", 0.06), "l": ("tongue", 0.06), "θ": ("tongue", 0.07), "ð": ("tongue", 0.05),
+    "k": ("back", 0.055), "g": ("back", 0.05), "ŋ": ("back", 0.07), "x": ("back", 0.08),
+    "r": ("r", 0.05), "ɹ": ("r", 0.06),
+}
+CLOSED = {"m", "b", "p"}
 EXPRESSIONS = {  # smile (negative: the corners go down), brows up, lids (positive: closed), jaw
     "smile": (0.9, 0.15, 0.1, 0.05), "laugh": (1.0, 0.35, 0.35, 0.45), "sad": (-0.7, 0.35, 0.25, 0.0), "frown": (-0.5, -0.6, 0.15, 0.0),
     "angry": (-0.4, -1.0, 0.2, 0.08), "surprised": (0.0, 1.0, -0.35, 0.65), "blink": (0.0, 0.0, 1.0, 0.0),
@@ -273,38 +298,35 @@ EXPRESSIONS = {  # smile (negative: the corners go down), brows up, lids (positi
 
 
 def visemes(text, seconds=None):
-    """What is said, as mouth shapes in time: [(seconds from the start, jaw, wide)]."""
-    text = str(text).lower()
-    shapes = []
-    i = 0
-    while i < len(text):
-        pair, c = text[i:i + 2], text[i]
-        if pair in ("au", "ei", "ai", "eu", "äu"):
-            shapes += [VISEMES["a"], VISEMES["u" if pair == "au" else "i"]]
-            i += 2
-            continue
-        if pair in ("sch", "ch") or text[i:i + 3] == "sch":
-            shapes.append(VISEMES["s"])
-            i += 3 if text[i:i + 3] == "sch" else 2
-            continue
-        if c in "aeiou":
-            shapes.append(VISEMES[c])
-        elif c in LETTERS:
-            shapes.append(VISEMES[LETTERS[c]])
-        elif c.isalpha():
-            shapes.append(VISEMES["c"])
-        elif c in ".,;:!?\n":
-            shapes.append(VISEMES["_"])
-        elif c == " ":
-            shapes.append((0.05, 0.0, 0.03))
-        i += 1
+    """What is said, as mouth shapes in time: [(seconds from the start, jaw, wide)].
+    The text goes to its sounds (phonemes.py), each sound to its shape for as long
+    as it lasts; with seconds the whole is stretched to that length."""
+    said = phonemes.sounds(text)
+    shapes = []                                 # (jaw, wide, length, held)
+    for k, (sound, stressed) in enumerate(said):
+        if sound == phonemes.PAUSE:
+            shapes.append((0.0, 0.0, 0.18, False))
+        elif sound == phonemes.GAP:
+            shapes.append((0.05, 0.0, 0.03, False))
+        elif sound == "h":
+            # h has no shape of its own: the mouth is already the next vowel's
+            ahead = next((SOUNDS[s][0] for s, _ in said[k + 1:k + 2] if s in SOUNDS), "schwa")
+            shapes.append(SHAPES[ahead] + (0.05, False))
+        elif sound in SOUNDS:
+            shape, length = SOUNDS[sound]
+            if stressed:
+                length *= 1.25 if sound.endswith(":") else 1.15
+            shapes.append(SHAPES[shape] + (length, sound in CLOSED))
     if not shapes:
         return []
     natural = sum(s[2] for s in shapes)
     rate = (seconds / natural) if seconds and natural > 0 else 1.0
     out, t = [], 0.0
-    for jaw, wide, length in shapes:
-        out.append((t + 0.5 * length * rate, jaw, wide))
+    for jaw, wide, length, held in shapes:
+        if held:                                # the lips stay shut for most of a closure
+            out += [(t + 0.2 * length * rate, jaw, wide), (t + 0.8 * length * rate, jaw, wide)]
+        else:
+            out.append((t + 0.5 * length * rate, jaw, wide))
         t += length * rate
     out.append((t + 0.1, 0.0, 0.0))
     return out

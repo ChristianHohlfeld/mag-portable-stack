@@ -267,7 +267,11 @@ room does not rely on that going well (`llm.hpp`):
   every other tag disappears (`Clean`; code blocks and inline code are left
   alone). No tag reaches the chat, a thought, or the bot's own log. The
   thoughts stay with the message (`reasoning`) but the page never shows
-  them: they are raw and often English.
+  them: they are raw and often English. What the page shows of a bot's text
+  (also of older messages, and what it reads aloud) is tidied (`MAG.tidy`):
+  an English line next to German ones, a tool call written out as JSON, a
+  request for approval in words and a bare `<br>` are left out, and an
+  answer of nothing else is not shown.
 - **Circles.** A text whose end is the same passage three times over (or the
   same long passage a fourth time) is a model that lost its way: the room
   closes the connection, which ends the generation, and keeps the text up to
@@ -784,10 +788,23 @@ Figures on two legs move with recorded motions (`motion.py`,
 nearest pose, feet that stand stay where they stand, a free `pose` uses IK
 on the figure's own arm. A fight (kick, punch, attack) knocks the target
 away in an arc. Animals move by a worked-out gait (`animal.py`). Parts of a
-thing (a lid, a door, a turret) are cut at their seam and turn about a
-hinge. A figure that speaks or shows a feeling gets a face (`face.py`:
+thing (a lid, a door, a turret, a drawer) are found on the mesh alone: a
+seeded watershed over the faces, from the middle of the side against the
+thing's inner half, whose border lies on the folds of the surface (grooves,
+steps, inner creases); without such a border the side is cut by a plane at
+the seam of its cross-section. A part turns about a hinge on its edge,
+slides out (a drawer) or spins about the middle of its edge (a turret). A figure that speaks or shows a feeling gets a face (`face.py`:
 MediaPipe's face landmarker, pinned in `ops/scene/face`, else the head's
-proportions); the film's voices are made on the device and sent with the
+proportions). Its lips follow the sounds of what is said, not the letters:
+`phonemes.py` (pure Python, no packages, in Blender's Python) turns German
+text into phonemes by rules (long and short vowels, silent h, sch, ich/ach,
+ng/nk, pf, qu, z, st/sp at the start, the weak e and -er, the diphthongs),
+says numbers as words like the voice does, and takes clearly English text
+(the page's own test) through a lighter set of English rules; each phoneme
+is a mouth shape (open, mid, spread, rounded, lips shut, lip on teeth,
+sibilant, tongue, velar, r, schwa, pause) that lasts as long as the sound,
+a stressed long vowel longer, and the whole is stretched to the length the
+scene gives. The film's voices are made on the device and sent with the
 film request. Each voice's tempo is fitted to how long its mouth moves
 (0.8x-1.3x), so lips and voice start and end together; the scene's speaker
 button plays the same voices in the chat, following the viewer's clock. The film is lit with key, fill and rim light like the scene in
@@ -823,7 +840,9 @@ step. One voice and tempo per
 speaker, kept on the device. The page fetches and prepares the model in the
 background after load, so the first "Vorlesen" speaks at once; until then
 the device's own voice reads. The newest answer is synthesised ahead while
-it arrives. Before a sentence goes to the model it is written as it is
+it arrives. The last four answers made whole are kept in Cache Storage as
+16-bit sound (`mag-tts-said`): after a reload a tap on one of them plays
+the model's voice at once, while the model is still being made ready. Before a sentence goes to the model it is written as it is
 spoken (numbers, dates, units, abbreviations).
 
 `ops/tts/bootstrap.sh` fetches and packs the model once (weights moved to

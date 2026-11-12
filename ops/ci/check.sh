@@ -8,7 +8,7 @@ scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/pr
   ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/tts/*.sh ops/private-access/deploy-nginx.sh
   ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
-python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py
+python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py ops/scene/face.py ops/scene/phonemes.py
 # A restart of the Idol worker must leave a running stage alone, and one of
 # the scene worker a film that is being rendered.
 grep -qx 'KillMode=process' ops/idol/mag-idol.service

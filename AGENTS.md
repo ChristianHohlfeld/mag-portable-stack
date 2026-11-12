@@ -78,17 +78,26 @@ of bones and slithers in a wave; a bird (two legs under a long body) walks,
 pecks and flies with beating wings; an insect or spider walks on all its legs
 in alternating sets; a vehicle (found by its wheels, or `kind: vehicle`) drives
 along a curve and its wheels turn as it rolls; only a
-thing moves as a whole. A part of a thing or vehicle (a lid, a door, a turret)
-is cut out at the seam on its side (`open`, `close`, `turn_part`), both cuts
-closed with an inside of their own (the seam's colours, darker, as a small
-texture), and turns about a hinge on the seam's edge; PartField is not used (its
-licence forbids commercial use). A figure on two legs that is to speak or
+thing moves as a whole. A part of a thing or vehicle (a lid, a door, a turret,
+a bonnet, a boot, a drawer; `part` names its side or the part with its side,
+"Tür links") is found on the surface itself (`region()` in `scene.py`, no
+model): from the middle of its side and from the inner half of the thing two
+floods grow over the faces and meet where the surface folds inwards (a groove,
+a step, an inner crease), and that edge is the part's, if it runs along folds
+for the most part; else the side is cut by a plane at the seam of its
+cross-section as before. Both cuts are closed with an inside of their own (the
+seam's colours, darker, as a small texture); the part turns about a hinge on
+its edge (`open`, `close`), a drawer slides out with walls of its own and
+leaves a pocket, and `turn_part` spins it about the middle of its edge (a
+turret). PartField is not used (its licence forbids commercial use). A figure on two legs that is to speak or
 show a feeling (`say`, `face`) gets a face: the front of its head is rendered
 on the CPU and MediaPipe's face landmarker (Apache-2.0, pinned in
 `ops/scene/face`, installed for Blender's Python) finds mouth, eyes and brows,
 else the head's proportions place them; small bones (jaw, mouth corners, lids,
-brows) carry the skin, speech goes from the letters to mouth shapes, and it
-blinks now and then. Its film speaks what was said: when Chris asks for the
+brows) carry the skin, speech goes from the words to their sounds (German by
+rules, clearly English text by lighter ones, numbers as words; pure Python in
+`ops/scene/phonemes.py`) and from the sounds to mouth shapes that last as long
+as each sound, and it blinks now and then. Its film speaks what was said: when Chris asks for the
 film, the page makes the voices on the device (Supertonic, one voice per
 figure) and sends them as the film's sound; nothing is spoken on the server.
 Each voice's tempo is fitted to how long that mouth moves (0.8x to 1.3x), so

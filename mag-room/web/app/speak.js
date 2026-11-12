@@ -1,6 +1,5 @@
 // Read aloud, on the device: every answer can be spoken with a local voice.
-// Supertonic 3 runs in the browser (a Web Worker with onnxruntime-web; ops/tts;
-// the names below still say "piper", the voice this replaced): the model
+// Supertonic 3 runs in the browser (a Web Worker with onnxruntime-web; ops/tts): the model
 // downloads once into Cache Storage and after that a playback touches no
 // server. Playback starts with the first words while the next parts are made,
 // laid end to end on the audio clock. Nothing plays by itself, and no speech
@@ -16,7 +15,7 @@
   const synth = window.speechSynthesis;
   const systemOk = !!synth && typeof window.SpeechSynthesisUtterance === 'function';
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const piperPossible = typeof Worker === 'function' && !!AudioCtx && typeof fetch === 'function';
+  const modelPossible = typeof Worker === 'function' && !!AudioCtx && typeof fetch === 'function';
   const GOOD_VOICE = /natural|premium|siri|enhanced|neural|online/i;
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
   const LIVE_IDLE_MS = 30000;
@@ -64,7 +63,7 @@
     return out.filter(Boolean);
   }
 
-  // One sentence per Piper call, capped so a long sentence still starts soon.
+  // One sentence per call of the model, capped so a long sentence still starts soon.
   // Abbreviations (z.B., Dr.) are not treated as sentence ends.
   const ABBREV = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl)$/i;
   // The very first part of a playback is short (`first`): a clause, not a
@@ -75,7 +74,7 @@
   // it plays for less time than it takes to make (a GPU spends about a
   // second on every part, however short): then the reading runs on without
   // a pause from the first word.
-  function piperParts(text, max = partMax(), first = false) {
+  function modelParts(text, max = partMax(), first = false) {
     const out = [];
     let rest = String(text || '').trim();
     const { a, b } = line();
@@ -143,7 +142,7 @@
     return end;
   }
 
-  // MAG speaks German: Piper reads unless a text is clearly English.
+  // MAG speaks German: the German voice reads unless a text is clearly English.
   const deWords = new Set('der die das und ist nicht ich du wir sie ein eine mit auf für von zu den dem des sich auch es bitte danke ja nein oder aber wie was kann noch nur schon hier jetzt'.split(' '));
   const enWords = new Set('the and is are was were you your i it this that with for of to in on not have has be can will what please thanks yes no but how do does'.split(' '));
   function textLocale(text) {
@@ -179,11 +178,11 @@
     all[key] = { ...(all[key] || {}), ...entry };
     try { localStorage.setItem('mag-tts-speakers', JSON.stringify(all)); } catch {}
   }
-  function voiceList() { return piper.config?.voices?.length ? piper.config.voices : FALLBACK_VOICES; }
+  function voiceList() { return tts.config?.voices?.length ? tts.config.voices : FALLBACK_VOICES; }
   function profile(who) {
     const key = speakerKey(who), saved = prefs()[key] || {}, voices = voiceList();
     // A voice that was chosen from an earlier set of voices is gone: the speaker's own default takes its place.
-    const usual = piper.config?.defaults?.[key === 'user' ? 'user' : who] || DEFAULT_VOICE[key === 'user' ? 'user' : who] || 'm1';
+    const usual = tts.config?.defaults?.[key === 'user' ? 'user' : who] || DEFAULT_VOICE[key === 'user' ? 'user' : who] || 'm1';
     const wanted = saved.voice === 'system' || voices.some((v) => v.id === saved.voice) ? saved.voice : usual;
     const voice = wanted === 'system' ? null : (voices.find((v) => v.id === wanted) || voices.find((v) => v.id === usual) || voices[0]);
     return { key, voiceId: voice ? voice.id : 'system', voice, rate: RATES.includes(+saved.rate) ? +saved.rate : 1 };
@@ -203,93 +202,93 @@
   }
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
-  // ---- Piper (worker) ---------------------------------------------------------
-  const piper = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
+  // ---- the model (worker) -----------------------------------------------------
+  const tts = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
                 };
   function loadConfig() {
     if (!S.features?.tts) return Promise.resolve(null);
-    if (!piper.configP) piper.configP = (async () => {
+    if (!tts.configP) tts.configP = (async () => {
       try {
         const r = await MAG.fetch('/tts/config.json', { cache: 'no-store' });
-        if (r.ok) piper.config = await r.json();
-      } catch { piper.config = null; }
-      if (!piper.config) piper.configP = null; // retry on the next tap
-      return piper.config;
+        if (r.ok) tts.config = await r.json();
+      } catch { tts.config = null; }
+      if (!tts.config) tts.configP = null; // retry on the next tap
+      return tts.config;
     })();
-    return piper.configP;
+    return tts.configP;
   }
   function worker() {
-    if (!piper.worker) {
+    if (!tts.worker) {
       // The model lies in a folder of its own, so it stays in the browser when the worker changes.
       const query = new URLSearchParams();
-      if (piper.config.models) query.set('m', piper.config.models);
-      if (piper.config.runtime) query.set('r', piper.config.runtime);
+      if (tts.config.models) query.set('m', tts.config.models);
+      if (tts.config.runtime) query.set('r', tts.config.runtime);
       if (gpuOk()) query.set('gpu', '1');
-      const w = piper.worker = new Worker('/tts/' + piper.config.dir + '/tts-worker.js?' + query);
-      piper.worker.onmessage = (ev) => {
+      const w = tts.worker = new Worker('/tts/' + tts.config.dir + '/tts-worker.js?' + query);
+      tts.worker.onmessage = (ev) => {
         const m = ev.data || {};
-        if (m.type === 'nogpu') { clearTimeout(piper.gpuTimer); noGpu(); report({ gpu_fail: 1 }); return; }
+        if (m.type === 'nogpu') { clearTimeout(tts.gpuTimer); noGpu(); report({ gpu_fail: 1 }); return; }
         if (m.trying === 'webgpu') {
-          clearTimeout(piper.gpuTimer);
-          piper.gpuTimer = setTimeout(() => {
-            if (piper.worker !== w || piper.ready.size) return;
+          clearTimeout(tts.gpuTimer);
+          tts.gpuTimer = setTimeout(() => {
+            if (tts.worker !== w || tts.ready.size) return;
             // The GPU is still at it: this worker ends, and the next makes the model in WASM.
             noGpu(); report({ gpu_fail: 2 });
-            const again = [...piper.loading.keys()];
+            const again = [...tts.loading.keys()];
             resetWorker();
-            setTimeout(() => again.forEach((model) => { piper.failed.delete(model); warm({ model }); }), 0);
+            setTimeout(() => again.forEach((model) => { tts.failed.delete(model); warm({ model }); }), 0);
           }, GPU_LIMIT_MS);
         }
         if (m.type === 'progress') {     // the model is coming in: that is not standing still
-          for (const loading of piper.pending.values()) {
+          for (const loading of tts.pending.values()) {
             if (!loading.again) continue;
             clearTimeout(loading.timer);
             // While it downloads, the worker itself asks again for what does not come; after that, a step must not take forever.
             loading.timer = m.making ? setTimeout(loading.again, WARM_TIMEOUT_MS) : 0;
           }
-          if (!piper.ready.size) {
+          if (!tts.ready.size) {
             if (m.making) shown('making', 1);
             else if (m.progress >= 0) shown('loading', m.progress / 100);
           }
           if (m.progress >= next) { report({ load_pct: m.progress }); next = 25 * (Math.floor(m.progress / 25) + 1); }
           return;
         }
-        const p = piper.pending.get(m.id);
+        const p = tts.pending.get(m.id);
         if (!p) return;
-        piper.pending.delete(m.id);
+        tts.pending.delete(m.id);
         clearTimeout(p.timer);
-        if (m.type === 'ready') clearTimeout(piper.gpuTimer);
+        if (m.type === 'ready') clearTimeout(tts.gpuTimer);
         if (m.type === 'error') p.reject(new Error(m.error)); else p.resolve(m);
       };
-      piper.worker.onerror = () => resetWorker();
+      tts.worker.onerror = () => resetWorker();
     }
-    return piper.worker;
+    return tts.worker;
   }
   // Every request has a deadline: a stuck WASM call or a crashed worker
   // must not leave the button spinning.
   function ask(msg, timeout) {
-    const id = ++piper.seq;
+    const id = ++tts.seq;
     return new Promise((resolve, reject) => {
       const late = () => {
-        if (!piper.pending.has(id)) return;
+        if (!tts.pending.has(id)) return;
         // A page out of view is held by the phone: that is no reason to give up on the worker.
         if (document.visibilityState !== 'visible' || performance.now() - seen < 20000) {
-          const p = piper.pending.get(id);
+          const p = tts.pending.get(id);
           p.timer = setTimeout(late, 20000);
           return;
         }
         // A slow background download is not a stuck worker.
-        if (msg.type === 'prefetch') piper.pending.delete(id); else resetWorker();
+        if (msg.type === 'prefetch') tts.pending.delete(id); else resetWorker();
         reject(new Error('Zeitüberschreitung der Stimme'));
       };
       const timer = setTimeout(late, timeout);
-      piper.pending.set(id, {resolve, reject, timer, again: msg.type === 'warm' ? late : null});
-      try { worker().postMessage({...msg, id}); } catch (e) { piper.pending.delete(id); clearTimeout(timer); reject(e); }
+      tts.pending.set(id, {resolve, reject, timer, again: msg.type === 'warm' ? late : null});
+      try { worker().postMessage({...msg, id}); } catch (e) { tts.pending.delete(id); clearTimeout(timer); reject(e); }
     });
   }
   let seen = performance.now();          // when the page came into view last
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') seen = performance.now(); });
-  // Resolves true once the model is usable, false if Piper failed for it. A
+  // Resolves true once the model is usable, false if the model failed for it. A
   // failure is retried after a short pause instead of disabling the voice
   // until reload (mobile networks drop).
   // Whether the voice is there, shown without taking room: while the model
@@ -315,22 +314,22 @@
     document.querySelectorAll('.voice-state').forEach((n) => { n.textContent = stateText(); });
   }
   function warm(v) {
-    if (piper.ready.has(v.model)) return Promise.resolve(true);
-    if (!piper.ready.size) shown('loading');
-    if ((piper.failed.get(v.model) || 0) > Date.now()) return Promise.resolve(false);
-    if (piper.loading.has(v.model)) return piper.loading.get(v.model);
+    if (tts.ready.has(v.model)) return Promise.resolve(true);
+    if (!tts.ready.size) shown('loading');
+    if ((tts.failed.get(v.model) || 0) > Date.now()) return Promise.resolve(false);
+    if (tts.loading.has(v.model)) return tts.loading.get(v.model);
     const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then((m) => { piper.ready.add(v.model); voiceState.provider = m?.provider || voiceState.provider; shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, read_ms: m.readMs | 0, widen_ms: m.widenMs | 0, create_ms: m.createMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
+      .then((m) => { tts.ready.add(v.model); voiceState.provider = m?.provider || voiceState.provider; shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, read_ms: m.readMs | 0, widen_ms: m.widenMs | 0, create_ms: m.createMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
       .catch(() => {
         report({ warm_fail: 1, warm_ms: Math.round(performance.now() - began) });
         // Not there yet (a broken connection, a full device): it is tried again in a while, by itself.
-        piper.failed.set(v.model, Date.now() + 20000);
-        setTimeout(() => { if (!piper.ready.size) warm(v); }, 21000);
+        tts.failed.set(v.model, Date.now() + 20000);
+        setTimeout(() => { if (!tts.ready.size) warm(v); }, 21000);
         return false;
       })
-      .finally(() => piper.loading.delete(v.model));
-    piper.loading.set(v.model, p);
+      .finally(() => tts.loading.delete(v.model));
+    tts.loading.set(v.model, p);
     return p;
   }
   // How the reading went on this device, as numbers for the room's journal
@@ -343,11 +342,11 @@
   }
   // A crashed or stuck worker is replaced and the part is synthesised again.
   function resetWorker() {
-    clearTimeout(piper.gpuTimer);
-    try { piper.worker?.terminate(); } catch (_) {}
-    piper.worker = null; piper.ready.clear(); piper.loading.clear();
-    for (const p of piper.pending.values()) { clearTimeout(p.timer); p.reject(new Error('worker reset')); }
-    piper.pending.clear();
+    clearTimeout(tts.gpuTimer);
+    try { tts.worker?.terminate(); } catch (_) {}
+    tts.worker = null; tts.ready.clear(); tts.loading.clear();
+    for (const p of tts.pending.values()) { clearTimeout(p.timer); p.reject(new Error('worker reset')); }
+    tts.pending.clear();
   }
   // ---- how fast this device makes speech, and in how many steps --------------
   // In how many steps a part is made. The model refines its sound in steps:
@@ -445,15 +444,15 @@
   // that is ready while the one before it still plays starts on the very
   // sample where that one ends, without a gap of the page's own timers.
   function schedule(pb, res) {
-    const ctx = piper.ctx;
+    const ctx = tts.ctx;
     const buf = ctx.createBuffer(1, Math.max(1, res.audio.length), res.rate);
     if (res.audio.length) buf.copyToChannel(res.audio, 0);
     const src = ctx.createBufferSource();
     src.buffer = buf; src.connect(ctx.destination);
     const at = Math.max(ctx.currentTime + 0.03, pb.end || 0);
-    piper.sources.add(src);
-    src.onended = () => piper.sources.delete(src);
-    try { src.start(at); } catch (_) { piper.sources.delete(src); return ctx.currentTime; }
+    tts.sources.add(src);
+    src.onended = () => tts.sources.delete(src);
+    try { src.start(at); } catch (_) { tts.sources.delete(src); return ctx.currentTime; }
     pb.end = at + buf.duration;
     return at;
   }
@@ -462,7 +461,7 @@
   // interruptions): it is woken, and a reading that cannot go on is stopped.
   function reach(pb, t) {
     return new Promise((done) => {
-      const ctx = piper.ctx;
+      const ctx = tts.ctx;
       let since = 0;
       const tick = () => {
         if (current !== pb) return done(false);
@@ -485,7 +484,7 @@
   // at any time, in order. So a part that takes longer to make than the one
   // before it takes to play costs no pause, and the reading does not stop
   // between sentences.
-  async function piperPlay(pb) {
+  async function modelPlay(pb) {
     const ahead = [];
     let more = true;
     (async () => {
@@ -533,7 +532,7 @@
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        pb.parts.push(...(pb.de ? piperParts(piece, partMax(), !pb.queued) : split(piece)));
+        pb.parts.push(...(pb.de ? modelParts(piece, partMax(), !pb.queued) : split(piece)));
         pb.queued += take;
       }
     }
@@ -560,10 +559,10 @@
     current = null; // make pending callbacks and loops harmless
     if (pb) { const w = pb.wake; pb.wake = null; w?.(); }
     if (systemOk) synth.cancel();
-    for (const src of piper.sources) { try { src.stop(); } catch (_) {} }
-    piper.sources.clear();
+    for (const src of tts.sources) { try { src.stop(); } catch (_) {} }
+    tts.sources.clear();
     // Drop synthesis that is queued for the stopped playback.
-    if (piper.worker && pb) { try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {} }
+    if (tts.worker && pb) { try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {} }
     setButtons();
   }
 
@@ -587,7 +586,7 @@
   }
 
   function toggle(key, text, who) {
-    if (!systemOk && !piperPossible) return false;
+    if (!systemOk && !modelPossible) return false;
     const wasPlaying = !!current && current.key === key;
     stop();
     if (wasPlaying) return false;
@@ -595,14 +594,14 @@
     if (!normalized) return false;
     const lang = textLocale(normalized);
     const prof = profile(who);
-    const de = piperPossible && !!S.features?.tts && prof.voiceId !== 'system';   // the model reads German and English alike
+    const de = modelPossible && !!S.features?.tts && prof.voiceId !== 'system';   // the model reads German and English alike
     const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
     // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
     // dropped, what is made stays, and this reading asks for its own parts in its own order.
-    if (de && pb.voice && prepared.size && piper.worker) {
-      try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {}
+    if (de && pb.voice && prepared.size && tts.worker) {
+      try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
     setButtons();
@@ -613,11 +612,14 @@
       return true;
     }
     // The audio context must be made or woken inside the tap (iOS).
-    try { piper.ctx = piper.ctx && piper.ctx.state !== 'closed' ? piper.ctx : new AudioCtx(); resume(piper.ctx); }
+    try { tts.ctx = tts.ctx && tts.ctx.state !== 'closed' ? tts.ctx : new AudioCtx(); resume(tts.ctx); }
     catch { return fallback(pb); }
-    const start = () => piperPlay(pb).catch(() => fallback(pb));
+    const start = () => modelPlay(pb).catch(() => fallback(pb));
     // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
-    if (piper.config && pb.voice && piper.ready.size) { start(); return true; }
+    if (tts.config && pb.voice && tts.ready.size) { start(); return true; }
+    // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
+    const tongue = (pb.lang || 'de').slice(0, 2), tempo = rateFor(pb.speaker);
+    if (tts.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
     // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
     // wait: the device's own voice reads this one, and the model goes on
     // loading behind it for the next. Only a device without a voice of its
@@ -642,8 +644,8 @@
     }).catch(() => fallback(pb));
     return true;
   }
-  // Piper failed or is not there: the best system voice reads, but never after
-  // Piper has spoken a part of this message (no second voice in mid-message).
+  // The model failed or is not there: the best system voice reads, but never after
+  // the model has spoken a part of this message (no second voice in mid-message).
   function fallback(pb) {
     if (current !== pb) return false;
     pb.loading = false;
@@ -665,7 +667,7 @@
   // Reads a message aloud, or stops if it is the one being read.
   MAG.speak = function (m, button) {
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
-    toggle(m.id, m.text, m.role === 'user' ? 'chris' : m.from);
+    toggle(m.id, m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text, m.role === 'user' ? 'chris' : m.from);
   };
   // The newest answers are made ready before anybody asks for them, whole,
   // while they come in and nothing else is read: the tap that most often
@@ -683,7 +685,7 @@
     const take = growing ? completeLength(rest) : rest.length;
     if (take > 0) {
       const piece = rest.slice(0, take);
-      cut = { text: cut.text + piece, parts: [...cut.parts, ...piperParts(piece, partMax(), !cut.text)] };
+      cut = { text: cut.text + piece, parts: [...cut.parts, ...modelParts(piece, partMax(), !cut.text)] };
     }
     cuts.delete(id); cuts.set(id, cut);
     while (cuts.size > 10) cuts.delete(cuts.keys().next().value);
@@ -709,14 +711,14 @@
   }
   let preparedFor = '';                 // the newest message being made ready
   function prepare(m, head = false) {
-    if (!m || current || !piperPossible || !S.features?.tts || document.visibilityState !== 'visible' || !piper.config) return;
+    if (!m || current || !modelPossible || !S.features?.tts || document.visibilityState !== 'visible' || !tts.config) return;
     const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
-    if (!prof.voice || !piper.ready.size) return;
-    const text = normalize(m.text || '');
+    if (!prof.voice || !tts.ready.size) return;
+    const text = normalize((m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text) || '');
     if (!text) return;
     // A newer answer comes first: what is still waiting to be made for an older one is dropped (what is made stays).
     if (!head) {
-      if (preparedFor && preparedFor !== m.id && piper.worker) { try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {} }
+      if (preparedFor && preparedFor !== m.id && tts.worker) { try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {} }
       preparedFor = m.id;
     }
     const lang = textLocale(text).slice(0, 2);
@@ -729,7 +731,71 @@
       prepared.set(key, sound);
       keptFor.set(key, 0);
     });
+    if (!head && m.state === 'done') {
+      const sounds = parts.map((part) => prepared.get(asked(prof.voice.model, prof.rate, lang, part)));
+      if (sounds.every(Boolean)) said.put(m.id, cuts.get(m.id), sounds, prof.voice.model, prof.rate, lang);
+    }
   }
+  // ---- what was said is kept across a reload -------------------------------------
+  // The newest answers, made whole ahead, are kept in Cache Storage as they
+  // were made (16 bit, the last four answers): after a reload the tap on one
+  // of them plays the model's own voice at once, while the model is still
+  // being made ready (seconds on a phone), not the device's voice.
+  const said = (() => {
+    const NAME = 'mag-tts-said', MOST = 4, done = new Set();
+    const address = (id) => location.origin + '/tts-said/' + encodeURIComponent(id);   // a name in the cache, never fetched
+    async function open() { try { return await caches.open(NAME); } catch { return null; } }
+    async function put(id, cut, sounds, model, rate, lang) {
+      const mark = id + '|' + model + '|' + rate + '|' + (cut?.text.length || 0);
+      if (!cut || done.has(mark)) return;
+      done.add(mark);
+      let made;
+      try { made = await Promise.all(sounds); } catch { done.delete(mark); return; }
+      if (!made.every((r) => r?.audio && r.rate === made[0].rate)) return;
+      const meta = new TextEncoder().encode(JSON.stringify({ id, text: cut.text, parts: cut.parts, lens: made.map((r) => r.audio.length), rate: made[0].rate, model, voiceRate: rate, lang, models: tts.config?.models || '' }));
+      const head = (4 + meta.length + 1) & ~1, n = made.reduce((a, r) => a + r.audio.length, 0);
+      const bytes = new Uint8Array(head + 2 * n);
+      new DataView(bytes.buffer).setUint32(0, meta.length, true);
+      bytes.set(meta, 4);
+      const pcm = new Int16Array(bytes.buffer, head, n);
+      let at = 0;
+      for (const r of made) for (let i = 0; i < r.audio.length; i++) pcm[at++] = Math.max(-32768, Math.min(32767, Math.round(r.audio[i] * 32767)));
+      const cache = await open();
+      if (!cache) return;
+      try {
+        await cache.delete(address(id));          // the newest last: the oldest go first
+        await cache.put(address(id), new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } }));
+        const keys = await cache.keys();
+        for (const k of keys.slice(0, Math.max(0, keys.length - MOST))) await cache.delete(k);
+      } catch { /* a full device: not kept */ }
+    }
+    // After a reload: what is kept becomes made sound again, cut as it was cut.
+    async function restore() {
+      const cache = await open();
+      if (!cache) return;
+      for (const k of await cache.keys()) {
+        try {
+          const bytes = new Uint8Array(await (await cache.match(k)).arrayBuffer());
+          const size = new DataView(bytes.buffer).getUint32(0, true);
+          const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + size)));
+          if (meta.models !== (tts.config?.models || '')) { await cache.delete(k); continue; }
+          const head = (4 + size + 1) & ~1, pcm = new Int16Array(bytes.buffer, head, (bytes.length - head) >> 1);
+          let at = 0;
+          meta.parts.forEach((part, i) => {
+            const audio = new Float32Array(meta.lens[i]);
+            for (let j = 0; j < audio.length; j++) audio[j] = pcm[at++] / 32767;
+            const key = asked(meta.model, meta.voiceRate, meta.lang, part);
+            if (prepared.has(key)) return;
+            prepared.set(key, Promise.resolve({ audio, rate: meta.rate, synthMs: 0, provider: 'kept', steps: 0 }));
+            keptFor.set(key, audio.length / meta.rate);
+          });
+          if (!cuts.has(meta.id)) cuts.set(meta.id, { text: meta.text, parts: meta.parts });
+          done.add(meta.id + '|' + meta.model + '|' + meta.voiceRate + '|' + meta.text.length);
+        } catch { try { await cache.delete(k); } catch {} }
+      }
+    }
+    return { put, restore };
+  })();
   let preparing = 0;
   function paint() {
     setButtons();
@@ -763,7 +829,7 @@
   MAG.speaking = { paint, stop, busy: () => !!current };
   // Voices and tempo for the settings: [{ who, name, voice, rate }], the choices, and a setter.
   MAG.voices = {
-    possible: () => piperPossible && !!S.features?.tts,
+    possible: () => modelPossible && !!S.features?.tts,
     rates: RATES,
     async options() {
       await loadConfig();
@@ -786,6 +852,7 @@
   function warmUp() {
     // What is downloaded once must stay: the browser is asked not to clear it when space runs short.
     try { navigator.storage?.persist?.().catch(() => {}); } catch {}
+    loadConfig().then((cfg) => cfg && said.restore()).then(() => setButtons()).catch(() => {});
     const link = navigator.connection;
     if (link && link.saveData) return;
     loadConfig().then((cfg) => {
@@ -802,7 +869,7 @@
   // scene) the tempo is fitted so voice and lips end together, within what
   // still sounds natural (0.8x to 1.3x). Returns { audio: Float32Array, rate } or null.
   MAG.voices.make = async function (text, k, seconds) {
-    if (!piperPossible || !S.features?.tts) return null;
+    if (!modelPossible || !S.features?.tts) return null;
     const cfg = await loadConfig();
     const list = voiceList().filter((v) => v.model);
     if (!cfg || !list.length) return null;
@@ -811,7 +878,7 @@
     const lang = textLocale(clean).slice(0, 2);
     const say = async (tempo) => {
       const sounds = [];
-      for (const part of piperParts(clean, 120, false)) {
+      for (const part of modelParts(clean, 120, false)) {
         const res = await ask({ type: 'speak', text: part, model: v.model, rate: tempo, lang, steps: topSteps() }, SPEAK_TIMEOUT_MS);
         if (res?.audio?.length) sounds.push(res);
       }
@@ -828,6 +895,6 @@
     return (await say(tempo)) || first;
   };
   let warmed = false;
-  MAG.on('reset', () => { if (!warmed && piperPossible && S.features?.tts) { warmed = true; setTimeout(warmUp, 2500); } });
+  MAG.on('reset', () => { if (!warmed && modelPossible && S.features?.tts) { warmed = true; setTimeout(warmUp, 2500); } });
   window.addEventListener('pagehide', stop);
 })();

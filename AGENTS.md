@@ -211,6 +211,12 @@ is ever changed unasked. The scene tools are the room's own, not a plugin.
 The phone tools (`s23_*`) are offered to the bots only while Chris runs the
 phone's control daemon (`devices/s23`, `mag-s23ctl`); nothing here installs or
 starts it, and his other S23 services are never spoken to.
+Every file of the chat (uploads, pictures, models, scenes, films, videos,
+documents) is also in one folder, the folder button in the header
+(`files.js`, `/api/files`): by kind, searchable, each with a preview (picture,
+video, sound, a model that turns, text), a download, and the way back to its
+message; what is shown comes as one ZIP (`/api/files.zip`, streamed, nothing
+packed on disk). The files stay where they are.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

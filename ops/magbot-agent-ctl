@@ -5,6 +5,26 @@ site=${MAG_BOTS_SITE:-/usr/local/lib/mag-bots/site.sh}
 if [[ $# == 1 && $1 == preflight ]]; then
   exec "$magbot" preflight
 fi
+# Saves of a bot's VM (magbot save): a save and a restore run as units of
+# their own, so a restart of the room does not cut them off; asking while one
+# runs is asking once.
+if [[ ($# == 2 || $# == 3) && $1 == save && $2 =~ ^agent[0-9]+$ && ${3:-manual} =~ ^(manual|chat|daily)$ ]]; then
+  unit="magbot-save-$2"
+  systemd-run --quiet --wait --collect --unit "$unit" -p CPUAffinity=28-55 -p Nice=10 -p IOSchedulingClass=idle \
+    "$magbot" save "$2" "${3:-manual}" && exit 0
+  rc=$?
+  journalctl -q -u "$unit" -n 3 -o cat --no-pager 2>/dev/null | tail -n 3 >&2
+  exit "$rc"
+fi
+if [[ $# == 4 && $1 == restore && $2 =~ ^agent[0-9]+$ && $3 =~ ^[0-9]{8}T[0-9]{6}Z-[a-z-]{1,24}$ && $4 =~ ^[a-f0-9]{8,64}$ ]]; then
+  unit="magbot-restore-$2"
+  systemd-run --quiet --wait --collect --unit "$unit" -p CPUAffinity=28-55 -p Nice=10 \
+    "$magbot" restore "$2" "$3" "$4" && exit 0
+  rc=$?
+  journalctl -q -u "$unit" -n 3 -o cat --no-pager 2>/dev/null | tail -n 3 >&2
+  exit "$rc"
+fi
+if [[ $# == 2 && $1 == saves && $2 =~ ^agent[0-9]+$ ]]; then exec "$magbot" saves "$2"; fi
 [[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == reset || $1 == audit-proxy || $1 == ip || $1 == verify) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
 if [[ $1 == verify ]]; then
   # Native read-only registry check. Exit 3 means missing metadata; any other

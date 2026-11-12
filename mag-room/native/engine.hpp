@@ -62,13 +62,18 @@ public:
       if (error.size() > 300 || llm::find_tag(error) != std::string::npos)
         room_.update(jstr(m, "id"), [&](Val &stored) { stored["error"] = llm::short_error(error); });
     }
-    // A reset the room was restarted in the middle of goes on to its end.
-    for (auto &b : configured.asArr())
+    // A reset or restore the room was restarted in the middle of goes on to its end.
+    std::set<std::string> restoring;
+    for (auto &b : configured.asArr()) {
       if (const Val *reset = b.find("reset"); reset && jstr(*reset, "state") == "running")
         if (Bot *rt = find(jstr(b, "id"))) rt->resetting = true;
+      if (const Val *back = b.find("restore"); back && jstr(*back, "state") == "running")
+        if (Bot *rt = find(jstr(b, "id")); rt && !rt->resetting) rt->resetting = true, restoring.insert(rt->id);
+    }
     for (auto &b : bots_) b->worker = std::thread([this, bot = b.get()] { work(*bot); });
     for (auto &b : bots_)
-      if (b->resetting) std::thread([this, bot = b->id] { run_reset(bot); }).detach();
+      if (restoring.count(b->id)) std::thread([this, bot = b->id] { run_restore(bot); }).detach();
+      else if (b->resetting) std::thread([this, bot = b->id] { run_reset(bot); }).detach();
     status_thread_ = std::thread([this] { watch_models(); });
     // A VM that was removed on the host must not stay assigned: the bot is
     // chat-only until it gets a new one. Unknown answers change nothing.
@@ -287,6 +292,8 @@ public:
   // the room in the middle goes on with it; asking twice is asking once.
   // Returns "" or why not, in words.
   std::string reset_vm(const std::string &bot) {
+    if (const Val me = room_.bot(bot); me.find("restore") && jstr(*me.find("restore"), "state") == "running")
+      return "Die VM wird gerade wiederhergestellt.";
     {
       std::lock_guard<std::mutex> lk(mu_);
       Bot *b = find(bot);
@@ -323,6 +330,70 @@ public:
     });
     publish_bots(true);
     std::thread([this, bot] { run_reset(bot); }).detach();
+    return "";
+  }
+
+  // Saves of a bot's VM, newest first (see magbot save).
+  Val vm_saves(const std::string &bot) { return guests_.saves(jstr(room_.bot(bot), "vm")); }
+
+  // A save of the bot's VM, while it works on (minutes, in the background).
+  // Returns "" or why not, in words.
+  std::string save_vm(const std::string &bot, const std::string &kind = "manual") {
+    const std::string vm = jstr(room_.bot(bot), "vm");
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      Bot *b = find(bot);
+      if (!b) return "Bot nicht gefunden";
+      if (!vm::valid_name(vm)) return "Dieser Bot hat keine VM.";
+      if (b->resetting) return "Die VM wird gerade zurückgesetzt oder wiederhergestellt.";
+      if (b->saving) return "";
+      b->saving = true;
+      b->save_note.clear();
+    }
+    publish_bots(true);
+    std::thread([this, bot, vm, kind] {
+      const RunResult r = guests_.save(vm, kind);
+      std::string note = "Gesichert";
+      if (r.code != 0) {
+        logf("engine: save of " + vm + " for " + bot + " failed: " + clip(trim(r.out), 600));
+        std::string why = trim(r.out);
+        if (const size_t line = why.find_last_of('\n'); line != std::string::npos) why = why.substr(line + 1);
+        note = "Sicherung nicht gelungen" + (why.empty() ? std::string(".") : ": " + clip(why, 240));
+      }
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (Bot *b = find(bot)) b->saving = false, b->save_note = note;
+      }
+      publish_bots(true);
+    }).detach();
+    return "";
+  }
+
+  // The bot's VM back to save <id> (its disk of now is kept as a save first).
+  // Its turn ends and it gets none until the VM is back; what it remembers of
+  // the chat stays. Persisted like a reset, so a restart goes on with it.
+  std::string restore_vm(const std::string &bot, const std::string &id) {
+    const std::string vm = jstr(room_.bot(bot), "vm");
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      Bot *b = find(bot);
+      if (!b) return "Bot nicht gefunden";
+      if (!vm::valid_name(vm)) return "Dieser Bot hat keine VM.";
+      if (b->saving) return "Die VM wird gerade gesichert.";
+      if (b->resetting) return "";
+      b->resetting = true;
+    }
+    room_.update_bot(bot, [&](Val &b) {
+      Val back = Val::object();
+      back["state"] = "running";
+      back["vm"] = vm;
+      back["save"] = id;
+      back["token"] = random_hex(12);
+      back["since"] = (double)now_s();
+      b["restore"] = back;
+    });
+    publish_bots(true);
+    std::thread([this, bot] { run_restore(bot); }).detach();
     return "";
   }
 
@@ -421,6 +492,9 @@ public:
       v["site"] = site::base_url(conf);
       if (const auto it = vm_notes_.find(b->id); it != vm_notes_.end() && !it->second.empty()) v["vm_note"] = it->second;
       if (const Val *reset = conf.find("reset")) v["reset"] = *reset;
+      if (const Val *back = conf.find("restore")) v["restore"] = *back;
+      v["saving"] = b->saving;
+      if (!b->save_note.empty()) v["save_note"] = b->save_note;
       v["memory"] = conf.find("memory") ? (double)conf.find("memory")->size() : 0.0;
       v["plugins"] = conf.find("plugins") && conf.find("plugins")->isObj() ? *conf.find("plugins") : Val::object();
       const Val *m = models.find(b->id);
@@ -486,7 +560,9 @@ private:
     int cut_off = 0;             // > 0: a restart of the room cut this bot's answer off before any of it could be seen (how often)
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     std::vector<std::shared_ptr<Look>> looks; // things Chris named in a photo: where are they?
-    bool resetting = false;      // the owner resets this bot (reset_vm): it gets no turn until that is done
+    bool resetting = false;      // the owner resets this bot (reset_vm) or restores its VM (restore_vm): it gets no turn until that is done
+    bool saving = false;         // a save of its VM is under way (save_vm)
+    std::string save_note;       // how the last save ended, in words
     bool wipe_pending = false;   // ... and its prompt log and slot are to be emptied
     uint64_t wipes = 0;
     // --- owned by the worker thread ---
@@ -1624,6 +1700,48 @@ private:
       std::string why = trim(r.out);
       if (const size_t line = why.find_last_of('\n'); line != std::string::npos) why = why.substr(line + 1);
       return end("Die VM ließ sich nicht neu erstellen" + (why.empty() ? std::string(".") : ": " + clip(why, 240)));
+    }
+    end("");
+  }
+
+  // One restore from its beginning to its end (restore_vm); done again after
+  // a restart, the helper knows by the token whether it already went through.
+  void run_restore(const std::string &bot) {
+    const Val back = [&] { const Val me = room_.bot(bot); const Val *r = me.find("restore"); return r ? *r : Val::object(); }();
+    const std::string vm = jstr(back, "vm"), id = jstr(back, "save"), token = jstr(back, "token");
+    auto end = [&](const std::string &error) {
+      room_.update_bot(bot, [&](Val &b) {
+        if (error.empty()) b.obj->erase(std::remove_if(b.obj->begin(), b.obj->end(), [](const auto &kv) { return kv.first == "restore"; }), b.obj->end());
+        else b["restore"]["state"] = "failed", b["restore"]["error"] = error;
+      });
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (Bot *b = find(bot)) b->resetting = false;
+      }
+      cv_.notify_all();
+      publish_bots(true);
+    };
+    if (!vm::valid_name(vm) || id.empty() || token.empty()) return end("Die Angaben zur Wiederherstellung fehlen.");
+    {
+      std::unique_lock<std::mutex> lk(mu_);
+      Bot *b = find(bot);
+      if (!b) return;
+      b->continues = 0;
+      if (b->cancel) b->cancel->stop();
+      cv_.notify_all();
+      cv_.wait_for(lk, std::chrono::seconds(20), [&] { return stop_ || b->running.empty(); });
+      if (stop_) return;
+    }
+    const RunResult r = guests_.restore(vm, id, token);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (stop_) return;
+    }
+    if (r.code != 0) {
+      logf("engine: restore of " + vm + " for " + bot + " failed: " + clip(trim(r.out), 600));
+      std::string why = trim(r.out);
+      if (const size_t line = why.find_last_of('\n'); line != std::string::npos) why = why.substr(line + 1);
+      return end("Die VM ließ sich nicht wiederherstellen" + (why.empty() ? std::string(".") : ": " + clip(why, 240)));
     }
     end("");
   }

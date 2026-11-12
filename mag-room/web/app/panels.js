@@ -90,6 +90,14 @@
     return node;
   };
 
+  // A save's name is its time (UTC) and kind: 20261112T091500Z-manual.
+  const saveKinds = { manual: 'von Hand', chat: 'auf Wunsch im Chat', daily: 'nächtlich', 'vor-wiederherstellung': 'Stand vor einer Wiederherstellung' };
+  function saveDate(id) {
+    const m = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z/.exec(id || '');
+    if (!m) return id || '';
+    return new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
   // ---- one bot ------------------------------------------------------------
   function botSheet(id) {
     let live = null;
@@ -127,6 +135,13 @@
         if (reset?.state === 'running')
           add('Zurücksetzen', el('span', {}, el('span', { class: 'spin' }), ' ' + ({ stop: 'Antwort wird beendet …', memory: 'Gedächtnis wird geleert …', vm: 'VM ' + reset.vm + ' wird neu erstellt, das dauert einige Minuten …' }[reset.step] || 'läuft …')));
         if (reset?.state === 'failed') add('Zurücksetzen', 'nicht gelungen: ' + (reset.error || 'unbekannter Fehler'));
+        // Saves of the VM: one under way, how the last ended, a restore step by step.
+        const back = b.restore;
+        if (b.saving) add('Sicherung', el('span', {}, el('span', { class: 'spin' }), ' VM wird gesichert, sie läuft dabei weiter …'));
+        else if (b.save_note) add('Sicherung', b.save_note);
+        if (back?.state === 'running') add('Wiederherstellen', el('span', {}, el('span', { class: 'spin' }), ' VM wird auf den Stand vom ' + saveDate(back.save) + ' gesetzt …'));
+        if (back?.state === 'failed') add('Wiederherstellen', 'nicht gelungen: ' + (back.error || 'unbekannter Fehler'));
+        if (sheet.saves && sheet.savesBusy !== (b.saving || back?.state === 'running')) sheet.saves();
         if (m.restart_pending) add('Neustart', 'neue Startparameter warten auf einen Neustart');
         status.replaceChildren(info);
         if (m.state === 'downloading' && f.total) status.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('div', { class: 'progress' }, el('i', { style: 'width:' + (f.bytes / f.total) * 100 + '%' })))));
@@ -148,7 +163,7 @@
             } }));
           }
           // Back to its first day: a new VM from the golden image, nothing remembered.
-          if (reset?.state !== 'running' && b.vm_note !== 'creating')
+          if (reset?.state !== 'running' && back?.state !== 'running' && b.vm_note !== 'creating')
             acts.append(el('button', { class: 'btn danger', text: reset?.state === 'failed' ? 'Noch einmal zurücksetzen' : 'Zurücksetzen', onclick: async () => {
               if (await MAG.confirm(b.name + ' zurücksetzen?', 'Die VM wird gelöscht und neu erstellt: alle Dateien, Programme, Browser-Daten und die veröffentlichte Website sind weg, ebenso das Gedächtnis und der Gesprächskontext von ' + b.name + '. Eine laufende Antwort bricht sofort ab. Name, Adresse und Modell bleiben. Das lässt sich nicht rückgängig machen.', 'Zurücksetzen', true))
                 call('POST', '/api/vm/' + id + '/reset').then(() => MAG.toast(b.name + ' wird zurückgesetzt'));
@@ -159,6 +174,30 @@
         actsTitle.hidden = acts.hidden = actsHint.hidden = !acts.children.length;
       };
       content.append(el('h3', { text: 'Status' }), status, actsTitle, acts, actsHint);
+      if (owner() && b.vm) {
+        // Saves of the VM: everything the bot has in it (files, programs,
+        // browser data, its site), daily and whenever Chris asks; a restore
+        // keeps the state it replaces as a save of its own.
+        const list = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Sicherungen der VM' }), list,
+          el('p', { class: 'fine', text: 'Jede Nacht und auf Wunsch: alles, was ' + b.name + ' in der VM hat (Dateien, Programme, Browser-Daten, Website). Die VM läuft beim Sichern weiter. Wiederherstellen setzt die VM auf den Stand der Sicherung; der jetzige Stand bleibt vorher als Sicherung erhalten. Zurücksetzen lässt die Sicherungen stehen.' }));
+        sheet.saves = () => {
+          const now = MAG.bot(id);
+          sheet.savesBusy = !!(now?.saving || now?.restore?.state === 'running');
+          return MAG.api('GET', '/api/vm/' + id + '/saves').then((out) => {
+            const busy = sheet.savesBusy;
+            list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, out.saves.length ? out.saves.length + (out.saves.length === 1 ? ' Sicherung' : ' Sicherungen') : el('small', { text: 'Noch keine Sicherung.' })),
+              el('button', { class: 'btn', text: 'Jetzt sichern', disabled: busy, onclick: () => call('POST', '/api/vm/' + id + '/save').then(() => MAG.toast('VM von ' + b.name + ' wird gesichert')) })));
+            for (const one of out.saves)
+              list.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, saveDate(one.id), el('small', { text: (saveKinds[one.kind] || one.kind) + ' · ' + MAG.bytes(one.bytes) })),
+                el('button', { class: 'btn', text: 'Wiederherstellen', disabled: busy, onclick: async () => {
+                  if (await MAG.confirm('VM von ' + b.name + ' wiederherstellen?', 'Die VM wird angehalten und auf den Stand vom ' + saveDate(one.id) + ' gesetzt: Dateien, Programme, Browser-Daten und Website wie damals. Der jetzige Stand bleibt als Sicherung erhalten. Eine laufende Antwort bricht ab; das Gespräch und die Erinnerungen bleiben.', 'Wiederherstellen', true))
+                    call('POST', '/api/vm/' + id + '/restore', { save: one.id }).then(() => MAG.toast(b.name + ': VM wird wiederhergestellt'));
+                } })));
+          }).catch(() => list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Sicherungen nicht lesbar.' })))));
+        };
+        sheet.saves();
+      }
       sheet.refresh();
 
       if (owner()) {

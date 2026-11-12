@@ -185,6 +185,30 @@ public:
     forget(vm);
     return r;
   }
+  // Saves of the VM (newest first, see magbot save): [{id, kind, created_at, bytes}].
+  Val saves(const std::string &vm) {
+    if (!valid_name(vm)) return Val::array();
+    RunOptions opt;
+    opt.timeout_s = 20;
+    const RunResult r = mag::run(wrapper({cfg_.agent_ctl, "saves", vm}), opt);
+    Val v = jparse(r.out);
+    return r.code == 0 && v.isArr() ? v : Val::array();
+  }
+  // A save of the VM while it runs on (minutes; kind: manual, chat, daily).
+  RunResult save(const std::string &vm, const std::string &kind) {
+    RunOptions opt;
+    opt.timeout_s = 3 * 3600;
+    return mag::run(wrapper({cfg_.agent_ctl, "save", vm, kind}), opt);
+  }
+  // The VM as it was in save <id>; its disk of now is kept as a save first.
+  RunResult restore(const std::string &vm, const std::string &id, const std::string &token) {
+    forget(vm);
+    RunOptions opt;
+    opt.timeout_s = 3 * 3600;
+    const RunResult r = mag::run(wrapper({cfg_.agent_ctl, "restore", vm, id, token}), opt);
+    forget(vm);
+    return r;
+  }
   // Nothing the room knew about this VM holds any more (its address, its
   // browser controller, its proxy settings).
   void forget(const std::string &vm) {

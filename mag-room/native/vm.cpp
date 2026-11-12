@@ -72,7 +72,8 @@ static Val cfg() {
            {"max_bot_ram_gib", 24},
            {"max_bot_disk_gib", 32},
            {"disk_bytes_sec", 40000000},
-           {"disk_iops_sec", 400}})
+           {"disk_iops_sec", 400},
+           {"keep_saves", 4}})
     v[p.first] = p.second;
   v["network"] = "default";
   v["base_url"] = "";
@@ -935,6 +936,230 @@ static void spawn(const std::string &n, int cpu, int ram, int disk,
   }
   std::cout << "Created " << domain(n) << " from golden image\n";
 }
+// Saves of a bot's VM: its overlay on the golden image (everything the bot
+// ever did in it: files, programs, browser data, its site) at one moment,
+// compressed, in saves/<id>/<stamp>-<kind>/. A running VM keeps running: an
+// external snapshot (frozen through the guest agent where it answers) makes
+// the overlay read-only for the copy, and a shallow block commit takes what
+// was written meanwhile back into it. A restore puts a save in place of the
+// overlay; the overlay it replaces is kept as a save of its own first, so a
+// restore can be undone. A reset leaves the saves alone.
+static fs::path saves_root = root / "saves";
+static fs::path saves_of(const std::string &n) { return saves_root / valid(n); }
+static fs::path golden_path() { return root / "base/golden.qcow2"; }
+static fs::path side_overlay(const std::string &n) { return dir(n) / "root.save-overlay.qcow2"; }
+// One save or restore of one bot at a time; reset and despawn wait for it.
+static int bot_lock(const std::string &n) {
+  int fd = open(("/run/lock/magbot-" + valid(n) + ".lock").c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+  if (fd < 0 || flock(fd, LOCK_EX)) throw std::runtime_error("Bot lock failed");
+  return fd;
+}
+static std::string disk_source(const std::string &n, bool persistent = false) {
+  std::istringstream lines(virsh(persistent ? std::vector<std::string>{"domblklist", domain(n), "--inactive"}
+                                            : std::vector<std::string>{"domblklist", domain(n)}));
+  for (std::string line; std::getline(lines, line);) {
+    std::istringstream in(line);
+    std::string target, source;
+    if (in >> target >> source && target == "vda") return source;
+  }
+  return "";
+}
+// A save that was cut off between snapshot and commit left the VM writing
+// into the side overlay: it goes back into the bot's own disk first.
+static void settle_disk(const std::string &n) {
+  if (!exists(n)) return;
+  const auto own = (dir(n) / "root.qcow2").string();
+  if (disk_source(n) != own) {
+    if (trim(virsh({"domstate", domain(n)})) != "running") virsh({"start", domain(n)}, 60);
+    // --shallow: only into the disk right below; never into the golden image.
+    virsh({"blockcommit", domain(n), "vda", "--active", "--shallow", "--pivot", "--wait"}, 3600);
+    if (disk_source(n) != own) throw std::runtime_error("VM disk did not return to its overlay");
+  }
+  // The definition it boots from names its own disk again too.
+  if (disk_source(n, true) != own) {
+    std::string xml = virsh({"dumpxml", domain(n), "--inactive"});
+    const auto side = side_overlay(n).string();
+    for (size_t at; (at = xml.find(side)) != std::string::npos;) xml.replace(at, side.size(), own);
+    const auto file = dir(n) / "domain.xml";
+    write(file, xml);
+    virsh({"define", file.string()});
+    fs::remove(file);
+  }
+  std::error_code ec;
+  fs::remove(side_overlay(n), ec);
+}
+static void need_space(const fs::path &for_file) {
+  struct statvfs s{};
+  if (statvfs(root.c_str(), &s)) throw std::runtime_error("Free space unknown");
+  const double free_gib = (double)s.f_bavail * s.f_frsize / (1024.0 * 1024 * 1024);
+  const double need_gib = (fs::exists(for_file) ? fs::file_size(for_file) / (1024.0 * 1024 * 1024) : 0) + 30;
+  if (free_gib < need_gib)
+    throw std::runtime_error("Not enough disk space for a save (" + std::to_string((int)free_gib) + " GiB free)");
+}
+static std::string stamp_now() {
+  char stamp[32];
+  const std::time_t now = std::time(nullptr);
+  std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", std::gmtime(&now));
+  return stamp;
+}
+static void write_meta(const fs::path &d, const std::string &n, const std::string &kind) {
+  Val m = Val::object();
+  m["bot"] = n;
+  m["kind"] = kind;
+  m["created_at"] = (long)time(nullptr);
+  m["bytes"] = (double)fs::file_size(d / "root.qcow2");
+  m["golden_bytes"] = (double)fs::file_size(golden_path());
+  write(d / "META.json", mj::dump(m));
+}
+// The overlay (backed by the golden image) as a compressed copy; only what
+// the bot changed is in it.
+static void copy_overlay(const fs::path &from, const fs::path &to, bool compress) {
+  std::vector<std::string> cmd{"/usr/bin/taskset", "-c", env("MAG_VM_CPUSET", "28-55"), "/usr/bin/nice", "-n", "10",
+                               "/usr/bin/qemu-img", "convert", "-U", "-O", "qcow2"};
+  if (compress) cmd.push_back("-c");
+  cmd.insert(cmd.end(), {"-B", golden_path().string(), "-F", "qcow2", from.string(), to.string()});
+  checked(cmd, 7200);
+}
+static void keep_newest(const std::string &n) {
+  std::vector<fs::path> all;
+  if (!fs::exists(saves_of(n))) return;
+  for (auto &e : fs::directory_iterator(saves_of(n)))
+    if (e.is_directory() && !fs::is_symlink(e) && e.path().filename().string()[0] != '.' && fs::exists(e.path() / "META.json"))
+      all.push_back(e.path());
+  std::sort(all.begin(), all.end());
+  const size_t keep = (size_t)std::max(1L, num(cfg(), "keep_saves"));
+  for (size_t i = 0; i + keep < all.size(); ++i) {
+    std::cout << "Removed old save " << all[i].filename().string() << '\n';
+    fs::remove_all(all[i]);
+  }
+}
+static std::string save(const std::string &n, const std::string &kind) {
+  marker(n);
+  const auto own = dir(n) / "root.qcow2";
+  if (!fs::is_regular_file(own)) throw std::runtime_error("VM has no disk");
+  settle_disk(n);
+  need_space(own);
+  fs::create_directories(saves_of(n));
+  chmod(saves_root.c_str(), 0700);
+  // Parts of a save that was cut off.
+  for (auto &e : fs::directory_iterator(saves_of(n)))
+    if (e.path().filename().string()[0] == '.') fs::remove_all(e.path());
+  const std::string id = stamp_now() + "-" + kind;
+  const auto part = saves_of(n) / ("." + id);
+  fs::create_directories(part);
+  const bool running = exists(n) && trim(virsh({"domstate", domain(n)})) == "running";
+  if (!running) {
+    copy_overlay(own, part / "root.qcow2", true);
+  } else {
+    std::vector<std::string> snap{"snapshot-create-as", "--domain", domain(n), "--name", "mag-save-" + id,
+                                  "--disk-only", "--atomic", "--no-metadata",
+                                  "--diskspec", "vda,snapshot=external,file=" + side_overlay(n).string(),
+                                  "--diskspec", "hda,snapshot=no"};
+    std::vector<std::string> quiet{"/usr/bin/virsh", "-c", "qemu:///system"};
+    quiet.insert(quiet.end(), snap.begin(), snap.end());
+    quiet.push_back("--quiesce");
+    // Frozen file systems where the guest agent answers, else as after a power cut.
+    if (run(quiet, 120).code) {
+      std::error_code ec;
+      fs::remove(side_overlay(n), ec);
+      virsh(snap, 120);
+    }
+    try {
+      copy_overlay(own, part / "root.qcow2", true);
+    } catch (...) {
+      settle_disk(n);
+      throw;
+    }
+    settle_disk(n);
+  }
+  write_meta(part, n, kind);
+  fs::rename(part, saves_of(n) / id);
+  keep_newest(n);
+  return id;
+}
+static Val saves_list(const std::string &n) {
+  Val out = Val::array();
+  if (!fs::exists(saves_of(n))) return out;
+  std::vector<fs::path> all;
+  for (auto &e : fs::directory_iterator(saves_of(n)))
+    if (e.is_directory() && e.path().filename().string()[0] != '.' && fs::exists(e.path() / "META.json"))
+      all.push_back(e.path());
+  std::sort(all.rbegin(), all.rend());
+  for (auto &p : all) {
+    try {
+      Val m = json(read(p / "META.json"));
+      m["id"] = p.filename().string();
+      out.push(m);
+    } catch (...) {
+    }
+  }
+  return out;
+}
+static void shut_off(const std::string &n) {
+  if (!exists(n) || trim(virsh({"domstate", domain(n)})) == "shut off") return;
+  run({"/usr/bin/virsh", "-c", "qemu:///system", "shutdown", domain(n)}, 20);
+  for (int i = 0; i < 60 && trim(virsh({"domstate", domain(n)})) != "shut off"; ++i) sleep(1);
+  if (trim(virsh({"domstate", domain(n)})) != "shut off") virsh({"destroy", domain(n)});
+}
+// Puts save <id> in place of the bot's disk. <token> names this restore: a
+// restore that already went through with it is not done again (the room
+// repeats an order that a restart cut off).
+static void restore(const std::string &n, const std::string &id, const std::string &token) {
+  marker(n);
+  if (!std::regex_match(id, std::regex("[0-9]{8}T[0-9]{6}Z-[a-z-]{1,24}")) ||
+      !std::regex_match(token, std::regex("[a-f0-9]{8,64}")))
+    throw std::runtime_error("Invalid save");
+  const auto from = saves_of(n) / id / "root.qcow2";
+  if (!fs::is_regular_file(from) || fs::is_symlink(from)) throw std::runtime_error("No such save");
+  const auto done = dir(n) / "RESTORED";
+  if (fs::exists(done) && trim(read(done)) == token) {
+    std::cout << "Restore " << token << " already done\n";
+    return;
+  }
+  const auto own = dir(n) / "root.qcow2";
+  need_space(from);
+  settle_disk(n);
+  shut_off(n);
+  // The disk it has now becomes a save of its own (a rename, no copy).
+  if (fs::is_regular_file(own)) {
+    fs::create_directories(saves_of(n));
+    const auto before = saves_of(n) / (stamp_now() + "-vor-wiederherstellung");
+    const auto part = saves_of(n) / ("." + before.filename().string());
+    fs::create_directories(part);
+    fs::rename(own, part / "root.qcow2");
+    write_meta(part, n, "vor-wiederherstellung");
+    fs::rename(part, before);
+  }
+  const auto fresh = dir(n) / "root.qcow2.new";
+  std::error_code ec;
+  fs::remove(fresh, ec);
+  copy_overlay(from, fresh, false);
+  auto g = getgrnam("kvm");
+  if (!g || chown(fresh.c_str(), 0, g->gr_gid) || chmod(fresh.c_str(), 0660))
+    throw std::runtime_error("Disk permissions failed");
+  fs::rename(fresh, own);
+  virsh({"start", domain(n)}, 60);
+  write(done, token);
+  // Its Git credential, browser sandbox and proxy are those of today.
+  try {
+    provision_git(n);
+  } catch (const std::exception &e) {
+    std::cerr << "WARNING: " << e.what() << '\n';
+  }
+  try {
+    auto browser = prepare_browser(n);
+    if (browser.find("WARN:") != std::string::npos) std::cerr << browser;
+  } catch (const std::exception &e) {
+    std::cerr << "WARNING: " << e.what() << '\n';
+  }
+  try {
+    std::cerr << "audit-proxy: " << audit_proxy(n) << '\n';
+  } catch (const std::exception &e) {
+    std::cerr << "WARNING: " << e.what() << '\n';
+  }
+  keep_newest(n);
+  std::cout << "Restored " << domain(n) << " to " << id << '\n';
+}
 int main(int argc, char **argv) {
   try {
     setenv("LC_ALL", "C", 1);
@@ -942,8 +1167,8 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Run with sudo");
     if (argc < 2)
       throw std::runtime_error(
-          "Usage: magbot status|inspect|exec|spawn|despawn|reset|doctor|preflight|audit-proxy "
-          "[ID]");
+          "Usage: magbot status|inspect|exec|spawn|despawn|reset|doctor|preflight|audit-proxy|"
+          "save|saves|restore [ID]; magbot save-all KIND");
     auto c = cfg();
     std::string action = argv[1], n = argc > 2 ? argv[2] : "";
     if (action == "preflight") {
@@ -976,8 +1201,47 @@ int main(int argc, char **argv) {
       std::cout << "KVM present, " << registry().size() << " registered bots\n";
       return 0;
     }
+    if (action == "save-all") {
+      // The daily save of every bot (mag-bot-saves.timer); one that fails
+      // does not keep the others from theirs.
+      const std::string kind = argc > 2 ? argv[2] : "daily";
+      if (!std::regex_match(kind, std::regex("[a-z]{1,16}"))) throw std::runtime_error("Invalid save kind");
+      int failed = 0;
+      for (auto &r : registry()) {
+        const auto id = str(r, "id");
+        try {
+          int bl = bot_lock(id);
+          std::cout << id << ": saved " << save(id, kind) << '\n';
+          close(bl);
+        } catch (const std::exception &e) {
+          std::cerr << id << ": " << e.what() << '\n';
+          ++failed;
+        }
+      }
+      return failed ? 1 : 0;
+    }
     if (n.empty())
       throw std::runtime_error("Bot ID required");
+    if (action == "saves") {
+      marker(n);
+      std::cout << mj::dump(saves_list(n)) << '\n';
+      return 0;
+    }
+    if (action == "save") {
+      const std::string kind = argc > 3 ? argv[3] : "manual";
+      if (!std::regex_match(kind, std::regex("[a-z]{1,16}"))) throw std::runtime_error("Invalid save kind");
+      int bl = bot_lock(n);
+      std::cout << "Saved " << save(n, kind) << '\n';
+      close(bl);
+      return 0;
+    }
+    if (action == "restore") {
+      if (argc != 5) throw std::runtime_error("Usage: magbot restore ID SAVE TOKEN");
+      int bl = bot_lock(n);
+      restore(n, argv[3], argv[4]);
+      close(bl);
+      return 0;
+    }
     if (action == "file-write") {
       marker(n);
       if (state(n) != "ready") throw std::runtime_error("Guest not ready");
@@ -1076,6 +1340,8 @@ int main(int argc, char **argv) {
         open(env("MAGBOT_LOCK", "/run/lock/magbot.lock").c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX))
       throw std::runtime_error("Lifecycle lock failed");
+    // A save or restore of this bot that is under way ends first.
+    const int own_lock = bot_lock(n);
     if (action == "despawn" || action == "despawn-orphan") {
       if (action == "despawn-orphan") {
         // Recheck after acquiring the same lock as spawn. The timer's
@@ -1147,6 +1413,7 @@ int main(int argc, char **argv) {
       spawn(n, cpu, ram, disk, c);
     } else
       throw std::runtime_error("Unknown lifecycle action");
+    close(own_lock);
     close(lock);
     return 0;
   } catch (const std::exception &e) {

@@ -101,6 +101,11 @@ public:
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
         if (ends_with(p, "/files")) return vm_files(fd, r);
         if (ends_with(p, "/file")) return vm_file(fd, r);
+        if (ends_with(p, "/saves")) {
+          Val v = Val::object();
+          v["saves"] = engine_.vm_saves(p.substr(8, p.size() - 8 - 6));
+          return http::send_json(fd, 200, v);
+        }
       }
       return http::send_error(fd, 404, "Nicht gefunden");
     }
@@ -231,6 +236,24 @@ public:
       const std::string bot = p.substr(8, p.size() - 8 - 6);
       if (!room_.bot(bot).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
       const std::string why = engine_.reset_vm(bot);
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+    }
+    if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/save")) {
+      // A save of the bot's VM as it is now; it works on meanwhile.
+      const std::string bot = p.substr(8, p.size() - 8 - 5);
+      if (!room_.bot(bot).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+      const std::string why = engine_.save_vm(bot);
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+    }
+    if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/restore")) {
+      // The bot's VM as it was in one of its saves.
+      const std::string bot = p.substr(8, p.size() - 8 - 8);
+      if (!room_.bot(bot).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+      const std::string id = jstr(jparse(r.body), "save");
+      bool known = false;
+      for (auto &one : engine_.vm_saves(bot).asArr()) known = known || jstr(one, "id") == id;
+      if (!known) return http::send_error(fd, 404, "Diese Sicherung gibt es nicht");
+      const std::string why = engine_.restore_vm(bot, id);
       return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
     }
     if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/run")) return vm_run(fd, r);

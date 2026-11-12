@@ -576,7 +576,11 @@ private:
           if (glb.empty() && ends_with(lower(jstr(a, "name")), ".glb")) glb = jstr(a, "name");
       if (glb.empty()) continue;
       Val actor = Val::object(), at = Val::array();
-      actor["name"] = "Objekt " + std::to_string((int)jnum(*part, "index") + 1);
+      std::string name = thing_named(jstr(*m3, "image"));
+      if (name.empty()) name = "Objekt " + std::to_string((int)jnum(*part, "index") + 1);
+      for (int n = 2; std::any_of(actors.asArr().begin(), actors.asArr().end(), [&](const Val &a) { return jstr(a, "name") == name; }); n++)
+        name = (n == 2 ? name : name.substr(0, name.rfind(' '))) + " " + std::to_string(n);
+      actor["name"] = name;
       actor["model"] = glb;
       at.push(jnum(*part, "z"));   // away from the camera
       at.push(-jnum(*part, "x"));  // the camera's right is the scene's -y
@@ -614,6 +618,26 @@ private:
     room_.add(note);
   }
   std::mutex assemble_mu_;
+
+  // What a cut-out object is, as the bot that saw it began its description
+  // ("Roter Stuhl: …"); "" while nobody has looked at it yet.
+  std::string thing_named(const std::string &file) {
+    if (file.empty()) return "";
+    for (auto &m : room_.all())
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr()) {
+          if (jstr(a, "file") != file) continue;
+          const std::string said = jstr(a, "description");
+          const size_t colon = said.find(':');
+          if (colon == std::string::npos || colon > 40) continue;
+          std::string head = trim(said.substr(0, colon));
+          for (auto &c : head) if (c == '"' || c == '*' || c == '.' || c == '\'') c = ' ';
+          head = trim(head);
+          if (head.empty() || std::count(head.begin(), head.end(), ' ') > 3) continue;
+          return head;
+        }
+    return "";
+  }
 
   // ---- files --------------------------------------------------------------
   void upload(int fd, const http::Request &r) {

@@ -223,7 +223,8 @@ files inline, 3D orders and results, images. A bot with a vision projector
 gets the image itself (a 1280 px copy, each image right in front of its own
 `[Bild …]` line); once per picture it writes down what it shows, asked on a
 branch of its prompt log that is not appended, with the picture again in
-front of the question. Pictures are told apart by their content (SHA256): a
+front of the question; the description begins with what the picture shows in
+one to three words and a colon ("Roter Stuhl: …"). Pictures are told apart by their content (SHA256): a
 picture posted twice has one description, and `POST /api/file/<f>/describe`
 (owner) has it made anew for every copy. A bot without eyes waits briefly
 for the description and gets a renewed one as an addendum.
@@ -340,7 +341,9 @@ notes from where the photo looked at each model (`mesh.json`, the direction
 of the camera `photo.py` found). When no model of a group is under way any
 more (`Api::assemble`, also after a restart, once per group), the models
 that were made become one scene: `tall`, `lift`, `seen_from` and `at` of
-each actor and `room` of the scene are what `scene.py` builds it from. The
+each actor and `room` of the scene are what `scene.py` builds it from. An
+actor is called what the bot that saw its cut-out began that description
+with ("Roter Stuhl", a second one "Roter Stuhl 2"), else "Objekt N". The
 photo is assumed to be taken about level; a camera that looks steeply down
 puts the floor too low.
 

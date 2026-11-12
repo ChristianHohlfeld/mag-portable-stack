@@ -473,7 +473,8 @@ distilled; two for each expert) without guidance, 81 frames at 16 fps,
 about 480p in the picture's shape, H.264 by ffmpeg. The card has no bf16
 and no fast attention: the experts compute in fp16, attention is exact but
 built a block of queries at a time, UMT5 reads the words in fp32 and leaves
-the card before the experts come. It runs in `~/idol-mi50/video/venv`
+the card before the experts come, and the experts come one after the other
+(the high-noise one leaves before the low-noise one loads). It runs in `~/idol-mi50/video/venv`
 (Idol's torch and diffusers through a .pth file, plus gguf, peft, ftfy);
 the weights come from `ops/video/fetch.sh` (pinned, resumable, SHA256, one
 writer) and until `.complete` is there the worker refuses a video in words

@@ -1,0 +1,153 @@
+diff --git a/idol/conditioning.py b/idol/conditioning.py
+index be723dd..123b9c7 100644
+--- a/idol/conditioning.py
++++ b/idol/conditioning.py
+@@ -23,6 +23,7 @@ def require_encoder_access(repos):
+ 
+     if os.environ.get('HF_HUB_OFFLINE', '0').lower() in ('1', 'true', 'yes'):
+         return
++    repos = [r for r in repos if not os.path.isdir(r)]  # MI50 patch: local encoder folders need no gate check
+     denied = []
+     for repo in repos:
+         if repo in _ACCESSIBLE_REPOS:
+@@ -56,10 +57,21 @@ class ImageEncoder:
+         from transformers import AutoModel
+ 
+         self.device = torch.device(device)
+-        self.dinov3 = AutoModel.from_pretrained(dinov3_repo, torch_dtype=DTYPES[dinov3_dtype])
++        import os
++        self.dinov3_timm = os.path.isfile(os.path.join(dinov3_repo, 'model.safetensors')) and \
++            os.path.isfile(os.path.join(dinov3_repo, 'LICENSE.md')) and not os.path.isfile(os.path.join(dinov3_repo, 'preprocessor_config.json'))
++        if self.dinov3_timm:  # MI50 patch: timm-format DINOv3 ViT-H+/16 (same LVD-1689M weights)
++            import timm
++            self.dinov3 = timm.create_model('vit_huge_plus_patch16_dinov3.lvd1689m', pretrained=True, num_classes=0,
++                                            dynamic_img_size=True,
++                                            pretrained_cfg_overlay=dict(file=os.path.join(dinov3_repo, 'model.safetensors')))
++            self.dinov3 = self.dinov3.to(DTYPES[dinov3_dtype])
++        else:
++            self.dinov3 = AutoModel.from_pretrained(dinov3_repo, torch_dtype=DTYPES[dinov3_dtype])
+         self.dinov3 = self.dinov3.eval().requires_grad_(False).to(self.device)
++        self.vae_dtype = DTYPES[os.environ.get('IDOL_VAE_DTYPE', 'fp16')]  # MI50 patch: gfx906 has no fast bf16
+         self.flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae_repo, subfolder='vae',
+-                                                            torch_dtype=torch.bfloat16)
++                                                            torch_dtype=self.vae_dtype)
+         self.flux2_vae = self.flux2_vae.eval().requires_grad_(False).to(self.device)
+ 
+     def _dinov3_tokens(self, images):
+@@ -67,12 +79,19 @@ class ImageEncoder:
+         std = torch.tensor(IMAGENET_STD, device=images.device).view(1, 3, 1, 1)
+         images = (images.float() - mean) / std
+         dtype = next(self.dinov3.parameters()).dtype
+-        tokens = self.dinov3(pixel_values=images.to(dtype)).last_hidden_state.float()
++        if self.dinov3_timm:
++            tokens = self.dinov3.forward_features(images.to(dtype)).float()
++        else:
++            tokens = self.dinov3(pixel_values=images.to(dtype)).last_hidden_state.float()
++        if not torch.isfinite(tokens).all():
++            raise RuntimeError('DINOv3 produced non-finite tokens (fp16 overflow?) - rerun with --dinov3_dtype fp32')
+         return F.layer_norm(tokens, tokens.shape[-1:])
+ 
+     def _flux2_tokens(self, images):
+         vae = self.flux2_vae
+-        latents = vae.encode(images.to(torch.bfloat16) * 2 - 1).latent_dist.sample()
++        latents = vae.encode(images.to(self.vae_dtype) * 2 - 1).latent_dist.sample()
++        if not torch.isfinite(latents).all():
++            raise RuntimeError('FLUX.2 VAE produced non-finite latents (fp16 overflow?) - rerun with IDOL_VAE_DTYPE=fp32')
+         batch, channels, height, width = latents.shape
+         latents = latents.view(batch, channels, height // 2, 2, width // 2, 2).permute(0, 1, 3, 5, 2, 4)
+         latents = latents.reshape(batch, channels * 4, height // 2, width // 2)
+diff --git a/idol/models/layers.py b/idol/models/layers.py
+index fda51c5..2435f90 100644
+--- a/idol/models/layers.py
++++ b/idol/models/layers.py
+@@ -12,13 +12,31 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
+ # Override with ATTN_BACKEND=flash_attn|sdpa|sdpa_cudnn (sdpa_cudnn: PyTorch SDPA restricted to the cuDNN kernel,
+ # which IdolPipeline(optimize=True) selects for the denoiser while sampling).
+ ATTN_BACKEND = os.environ.get('ATTN_BACKEND',
+-                              'flash_attn' if importlib.util.find_spec('flash_attn') is not None else 'sdpa')
++                              'flash_attn' if importlib.util.find_spec('flash_attn') is not None and torch.version.hip is None else 'sdpa')  # MI50 patch
+ if ATTN_BACKEND not in ('flash_attn', 'sdpa', 'sdpa_cudnn'):
+     raise ValueError(f'Unknown attention backend: {ATTN_BACKEND}')
+ if ATTN_BACKEND == 'flash_attn':
+     import flash_attn
+ 
+ 
++CHUNK_BYTES = int(float(os.environ.get('IDOL_ATTN_CHUNK_MB', '256')) * 2**20)  # MI50 patch
++
++
++def _chunked_attention(q, k, v):
++    """q [N, H, L, C], k/v [N, H, S, C] -> [N, H, L, C]; exact attention, scores built for a block of queries at a time."""
++    n, h, l, c = q.shape
++    s_len = k.shape[2]
++    step = max(64, CHUNK_BYTES // max(1, n * h * s_len * 4))
++    scale = c ** -0.5
++    kt = k.transpose(-1, -2)
++    out = torch.empty_like(q)
++    for i in range(0, l, step):
++        scores = torch.matmul(q[:, :, i:i + step] * scale, kt).float()
++        out[:, :, i:i + step] = torch.matmul(scores.softmax(-1).to(v.dtype), v)
++        del scores
++    return out
++
++
+ def scaled_dot_product_attention(*args) -> torch.Tensor:
+     """(qkv [N, L, 3, H, C]) or (q [N, L, H, C], k [N, S, H, C], v [N, S, H, C]) -> [N, L, H, C]."""
+     if ATTN_BACKEND == 'flash_attn':
+@@ -30,6 +48,8 @@ def scaled_dot_product_attention(*args) -> torch.Tensor:
+     if ATTN_BACKEND == 'sdpa_cudnn':
+         with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+             out = F.scaled_dot_product_attention(q, k, v)
++    elif torch.version.hip is not None and q.is_cuda and os.environ.get('IDOL_CHUNKED_ATTN', '1') == '1':
++        out = _chunked_attention(q, k, v)  # MI50 patch
+     else:
+         out = F.scaled_dot_product_attention(q, k, v)
+     return out.permute(0, 2, 1, 3)
+diff --git a/idol/pipeline.py b/idol/pipeline.py
+index 677789c..a535ea1 100644
+--- a/idol/pipeline.py
++++ b/idol/pipeline.py
+@@ -54,7 +54,9 @@ class IdolPipeline:
+         self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+         with open(os.path.join(weights_dir, 'config.json')) as f:
+             self.config = json.load(f)
+-        encoders = self.config['image_encoders']
++        encoders = dict(self.config['image_encoders'])
++        encoders['dinov3'] = os.environ.get('IDOL_DINOV3', encoders['dinov3'])  # MI50 patch
++        encoders['flux2_vae'] = os.environ.get('IDOL_FLUX2_VAE', encoders['flux2_vae'])  # MI50 patch
+         require_encoder_access([encoders['dinov3'], encoders['flux2_vae']])
+ 
+         def load(model, name):
+@@ -69,7 +71,8 @@ class IdolPipeline:
+             self.background_remover.half()
+         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
+                                           device=self.device)
+-        self.optimize = optimize and self.device.type == 'cuda'
++        # MI50 patch: no torch.compile / cuDNN-SDPA on ROCm (gfx906 Triton/inductor unsupported)
++        self.optimize = optimize and self.device.type == 'cuda' and torch.version.hip is None
+         if self.optimize:
+             compile_for_sampling(self.denoiser)
+ 
+@@ -80,7 +83,9 @@ class IdolPipeline:
+         from huggingface_hub import hf_hub_download, snapshot_download
+         # check the gated image encoders before downloading the ~3 GB of weights
+         with open(hf_hub_download(repo_or_dir, 'config.json')) as f:
+-            encoders = json.load(f)['image_encoders']
++            encoders = dict(json.load(f)['image_encoders'])
++        encoders['dinov3'] = os.environ.get('IDOL_DINOV3', encoders['dinov3'])  # MI50 patch
++        encoders['flux2_vae'] = os.environ.get('IDOL_FLUX2_VAE', encoders['flux2_vae'])
+         require_encoder_access([encoders['dinov3'], encoders['flux2_vae']])
+         return cls(snapshot_download(repo_or_dir, allow_patterns=WEIGHT_FILES), **kwargs)
+ 
+diff --git a/idol/sample.py b/idol/sample.py
+index 7ff6b47..e509585 100644
+--- a/idol/sample.py
++++ b/idol/sample.py
+@@ -24,7 +24,7 @@ def main():
+     parser.add_argument('--num_gaussians', type=int, default=262144,
+                         help='32,768 to 1,048,576, a multiple of 32')
+     parser.add_argument('--weights', default='speridlabs/idol', help='Hugging Face repo or local folder')
+-    parser.add_argument('--dinov3_dtype', choices=['bf16', 'fp32'], default='bf16')
++    parser.add_argument('--dinov3_dtype', choices=['bf16', 'fp16', 'fp32'], default='fp16')
+     parser.add_argument('--no_optimize', dest='optimize', action='store_false',
+                         help='turn off the faster sampling (torch.compile, batched guidance, cuDNN attention, TF32) '
+                              'that is on by default on GPU')

@@ -8,6 +8,12 @@ The user explicitly chose C++ and removed Docker and the old
 Python/ComfyUI/Open-WebUI/Ollama application stack. Do not reintroduce them.
 Python is used for tests, one-off scripts and the Idol worker (ROCm/PyTorch).
 
+A fresh server is installed with `sudo ./install.sh` (`ops/install/run.sh`,
+phases that go on where they stopped, docs/INSTALL.md): everything the host
+runs comes from this repository; secrets only from the documented templates
+(`ops/install/templates`). Whatever a host needs must be installed by it: a
+change made by hand on mag belongs in the installer or a deploy.
+
 Build with CMake/Ninja. Run `python3 mag-room/tests/test_native.py` after
 changes to HTTP, scheduling, persistence or room routing, and
 `python3 ops/models/tests/test_modeld.py` after changes to the model

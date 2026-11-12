@@ -73,7 +73,13 @@ Read next:
 
 ## Quick start
 
-A new host: follow [docs/INSTALL.md](docs/INSTALL.md).
+A new server, from nothing to a running MAG (secrets only where
+[docs/INSTALL.md](docs/INSTALL.md) says):
+
+```bash
+git clone https://github.com/ChristianHohlfeld/mag-portable-stack.git ~/mag-stack
+cd ~/mag-stack && sudo ./install.sh
+```
 
 Build and test on a development machine (CPUs 28-55 on the production host):
 

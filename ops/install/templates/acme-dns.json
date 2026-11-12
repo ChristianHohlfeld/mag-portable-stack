@@ -1,0 +1,16 @@
+{
+  "mag.stardenburg.de": {
+    "username": "<acme-dns username>",
+    "password": "<acme-dns password>",
+    "fulldomain": "<id>.auth.acme-dns.io",
+    "subdomain": "<id>",
+    "allowfrom": []
+  },
+  "bot.stardenburg.de": {
+    "username": "<acme-dns username>",
+    "password": "<acme-dns password>",
+    "fulldomain": "<id>.auth.acme-dns.io",
+    "subdomain": "<id>",
+    "allowfrom": []
+  }
+}

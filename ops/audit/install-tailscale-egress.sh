@@ -2,7 +2,7 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || exit 1
 here="$(cd "$(dirname "$0")" && pwd)"
-id -u magbot | grep -qx 993
+id -u magbot >/dev/null
 nft list chain inet mag_audit output >/dev/null
 install -D -o root -g root -m 0755 "$here/refresh-tailscale-egress.sh" /usr/local/lib/mag-audit/refresh-tailscale-egress.sh
 install -D -o root -g root -m 0644 "$here/mag-tailscale-egress.service" /etc/systemd/system/mag-tailscale-egress.service

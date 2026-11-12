@@ -465,7 +465,8 @@ below it (`POST /api/image/act`, `{"file", "do": "3d"|"video", "quality",
 can then be animated at its message. "Video" asks what should happen and
 orders a video: Wan 2.2 I2V-A14B (Wan-AI, Apache-2.0), its two experts
 (high noise, then low noise) as GGUF Q6_K (QuantStack) with the Lightning
-4-step LoRA (lightx2v), four steps without guidance, 81 frames at 16 fps,
+4-step LoRA (lightx2v), four Euler steps (shift 5, as the LoRA was
+distilled; two for each expert) without guidance, 81 frames at 16 fps,
 about 480p in the picture's shape, H.264 by ffmpeg. The card has no bf16
 and no fast attention: the experts compute in fp16, attention is exact but
 built a block of queries at a time, UMT5 reads the words in fp32 and leaves

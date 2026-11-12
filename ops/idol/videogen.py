@@ -11,7 +11,8 @@ one queue (the MI50 does one thing at a time), in its own environment
 changing them).
 
 The two experts of A14B (high noise, then low noise) are GGUF Q6_K
-(QuantStack), each with the Lightning 4-step LoRA (lightx2v): four steps,
+(QuantStack), each with the Lightning 4-step LoRA (lightx2v): four Euler steps
+(shift 5, as it was distilled; two per expert),
 no classifier-free guidance; every finished step is kept (state.pt), so an
 interrupted stage goes on after its last step. The card has no bf16 and no fast attention:
 the experts compute in fp16, attention is exact but built for a block of
@@ -30,6 +31,8 @@ import torch.nn.functional as F
 
 WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", "/home/chris/idol-mi50/weights/wan22-i2v"))
 STEPS = 4                                   # what the Lightning LoRA is made for
+SIGMAS = [1.0, 0.75, 0.5, 0.25]             # its steps (1000, 750, 500, 250), shifted by 5, Euler
+SHIFT = 5.0
 FRAMES, FPS = 81, 16
 AREA = 480 * 832                            # 480p, in the picture's own shape
 CHUNK = int(float(os.environ.get("MAG_VIDEO_ATTN_MB", "1024")) * 2**20)
@@ -87,7 +90,8 @@ def main():
     picture = picture.resize((width, height), Image.LANCZOS)
     torch.set_num_threads(16)
 
-    from diffusers import AutoencoderKLWan, GGUFQuantizationConfig, WanImageToVideoPipeline, WanTransformer3DModel
+    from diffusers import (AutoencoderKLWan, FlowMatchEulerDiscreteScheduler, GGUFQuantizationConfig,
+                           WanImageToVideoPipeline, WanTransformer3DModel)
     from transformers import UMT5EncoderModel
 
     # Every step leaves its result in the job folder (state.pt: the words as
@@ -128,7 +132,9 @@ def main():
         embeds = embeds.clamp(-limit, limit).half()
         # The picture as the experts see it, and the noise they start from.
         generator = torch.Generator(device="cuda").manual_seed(int(asked.get("seed", 0)) or 1)
-        pipe.scheduler.set_timesteps(STEPS, device="cuda")
+        # The Lightning LoRA was distilled on Euler steps, not on the base's UniPC.
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=SHIFT)
+        pipe.scheduler.set_timesteps(sigmas=SIGMAS, device="cuda")
         with torch.no_grad():
             image = pipe.video_processor.preprocess(picture, height=height, width=width).to("cuda", dtype=torch.float32)
             latents, condition = pipe.prepare_latents(image, 1, pipe.vae.config.z_dim, height, width, FRAMES,
@@ -185,7 +191,7 @@ def main():
             with expert.cache_context("cond"):
                 noise = expert(hidden_states=model_input, timestep=t.expand(latents.shape[0]), encoder_hidden_states=embeds,
                                encoder_hidden_states_image=None, return_dict=False)[0]
-            latents = scheduler.step(noise, t, latents, return_dict=False)[0]
+            latents = scheduler.step(noise.float(), t, latents, return_dict=False)[0]
             keep(width=width, height=height, embeds=embeds, condition=condition, latents=latents, scheduler=scheduler, done=i + 1)
     del experts
     torch.cuda.empty_cache()

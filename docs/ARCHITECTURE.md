@@ -267,7 +267,11 @@ room does not rely on that going well (`llm.hpp`):
   every other tag disappears (`Clean`; code blocks and inline code are left
   alone). No tag reaches the chat, a thought, or the bot's own log. The
   thoughts stay with the message (`reasoning`) but the page never shows
-  them: they are raw and often English.
+  them: they are raw and often English. What the page shows of a bot's text
+  (also of older messages, and what it reads aloud) is tidied (`MAG.tidy`):
+  an English line next to German ones, a tool call written out as JSON, a
+  request for approval in words and a bare `<br>` are left out, and an
+  answer of nothing else is not shown.
 - **Circles.** A text whose end is the same passage three times over (or the
   same long passage a fourth time) is a model that lost its way: the room
   closes the connection, which ends the generation, and keeps the text up to

@@ -132,6 +132,13 @@ public:
         v["plugins"] = plugins_.list();
         return http::send_json(fd, 200, v);
       }
+      if (p == "/api/vault/logins") {
+        // Chris's kept logins: site and account, never the password.
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        Val v = Val::object();
+        v["logins"] = vault_.logins();
+        return http::send_json(fd, 200, v);
+      }
       if (p == "/api/pay/cards") {
         // Chris's saved cards as the page shows them: brand, last four digits, expiry, name.
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
@@ -286,6 +293,28 @@ public:
         return http::send_json(fd, 200, v);
       }
     }
+    if (starts_with(p, "/api/vault/logins/")) {
+      // Chris's kept logins: changed, removed, or one password shown to him on his tap.
+      std::string rest = p.substr(18), what;
+      if (const size_t cut = rest.find('/'); cut != std::string::npos) { what = rest.substr(cut + 1); rest = rest.substr(0, cut); }
+      if (r.method == "DELETE") return vault_.remove_login(rest) ? http::send_ok(fd) : http::send_error(fd, 404, "Login nicht gefunden");
+      if (r.method == "PUT") {
+        Val in = jparse(r.body);
+        const bool ok = vault_.change_login(rest, jstr(in, "user"), jstr(in, "password"));
+        in = Val();
+        return ok ? http::send_ok(fd) : http::send_error(fd, 404, "Login nicht gefunden");
+      }
+      if (r.method == "POST" && what == "reveal") {
+        Val login = vault_.open_login(rest);
+        if (!login.isObj()) return http::send_error(fd, 404, "Login nicht gefunden");
+        Val v = Val::object();
+        v["password"] = jstr(login, "password");
+        http::Headers h;
+        h.push_back({"Cache-Control", "no-store"});
+        return http::send_json(fd, 200, v, h);
+      }
+      return http::send_error(fd, 405, "Ändern, löschen oder zeigen");
+    }
     if (r.method == "POST" && starts_with(p, "/api/pay/fill/")) {
       // At a checkout in a bot's browser: the chosen card, with the security
       // code Chris gives now, typed into the page by the room.
@@ -305,11 +334,22 @@ public:
     }
     if (r.method == "POST" && starts_with(p, "/api/login/")) {
       // Chris's login for a page that waits in a bot's browser: typed into the
-      // page by the room, never stored, never logged, never shown to a model.
+      // page by the room, never logged, never shown to a model. What he typed is
+      // kept sealed in the vault for that site at once (also when the page then
+      // refuses it); {"saved": id} uses a kept one.
       const Val card = assist_.waiting_card(p.substr(11));
       if (!card.isObj() || jstr(card, "action") != "login") return http::send_error(fd, 409, "Diese Anmeldung wartet nicht mehr");
       Val in = jparse(r.body);
       std::string user = jstr(in, "user"), pass = jstr(in, "password");
+      if (const std::string saved = jstr(in, "saved"); !saved.empty()) {
+        Val login = vault_.open_login(saved);
+        if (!login.isObj()) return http::send_error(fd, 404, "Dieser Login ist nicht mehr im Tresor");
+        user = jstr(login, "user");
+        pass = jstr(login, "password");
+        login = Val();
+      } else if (!user.empty() || !pass.empty()) {
+        if (vault_.keep_login(jstr(card, "site"), user, pass).empty()) logf("api: a login could not be kept in the vault");
+      }
       in = Val();
       const std::string vm = jstr(room_.bot(jstr(card, "bot")), "vm");
       std::string why = fill_login(vm, user, pass);

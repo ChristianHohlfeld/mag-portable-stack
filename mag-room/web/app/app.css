@@ -729,3 +729,6 @@ article.flash { animation: flash 1.6s ease-out; }
 .sheet img.big-thumb { display: block; width: 100%; max-height: 60vh; object-fit: contain; margin-top: 12px; border-radius: 12px; background: radial-gradient(120% 90% at 50% 35%, #3a3d46, #17181c); }
 .staged.failed { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); flex-wrap: wrap; }
 .staged.failed .nm { color: var(--bad); white-space: normal; }
+.step.card-step:not(:has(img.shot)) .chev { visibility: hidden; }
+.step .ask details.other summary { cursor: pointer; font-size: 14px; color: var(--muted); padding: 2px 0; }
+.step .ask details.other form { margin-top: 6px; }

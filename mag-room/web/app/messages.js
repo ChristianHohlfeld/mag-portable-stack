@@ -113,6 +113,12 @@
       shot && latestShot(m) === index ? el('span', { class: 'shot-row' }, el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' })) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
+    // A card's step (approval, login, payment) is the card and nothing more: no raw input, no output.
+    if (['consent', 'browser_login', 'browser_pay'].includes(step.tool)) {
+      node.classList.add('card-step');
+      if (shot) node.append(el('div', { class: 'body' }, el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' })));
+      return node;
+    }
     node.append(el('div', { class: 'body' },
       shot ? el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' }) : null,
       input ? el('div', { class: 'label', text: step.tool === 'shell' ? 'Befehl' : 'Eingabe' }) : null,
@@ -122,32 +128,42 @@
     node.addEventListener('toggle', () => { if (node.open) out.scrollTop = out.scrollHeight; });
     return node;
   }
-  // A page in a bot's browser wants a login. Chris types it here (the room
-  // fills it into the page; the bot never sees it, nothing is stored; the
-  // phone's password manager can fill the form) or takes the browser over.
+  // A page in a bot's browser wants a login. The room has already gone to
+  // the login form; the card asks for what the form asks for now (Amazon: the
+  // e-mail first, then the password; the room types both). A login kept for
+  // the site is offered first. What Chris types is kept sealed for next time;
+  // the bot never sees it. Or he takes the browser over (passkey, code).
+  // A field or a menu of a card lives in the step's summary line: typing or choosing there does not fold the step.
+  const keepOpen = (e) => { if (e.target.closest('input, select, textarea')) e.preventDefault(); };
   function loginCard(m, ask) {
     const name = MAG.name(m.from), owner = S.you.role === 'owner';
     const note = el('small', { class: 'note' });
     const decide = (decision) => MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
-    const user = el('input', { type: 'text', name: 'username', autocomplete: 'username', placeholder: 'E-Mail oder Benutzer', autocapitalize: 'off', spellcheck: false });
-    const pass = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', placeholder: 'Passwort' });
-    const go = el('button', { class: 'yes', type: 'submit', text: 'Anmelden' });
-    const form = el('form', { class: 'login', onsubmit: (e) => {
-      e.preventDefault();
-      go.disabled = true;
+    const send = (body, button) => {
+      button.disabled = true;
       note.textContent = 'Wird in den Browser von ' + name + ' eingetragen …';
-      MAG.api('POST', '/api/login/' + ask.id, { user: user.value, password: pass.value })
-        .then(() => { pass.value = ''; note.textContent = 'Angemeldet; ' + name + ' macht weiter.'; },
-          (x) => { go.disabled = false; note.textContent = x.message; });
-    } }, user, pass, go);
-    // The bot's browser in a sheet: Chris logs in himself (passkey, code), then lets the bot go on.
-    const takeOver = () => browserSheet(m.from, 'Melde dich hier selbst an (Passkey, Code per SMS, Captcha). Danach macht ' + name + ' weiter.', () => decide('done'));
-    return el('span', { class: 'ask' },
+      return MAG.api('POST', '/api/login/' + ask.id, body)
+        .then(() => { note.textContent = 'Angemeldet; ' + name + ' macht weiter.'; },
+          (x) => { button.disabled = false; note.textContent = x.message; });
+    };
+    const fields = ask.fields || [], wantsUser = !fields.length || fields.includes('user'), wantsPass = !fields.length || fields.includes('password') || fields.includes('user');
+    const user = el('input', { type: 'text', name: 'username', autocomplete: 'username', placeholder: 'E-Mail oder Benutzer', autocapitalize: 'off', spellcheck: false, hidden: !wantsUser });
+    const pass = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', placeholder: 'Passwort', hidden: !wantsPass });
+    const go = el('button', { class: 'yes', type: 'submit', text: 'Anmelden' });
+    const form = el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ user: user.value, password: pass.value }, go).then(() => { pass.value = ''; }); } }, user, pass, go);
+    const saved = (ask.saved || []).map((l) => el('button', { class: 'yes', text: 'Gespeicherten Login verwenden: ' + (l.user || ask.site),
+      onclick: (e) => { e.preventDefault(); send({ saved: l.id }, e.currentTarget); } }));
+    const other = saved.length ? el('details', { class: 'other' }, el('summary', { text: 'Anderen Login eingeben' }), form) : form;
+    const stage = !fields.length ? 'Kein Anmeldefeld gefunden; trag es ein oder übernimm den Browser.' : fields.includes('user') ? '' : 'Die Seite fragt jetzt nach dem Passwort.';
+    return el('span', { class: 'ask', onclick: keepOpen },
       el('b', { text: name + ' braucht eine Anmeldung bei ' + (ask.site || 'einer Seite') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,
-      owner ? form : null,
+      stage ? el('small', { class: 'note', text: stage }) : null,
+      owner && saved.length ? el('span', { class: 'btns' }, ...saved) : null,
+      owner ? other : null,
+      owner ? el('small', { class: 'fine', text: 'Wird verschlüsselt im Tresor gespeichert (Einstellungen › Logins); der Bot sieht es nie.' }) : null,
       owner ? el('span', { class: 'btns' },
-        el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); takeOver(); } }),
+        el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Melde dich hier selbst an (Passkey, Code per SMS oder WhatsApp, Captcha). Danach macht ' + name + ' weiter.', () => decide('done')); } }),
         el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
       note);
   }
@@ -175,7 +191,7 @@
           (x) => { go.disabled = false; note.textContent = x.message; });
     } }, choice, cvc, go);
     const euro = ask.amount_eur ? ask.amount_eur.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) : '';
-    return el('span', { class: 'ask' },
+    return el('span', { class: 'ask', onclick: keepOpen },
       el('b', { text: name + ' ist an der Kasse: ' + (ask.site || '') + (euro ? ' · ' + euro : '') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,
       owner ? form : null,
@@ -914,7 +930,7 @@
   }
 
   // ---- activity row: who is doing what right now --------------------------
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf dich (Karte oben)', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
+  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf deine Freigabe (Karte oben)', login: 'wartet auf deine Anmeldung (Karte oben)', paying: 'wartet an der Kasse auf dich (Karte oben)', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
   function paintActivity() {
     const rows = [];
     for (const b of S.bots) {

@@ -8,6 +8,7 @@
 #include "site.hpp"
 #include "vm.hpp"
 
+#include <regex>
 #include <set>
 
 namespace mag::tools {
@@ -330,6 +331,47 @@ inline Result look(Ctx &ctx, const std::string &vm) {
     }
   out += "Text (Anfang):\n" + jstr(v, "text");
   return {clip(out, 9000, "\n…[gekürzt]"), true};
+}
+
+// Before a login card: the room itself goes to the login form, as a person
+// would (a page with no field yet gets its sign-in link or button clicked, at
+// most three times), and says which fields the form asks for now: "user",
+// "password" (Amazon asks for the e-mail first, then the password), or none.
+inline Val login_form(Ctx &ctx, const std::string &vm) {
+  static const std::regex user_field("mail|user|benutzer|login|konto|account|telefon|phone|handy|kunden|ap_email", std::regex::icase),
+      sign_in("^(hallo, anmelden|anmelden|einloggen|login|log in|sign in|sign-in|konto und listen|mein konto|zur anmeldung)\\b", std::regex::icase);
+  Val out = Val::object();
+  for (int hop = 0; hop < 4; ++hop) {
+    const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
+    if (r.status != 200) break;
+    const Val v = jparse(r.body);
+    out["url"] = jstr(v, "url");
+    bool user = false, pass = false;
+    int link = 0;
+    if (const Val *els = v.find("elements"); els && els->isArr())
+      for (auto &e : els->asArr()) {
+        const std::string kind = jstr(e, "kind"), label = trim(jstr(e, "label"));
+        if (jbool(e, "password")) pass = true;
+        else if (kind == "email" || ((kind == "text" || kind == "tel") && std::regex_search(label, user_field))) user = true;
+        else if (!link && (kind == "link" || kind == "button" || kind == "a") && std::regex_search(label, sign_in)) link = (int)jnum(e, "n");
+      }
+    Val fields = Val::array();
+    if (user) fields.push("user");
+    if (pass) fields.push("password");
+    out["fields"] = fields;
+    if (user || pass || !link || hop == 3) break;
+    Val click = Val::object();
+    click["n"] = (double)link;
+    if (ctx.guests.browser(vm, "POST", "/click", mj::dump(click), 45, ctx.cancel).status != 200) break;
+    Val wait = Val::object();
+    wait["ms"] = 4000.0;
+    ctx.guests.browser(vm, "POST", "/wait", mj::dump(wait), 30, ctx.cancel);
+  }
+  if (ctx.shot) {
+    const auto pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
+    if (pic.status == 200 && pic.body.size() > 100) ctx.shot(pic.body);
+  }
+  return out;
 }
 
 inline Result browser_result(const http::ClientResult &r, size_t budget) {

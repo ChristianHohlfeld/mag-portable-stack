@@ -583,12 +583,23 @@ as `browser_look` sees it, and a half-size JPEG of the window goes to
 `STATE/shots/<message>-<step>.jpg` (`GET /api/shot/…`; the step has
 `shot`), deleted with its message. A password field's value is never read.
 
-`browser_login` waits like a consent card (`action: login`, site, reason).
+`browser_login` first goes to the login form itself (`tools::login_form`:
+a page without a user or password field gets its sign-in link or button
+clicked, at most three times) and then waits like a consent card
+(`action: login`, the site from the page's address, reason, `fields` the
+form asks for now, `saved` logins of the site). Every login typed into the
+card is kept at once (whether the page then takes it or not) in
+`STATE/pay/logins.enc`, sealed like the cards, per site and account; the
+next card of that site offers it ("Gespeicherten Login verwenden",
+`{"saved": id}`), and the settings ("Logins", `/api/vault/logins`) list,
+change, remove and, on a tap, show one. The card's step has no input or
+output in the chat, only the card; the activity row says what it waits
+for (login, payment, approval).
 Chris either posts his login to `POST /api/login/<card>` (owner only): the
 room finds the user and password fields by `/elements`, types them with
 `/type` (a site that asks for the user on a page of its own gets Enter and
 is looked at again), presses Enter and checks that no password field is
-left; nothing of it is stored or logged, and the strings are wiped after.
+left; nothing of it is logged, and the strings are wiped after.
 Or he opens the bot's live browser from the card, logs in himself (passkey,
 SMS code, captcha) and taps "Fertig, weiter" (`decision: done`). Then the
 tool returns the page to the bot. Cookies stay in the VM's Chrome profile.

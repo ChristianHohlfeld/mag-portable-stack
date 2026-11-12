@@ -677,7 +677,9 @@ thing (a lid, a door, a turret) are cut at their seam and turn about a
 hinge. A figure that speaks or shows a feeling gets a face (`face.py`:
 MediaPipe's face landmarker, pinned in `ops/scene/face`, else the head's
 proportions); the film's voices are made on the device and sent with the
-film request. The film is lit with key, fill and rim light like the scene in
+film request. Each voice's tempo is fitted to how long its mouth moves
+(0.8x-1.3x), so lips and voice start and end together; the scene's speaker
+button plays the same voices in the chat, following the viewer's clock. The film is lit with key, fill and rim light like the scene in
 the chat.
 
 ## Dictation (`ops/stt`)

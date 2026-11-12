@@ -606,7 +606,11 @@ diese Aufgabe schon" and nothing runs. A turn of Chris's (or a routine's)
 that used tools and ends after a failed step, without text or with an
 announcement of what the bot will do next (`announces`) gets a room note
 with the goal (Chris's last request) and is continued, three times a turn
-at most. A consent, login or pay card that ended without a yes, and a
+at most. A turn that ends while its browser shows a login, password or
+code page (the last browser result has a password field or such a title)
+is told to call `browser_login` instead of asking in words. A bot whose
+running turn for Chris already acted stays the lead when Chris writes
+again. A consent, login or pay card that ended without a yes, and a
 refused acting tool, are blockers and end the turn as it is. After a
 failed browser action the tool result already holds the page as it is now.
 

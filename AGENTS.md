@@ -260,9 +260,13 @@ phone's control daemon (`devices/s23`, `mag-s23ctl`); nothing here installs or
 starts it, and his other S23 services are never spoken to.
 Every file of the chat (uploads, pictures, models, scenes, films, videos,
 documents) is also in one folder, the folder button in the header
-(`files.js`, `/api/files`): by kind, searchable, each with a preview (picture,
-video, sound, a model that turns, text), a download, and the way back to its
-message; what is shown comes as one ZIP (`/api/files.zip`, streamed, nothing
+(`files.js`, `/api/files`): by kind, searchable, each tile showing what the
+file really holds (`/api/file/<f>/thumb`, made once in STATE/thumbs: a 3D
+file rendered by Blender in the scene worker, never the photo it came from;
+a picture scaled, a video's frame, a sound's waveform, a PDF's first page by
+ffmpeg/pdftoppm; a text or document its first lines, `/excerpt`), a larger
+preview (picture, video, sound, a model that turns, text), a download, and
+the way back to its message; what is shown comes as one ZIP (`/api/files.zip`, streamed, nothing
 packed on disk). The files stay where they are.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the

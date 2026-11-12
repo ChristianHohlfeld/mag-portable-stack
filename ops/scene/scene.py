@@ -2249,8 +2249,110 @@ def render(out):
     print("MAG-RENDERED %d" % total, flush=True)
 
 
+def thumb(path, out, size=320):
+    """A picture of what a 3D file really holds, for the chat's folder: the
+    file as it is (its own materials; a moving one in the middle of its
+    motion), from the front at three quarters, lit like the scenes, on a
+    transparent background."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".blend":
+        bpy.ops.wm.open_mainfile(filepath=path, load_ui=False)
+    else:
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        try:
+            if ext in (".glb", ".gltf"):
+                bpy.ops.import_scene.gltf(filepath=path)
+            elif ext == ".stl":
+                bpy.ops.wm.stl_import(filepath=path)
+            elif ext == ".ply":
+                bpy.ops.wm.ply_import(filepath=path)
+            elif ext == ".obj":
+                bpy.ops.wm.obj_import(filepath=path)
+            elif ext == ".fbx":
+                bpy.ops.import_scene.fbx(filepath=path)
+            else:
+                fail("Keine 3D-Datei.")
+        except Exception as exc:
+            fail("Die Datei lässt sich nicht lesen: " + str(exc)[:200])
+    scene = bpy.context.scene
+    # A moving file is shown in the middle of what it does.
+    ends = [a.frame_range for a in bpy.data.actions]
+    if ends:
+        first, last = min(e[0] for e in ends), max(e[1] for e in ends)
+        scene.frame_set(int(first + 0.45 * (last - first)))
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    points = []
+    for o in scene.objects:
+        if o.type != "MESH" or o.hide_render:
+            continue
+        if o.name == "Boden":
+            o.hide_render = True                    # the scene's ground: the figures fill the picture
+            continue
+        mesh = o.evaluated_get(depsgraph).to_mesh()
+        points += [o.matrix_world @ v.co for v in mesh.vertices[:: max(1, len(mesh.vertices) // 4000)]]
+        o.evaluated_get(depsgraph).to_mesh_clear()
+        if not o.data.materials and ext in (".stl", ".ply", ".obj"):
+            mat = bpy.data.materials.new("Grau")
+            mat.diffuse_color = (0.72, 0.72, 0.75, 1.0)
+            mat.use_nodes = True
+            bsdf = mat.node_tree.nodes.get("Principled BSDF")
+            if bsdf:
+                bsdf.inputs["Base Color"].default_value = (0.72, 0.72, 0.75, 1.0)
+                if len(o.data.color_attributes):         # a scan's colours on its points
+                    attr = mat.node_tree.nodes.new("ShaderNodeVertexColor")
+                    attr.layer_name = o.data.color_attributes[0].name
+                    mat.node_tree.links.new(attr.outputs["Color"], bsdf.inputs["Base Color"])
+            o.data.materials.append(mat)
+    if not points:
+        fail("Die Datei enthält keine Geometrie.")
+    lo = Vector((min(p.x for p in points), min(p.y for p in points), min(p.z for p in points)))
+    hi = Vector((max(p.x for p in points), max(p.y for p in points), max(p.z for p in points)))
+    center, radius = (lo + hi) / 2, max(0.5 * (hi - lo).length, 1e-3)
+    for o in [o for o in scene.objects if o.type in ("CAMERA", "LIGHT")]:
+        bpy.data.objects.remove(o)
+    camera = bpy.data.objects.new("Vorschau", bpy.data.cameras.new("Vorschau"))
+    scene.collection.objects.link(camera)
+    camera.data.lens = 50
+    view = Vector((0.55, -1.0, 0.42)).normalized()     # glTF's front looks along -Y
+    camera.location = center + view * radius / math.sin(math.radians(17)) * 1.05
+    camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
+    camera.data.clip_start, camera.data.clip_end = radius * 0.01, radius * 100
+    scene.camera = camera
+    for name, energy, direction in (("Key", 3.2, (0.6, -0.8, 1.0)), ("Fill", 1.1, (-0.9, -0.4, 0.5)), ("Rim", 1.8, (-0.2, 1.0, 0.8))):
+        light = bpy.data.objects.new(name, bpy.data.lights.new(name, "SUN"))
+        light.data.energy = energy
+        light.rotation_euler = Vector(direction).to_track_quat("Z", "Y").to_euler()
+        scene.collection.objects.link(light)
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new("Welt")
+    scene.world.use_nodes = True
+    background = scene.world.node_tree.nodes.get("Background")
+    if background:
+        background.inputs["Color"].default_value = (0.45, 0.46, 0.5, 1.0)
+        background.inputs["Strength"].default_value = 0.6
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "CPU"                     # never the MI50
+    threads = int(os.environ.get("MAG_SCENE_THREADS", "0") or 0)
+    if threads > 0:
+        scene.render.threads_mode, scene.render.threads = "FIXED", threads
+    scene.cycles.samples = 16
+    scene.cycles.use_denoising = True
+    scene.cycles.max_bounces = 3
+    scene.render.film_transparent = True
+    scene.render.resolution_x = scene.render.resolution_y = size
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+    scene.render.filepath = out
+    bpy.ops.render.render(write_still=True)
+    print("MAG-THUMB ok", flush=True)
+
+
 def main():
     args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    if len(args) == 3 and args[0] == "thumb":
+        thumb(args[1], args[2])
+        return
     if len(args) == 3 and args[0] == "parts":
         bpy.ops.wm.read_factory_settings(use_empty=True)
         json.dump(describe(load_model(args[1])), open(args[2], "w"), ensure_ascii=False)

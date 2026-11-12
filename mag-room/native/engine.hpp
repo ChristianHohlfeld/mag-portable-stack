@@ -528,6 +528,10 @@ public:
     return false;
   }
 
+  // What a document of the chat says (PDF, Word, OpenDocument, PowerPoint), for
+  // the preview in the chat's folder; "" for any other file.
+  std::string text_of(const Val &a) { return document(a) ? document_text(a) : ""; }
+
 private:
   // A thing in a picture that is asked for by its name (locate()).
   struct Look {

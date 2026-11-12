@@ -10,13 +10,32 @@
   const when = (ts) => new Date(ts).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
   const ext = (f) => (f.name.split('.').pop() || '').toUpperCase();
 
+  // What can be shown as a picture of itself (rendered once on the server:
+  // a 3D file by Blender, a video's frame, a sound's waveform, a PDF's page).
+  const MODEL = /\.(glb|gltf|stl|ply|obj|fbx|blend)$/i;
+  const pictured = (f) => ['image', 'video', 'audio'].includes(f.kind) || MODEL.test(f.name) || /\.pdf$/i.test(f.name);
+  const fallback = (f) => el('span', { class: 'ico-big' }, MAG.icon(f.group === 'Szenen' ? 'film' : MODEL.test(f.name) ? 'cube' : 'file'), el('b', { text: ext(f) }));
+  const badge = (f) => f.kind === 'video' ? 'play' : f.kind === 'audio' ? 'speak' : MODEL.test(f.name) ? (f.group === 'Szenen' ? 'film' : 'cube') : null;
+  // The first lines of a file whose content is text (a text file, a document), loaded when the tile comes into view.
+  const reader = 'IntersectionObserver' in window ? new IntersectionObserver((seen) => {
+    for (const e of seen) if (e.isIntersecting) { reader.unobserve(e.target); e.target._load?.(); }
+  }, { rootMargin: '200px' }) : null;
+  function excerpt(f) {
+    const box = el('span', { class: 'excerpt' }, el('b', { text: ext(f) }));
+    box._load = () => MAG.api('GET', '/api/file/' + encodeURIComponent(f.file) + '/excerpt').then((out) => {
+      const text = (out.text || '').trim();
+      box.replaceWith(text ? el('span', { class: 'excerpt' }, el('b', { text: ext(f) }), el('span', { class: 'lines', text: text.slice(0, 600) })) : fallback(f));
+    }, () => box.replaceWith(fallback(f)));
+    if (reader) reader.observe(box); else box._load();
+    return box;
+  }
   function thumb(f) {
-    if (f.kind === 'image') return el('img', { src: fileUrl(f), alt: f.description || f.name, loading: 'lazy' });
-    // The first frame, without loading the whole video.
-    if (f.kind === 'video') return el('video', { src: fileUrl(f) + '#t=0.1', preload: 'metadata', muted: true, playsInline: true });
-    // A model shows the photo it was made from, where there is one.
-    if (f.image) return el('span', { class: 'pic' }, el('img', { src: '/api/file/' + encodeURIComponent(f.image), alt: '', loading: 'lazy' }), el('span', { class: 'badge' }, MAG.icon(f.group === 'Szenen' ? 'film' : 'cube')));
-    return el('span', { class: 'ico-big' }, MAG.icon(f.group === 'Szenen' ? 'film' : f.kind === 'model' ? 'cube' : 'file'), el('b', { text: ext(f) }));
+    if (!pictured(f)) return excerpt(f);
+    const mark = badge(f);
+    return el('span', { class: 'pic' + (f.kind === 'audio' ? ' wave' : '') },
+      el('img', { src: fileUrl(f, '/thumb'), alt: f.description || f.name, loading: 'lazy', decoding: 'async',
+        onerror: (e) => e.target.closest('.pic')?.replaceWith(/\.pdf$/i.test(f.name) ? excerpt(f) : fallback(f)) }),
+      mark ? el('span', { class: 'badge' }, MAG.icon(mark)) : null);
   }
 
   // One file large: the picture over the chat, a video or sound that plays,
@@ -36,6 +55,15 @@
       } else if (/^text\/|json|xml|csv/.test(f.mime || '') && f.size < 512 * 1024) {
         body = el('pre', { class: 'text', text: 'Lädt …' });
         fetch(fileUrl(f)).then((r) => r.text()).then((t) => { body.textContent = t; }, () => { body.textContent = 'Nicht lesbar.'; });
+      } else if (pictured(f)) {
+        // A 3D file the viewer cannot turn (STL, PLY, BLEND …), a PDF's first page: its picture, large.
+        body = el('img', { class: 'big-thumb', src: fileUrl(f, '/thumb'), alt: f.name, onerror: (e) => e.target.remove() });
+      }
+      if (!body || /\.pdf$/i.test(f.name) || /officedocument|opendocument/.test(f.mime || '')) {
+        // What a document says, below its picture or on its own.
+        const text = el('pre', { class: 'text', text: 'Lädt …' });
+        MAG.api('GET', '/api/file/' + encodeURIComponent(f.file) + '/excerpt').then((out) => { if (out.text) text.textContent = out.text; else text.remove(); }, () => text.remove());
+        body = body ? el('div', {}, body, text) : text;
       }
       const show = el('button', { class: 'pill', onclick: () => { close(); done?.(); if (!MAG.showMessage?.(f.message)) MAG.toast('Die Nachricht ist älter als der geladene Verlauf: oben „Ältere Nachrichten laden“.'); } }, MAG.icon('chev'), 'Im Chat zeigen');
       content.append(body || el('p', { class: 'fine', text: 'Für diese Datei gibt es hier keine Vorschau.' }),

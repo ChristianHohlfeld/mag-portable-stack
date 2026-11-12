@@ -40,9 +40,11 @@ CHUNK = int(float(os.environ.get("MAG_VIDEO_ATTN_MB", "1024")) * 2**20)
 _sdpa = F.scaled_dot_product_attention
 
 
-def attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, enable_gqa=False):
+def attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, enable_gqa=False):
     """Exact attention without the full score matrix: gfx906 has no flash or
-    memory-efficient kernel, and 33 000 tokens would need 80 GB of scores."""
+    memory-efficient kernel, and 33 000 tokens would need 80 GB of scores.
+    Takes torch's own argument names: diffusers calls it with query=, key=, value=."""
+    q, k, v = query, key, value
     if attn_mask is not None or dropout_p or is_causal or enable_gqa or not q.is_cuda or q.dim() != 4:
         return _sdpa(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
     n, h, l, c = q.shape
@@ -118,6 +120,7 @@ def main():
     pipe = WanImageToVideoPipeline.from_pretrained(str(WEIGHTS), transformer=None, transformer_2=None, text_encoder=None,
                                                    vae=None, torch_dtype=torch.float16)
     pipe.vae = AutoencoderKLWan.from_pretrained(str(WEIGHTS), subfolder="vae", torch_dtype=torch.float32).to("cuda")
+    pipe.vae.enable_tiling()                                    # the picture's latent as well as the frames
 
     if state is None:
         # 1. The words, read by UMT5 in fp32 (its states outgrow fp16), then it leaves the card.
@@ -206,7 +209,6 @@ def main():
     # 4. The frames, decoded in tiles.
     say("Bilder entpacken")
     vae = pipe.vae
-    vae.enable_tiling()
     with torch.no_grad():
         latents = latents.to("cuda", torch.float32)
         mean = torch.tensor(vae.config.latents_mean).view(1, vae.config.z_dim, 1, 1, 1).to(latents)

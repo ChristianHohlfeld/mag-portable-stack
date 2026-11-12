@@ -296,7 +296,7 @@ p_check() {
   if (( PROBE )); then
     # What a trial install must show: every service of the release up and answering.
     local bad=0 u
-    for u in mag-120 mag-audit-gateway mag-audit-webproxy mag-modeld mag-scene mag-stt mag-browser-webrtc gitea nginx; do
+    for u in mag-120 mag-audit-gateway mag-audit-webproxy mag-modeld mag-scene mag-stt mag-browser-webrtc gitea mag-gitea-runner nginx; do
       if systemctl is-active --quiet "$u"; then note "ok      $u"; else note "FAILED  $u"; bad=1; fi
     done
     for url in http://127.0.0.1:8766/readyz http://127.0.0.1:8080/audit/v1/health http://127.0.0.1:8795/api/scene/health http://127.0.0.1:3000/api/healthz; do

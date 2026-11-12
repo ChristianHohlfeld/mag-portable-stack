@@ -37,7 +37,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/mag-runner /var/lib/mag-deploy
+ReadWritePaths=/var/lib/mag-runner
 InaccessiblePaths=-/etc/credstore -/var/backups -/var/lib/magbot -/etc/mag-backup -/var/lib/gitea -/etc/gitea
 
 [Install]

@@ -267,10 +267,13 @@ passwords never reach a model, a tool, a log or the chat; a card is typed
 into a page by the room from the sealed vault (`browser_pay`), or Chris pays
 himself in the bot's live browser. Routines (`routine`; `STATE/routines.json`) are
 instructions for a bot at a time or on an event (a picture Chris posts, a
-job he ordered being done); one that is due is a chat message to its bot
-(`from: routine`) answered in a normal turn. A run missed while the room was
-down runs once when it is late by 12 hours at most; an event routine runs at
-most every 15 minutes. Chris pauses, runs and removes them in the settings.
+job he ordered being done, a new file in the bot's VM, optionally in one
+folder or by a name pattern); one that is due is a chat message to its bot
+(`from: routine`, naming the new files) answered in a normal turn. A run
+missed while the room was down runs once when it is late by 12 hours at
+most; an event routine runs at most every 15 minutes, and the files a file
+routine's own run writes never set it off again. A VM is only read for
+this, never started. Chris pauses, runs and removes them in the settings.
 Plugins are remote MCP servers Chris connects in the settings and gives to a
 bot in its sheet (`plugins` of the bot; `STATE/mcp/servers.json`, a token in
 `STATE/mcp/<id>.secret`, never in a prompt, a log or the page). The room

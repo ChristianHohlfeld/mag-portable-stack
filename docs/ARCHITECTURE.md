@@ -431,12 +431,27 @@ stored, the page and the bots see brand and last four digits only.
 `routine` (add, list, remove, pause, resume, run) keeps routines in
 `STATE/routines.json`: a name, a bot, an instruction and when (`time` with
 `days` 1-7, `every_minutes` at least 15, `once` as a time, or `event`
-picture or job_done), with `next` and `last`. Setting one up goes through
+picture, job_done or file), with `next` and `last`. Setting one up goes through
 `consent` (kind routine). A tick every 30 s fires what is due as a chat
 message from `routine` (role user, mentions its bot, `routine` id) and
 `Engine::on_human` for that bot only. A run missed while the room was down
 runs once if it is at most 12 hours late; an event routine runs at most
 every 15 minutes, so one that makes pictures cannot set itself off.
+`event: file` (optional `path`, a folder below `/home/bot`, and `pattern`, a
+name glob such as `*.pdf`) fires on a new file in the bot's VM: once a
+minute, only for a bot with such a routine not paused and only while its VM
+answers (`Guests::state` ready; the guest helper never starts a VM), a
+read-only Python walk lists the regular files below `/home/bot` (no dot files
+or folders, no `node_modules`, no unfinished downloads, at most 15000; it
+removes its own previous output log in `~/.mag-shell`). A file is new when it
+was not in the last listing, kept in `STATE/assist/vm-files.json` with the
+files that wait, so a restart neither fires for old files nor misses new
+ones; the first listing of a bot only notes what is there, and a file changed
+in the last 20 s waits for the next look. The message names the files
+(`/home/bot/…`, ten at most). What appears while the routine's own run goes
+on (from its firing until the bot is idle again) is its own and is dropped;
+what appears in the 15 minutes after a run waits and fires when they are
+over.
 `GET /api/routines` lists them with the rules; the owner pauses, resumes,
 runs (`POST /api/routines/<id>/<what>`) and removes (`DELETE`) them.
 

@@ -261,6 +261,16 @@ public:
     return true;
   }
 
+  // Somebody needs to know what the new pictures show (the room of a photo
+  // names its figures by it): every bot that sees reads what is new and
+  // describes what nobody has described yet, when it has no turn of its own.
+  void look_at_new_pictures() {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto &b : bots_)
+      if (sees(b->id)) b->see_pending = true;
+    cv_.notify_all();
+  }
+
   void settings_changed() { publish_bots(true); }
 
   // Called when a bot's answer is complete: (bot name, text, seconds, failed).

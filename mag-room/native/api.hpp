@@ -561,6 +561,7 @@ private:
     if (group.empty()) return;
     std::lock_guard<std::mutex> lk(assemble_mu_);
     Val actors = Val::array(), walls;
+    int unnamed = 0;
     for (auto &m : room_.all()) {
       const Val *m3 = m.find("model3d");
       if (!m3) continue;
@@ -577,6 +578,7 @@ private:
       if (glb.empty()) continue;
       Val actor = Val::object(), at = Val::array();
       std::string name = thing_named(jstr(*m3, "image"));
+      if (name.empty()) unnamed++;
       if (name.empty()) name = "Objekt " + std::to_string((int)jnum(*part, "index") + 1);
       for (int n = 2; std::any_of(actors.asArr().begin(), actors.asArr().end(), [&](const Val &a) { return jstr(a, "name") == name; }); n++)
         name = (n == 2 ? name : name.substr(0, name.rfind(' '))) + " " + std::to_string(n);
@@ -592,6 +594,26 @@ private:
       if (const Val *r = part->find("room")) walls = *r;
     }
     if (actors.asArr().empty()) return;
+    // Its figures are called what they are: a cut-out nobody has described
+    // yet is looked at first (a bot that sees, when it is free); after eight
+    // minutes the room stands anyway, with "Objekt N" for what is unnamed.
+    if (unnamed > 0) {
+      auto [at, fresh] = naming_.try_emplace(group, now_s() + 480);
+      if (now_s() < at->second) {
+        engine_.look_at_new_pictures(); // four pictures a pass; asked again on each call
+        if (fresh) {
+          std::thread([this, group] {
+            for (int i = 0; i < 25; i++) {
+              std::this_thread::sleep_for(std::chrono::seconds(20));
+              { std::lock_guard<std::mutex> again(assemble_mu_); if (!naming_.count(group)) return; }
+              assemble(group);
+            }
+          }).detach();
+        }
+        return;
+      }
+    }
+    naming_.erase(group);
     Val spec = Val::object();
     spec["title"] = "Raum aus dem Foto";
     spec["actors"] = actors;
@@ -618,6 +640,7 @@ private:
     room_.add(note);
   }
   std::mutex assemble_mu_;
+  std::map<std::string, int64_t> naming_; // group -> until when its figures' names are waited for
 
   // What a cut-out object is, as the bot that saw it began its description
   // ("Roter Stuhl: …"); "" while nobody has looked at it yet.

@@ -6,7 +6,6 @@ Wants=network-online.target
 [Service]
 User=mag-runner
 Group=mag-runner
-SupplementaryGroups=mag-deploy
 WorkingDirectory=/var/lib/mag-runner
 Environment=HOME=/var/lib/mag-runner
 Environment=NO_PROXY=127.0.0.1,localhost,::1

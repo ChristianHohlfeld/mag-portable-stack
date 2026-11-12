@@ -24,7 +24,20 @@ if [[ -z "${VM_IFACES:-}" ]] && command -v virsh >/dev/null; then
     # Agent-Domains automatisch: magbot-agent1, magbot-agent2, … (auch ausgeschaltete)
     mapfile -t names < <($V list --all --name 2>/dev/null | grep -E '(^|-)agent[0-9]*$' || true)
   fi
-  [[ ${#names[@]} -gt 0 ]] || { echo "Keine Agent-Domains gefunden ($V list --all):"; $V list --all; exit 2; }
+  if [[ ${#names[@]} -eq 0 ]]; then
+    # A fresh host has no bot VM yet: the libvirt network they will get
+    # (/etc/magbot/config.json "network", default "default") is the VM network.
+    net=$(jq -r '.network // "default"' /etc/magbot/config.json 2>/dev/null || echo default)
+    xml=$($V net-dumpxml "$net" 2>/dev/null || true)
+    [[ -n $xml ]] || { echo "Keine Agent-Domains und kein libvirt-Netz '$net' ($V net-list --all):"; $V net-list --all; exit 2; }
+    br=$(grep -oP "<bridge name='\K[^']+" <<<"$xml" | head -1 || true)
+    net_host=$(grep -oP "<ip address='\K[0-9.]+" <<<"$xml" | head -1 || true)
+    pfx=$(grep -oP "<ip address='[0-9.]+' (prefix='\K[0-9]+|netmask='\K[0-9.]+)" <<<"$xml" | head -1 || true)
+    [[ -n $br ]] && ifaces+=("$br")
+    [[ -n $net_host ]] && hostips+=("$net_host")
+    [[ -n $net_host && -n $pfx ]] && subnets+=("$(python3 -c "import ipaddress,sys;print(ipaddress.ip_interface(sys.argv[1]+'/'+sys.argv[2]).network)" "$net_host" "$pfx")")
+    echo "Noch keine Agent-VM: VM-Netz aus libvirt-Netz $net ($br)"
+  fi
   for vm in "${names[@]}"; do
     $V dominfo "$vm" >/dev/null 2>&1 || { echo "libvirt: Domain $vm nicht gefunden"; continue; }
     domains+=("$vm")

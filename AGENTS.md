@@ -236,7 +236,12 @@ routine) a bot calls `consent`; Chris's rules decide (settings "Freigaben":
 per kind ask, without asking or never; the auto mode turns every "ask" into
 "without asking"; money only within a limit per purchase and per day, above
 it always a card). A card at the bot's step waits for his yes (15 minutes);
-every decision is a line of `STATE/assist/ledger.jsonl`. Card numbers and
+every decision (who, what, amount, to, when, allowed or not, by the auto
+mode or not) is a line of `STATE/assist/ledger.enc`, sealed with AES-256-GCM;
+its key (`STATE/assist/ledger.key`, 0600) is the room's alone and never
+reaches a model, a tool or the page. A bot that asks for approval in words
+is taken back and has to call `consent`; only Chris's tap on the card (an
+owner request) allows, never a model and never a yes in the chat. Card numbers and
 passwords never reach a model, a tool, a log or the chat; paying is Chris's
 own entry in the bot's live browser until a payment vault (Stripe tokens)
 is set up with his account. Routines (`routine`; `STATE/routines.json`) are

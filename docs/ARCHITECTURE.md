@@ -409,7 +409,15 @@ allows at once, a purchase only within both limits (the day's sum comes
 from the journal), anything else puts a card on the bot's step
 (`approval` with `action`, the same `/api/approval/<id>` as plugin cards,
 allow or deny, 15 minutes, a push notification). Every decision is appended
-to `STATE/assist/ledger.jsonl`; the settings show the last twenty (owner only). The room cannot intercept a click in a VM's
+to `STATE/assist/ledger.enc` (who, what, amount, to, when, the decision and
+why, whether by the auto mode), one AES-256-GCM sealed line each (random
+nonce, tag); the key is `STATE/assist/ledger.key` (0600, made on first use,
+in the encrypted backup with the state), read only by the room and never
+part of a prompt, a tool result or the page. The settings show the last
+twenty (owner only). An answer without tool calls that asks for approval in
+words (`Engine::asks_in_words`) is taken back once per turn and the bot is
+told by a room note to call `consent`; decisions only come from
+`/api/approval` (owner) or the rules. The room cannot intercept a click in a VM's
 browser, so for actions there the rule lives in the tool and the prompt;
 plugin tools keep their enforced card. No payment data is stored: a Stripe
 vault (PaymentMethod ids only, the key as a 0600 file) needs Chris's Stripe

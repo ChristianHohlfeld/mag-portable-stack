@@ -90,8 +90,9 @@ inline Val schemas(bool has_vm, bool phone = false) {
   list.push(fn("consent",
                "Ask before a consequential action: sending something to others (mail, message, form), buying (money), deleting data that is "
                "not yours or cannot come back, publishing outside, setting up a routine. Chris's rules decide: allowed at once, refused, or "
-               "he gets a card in the chat and you wait for his yes. Call it right before the action, with exactly what will happen; "
-               "do only what was allowed. Card numbers and passwords never go into it or anywhere else.",
+               "he gets a card in the chat and you wait for his yes. You call it yourself, right before the action, with exactly what will "
+               "happen; never ask him in words instead (he cannot call tools, and a yes in the chat is no approval). Do only what it allowed. "
+               "Card numbers and passwords never go into it or anywhere else.",
                R"j({"type":"object","properties":{"action":{"type":"string","enum":["send","buy","delete","publish","routine"]},)j"
                R"j("what":{"type":"string","description":"exactly what will happen, in German, one or two sentences"},)j"
                R"j("to":{"type":"string","description":"recipient, shop or site"},"amount_eur":{"type":"number","description":"buy: the price in euros"}},)j"

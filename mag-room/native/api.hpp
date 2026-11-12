@@ -86,6 +86,8 @@ public:
       if (p == "/api/messages") return messages(fd, r);
       if (p == "/api/events") return events(fd);
       if (starts_with(p, "/api/file/")) return file(fd, r);
+      if (p == "/api/files") return files(fd);
+      if (p == "/api/files.zip") return files_zip(fd, r);
       if (starts_with(p, "/api/screen/")) return screen(fd, r);
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
@@ -723,6 +725,148 @@ private:
                        {"Content-Disposition", std::string(r.param("download") == "1" || (active && r.param("view") != "1") ? "attachment" : "inline") +
                                                    "; filename*=UTF-8''" + url_encode(name)}};
     http::send_file(fd, r, path, mime, h);
+  }
+
+  // ---- the files of the chat ---------------------------------------------
+  // Everything the chat holds as a file (uploads, pictures, models, scenes,
+  // films, videos, documents), newest first, with the message it is in. The
+  // page shows them as one folder; the files stay where they are.
+  static std::string file_group(const Val &a, const Val *m3) {
+    const std::string kind = jstr(a, "kind"), name = jstr(a, "name");
+    if (kind == "image") return "Bilder";
+    if (kind == "video") return "Videos";
+    if (kind == "audio") return "Audio";
+    if (m3 && jstr(*m3, "kind") == "scene") return "Szenen";
+    if (kind == "model") return "3D";
+    return "Dokumente";
+  }
+  Val chat_files() {
+    Val out = Val::array();
+    const auto all = room_.all();
+    for (auto m = all.rbegin(); m != all.rend(); ++m) {
+      const Val *atts = m->find("attachments");
+      if (!atts || !atts->isArr()) continue;
+      const Val *m3 = m->find("model3d");
+      for (auto &a : atts->asArr()) {
+        if (jstr(a, "file").empty()) continue;
+        Val f = Val::object();
+        for (const char *k : {"file", "name", "mime", "kind", "description"})
+          if (!jstr(a, k).empty()) f[k] = jstr(a, k);
+        f["size"] = (double)jnum(a, "size");
+        f["group"] = file_group(a, m3);
+        f["message"] = jstr(*m, "id");
+        f["from"] = jstr(*m, "from");
+        f["ts"] = (double)jnum(*m, "ts");
+        if (m3) {
+          if (!jstr(*m3, "title").empty()) f["title"] = jstr(*m3, "title");
+          if (!jstr(*m3, "image").empty()) f["image"] = jstr(*m3, "image");
+        }
+        out.push(f);
+      }
+    }
+    return out;
+  }
+  void files(int fd) {
+    Val v = Val::object();
+    v["files"] = chat_files();
+    http::send_json(fd, 200, v);
+  }
+  // Several files of the chat as one ZIP (stored, not compressed: they are
+  // pictures, models and videos), folders by kind. Its length is known before
+  // the first byte, the checksums are worked out while it streams.
+  void files_zip(int fd, const http::Request &r) {
+    std::set<std::string> wanted;
+    for (std::istringstream in(r.param("files")); !in.eof();) {
+      std::string one;
+      std::getline(in, one, ',');
+      if (!one.empty()) wanted.insert(one);
+    }
+    struct Entry { std::string path, name; uint64_t size; uint32_t when; uint32_t crc = 0; uint64_t offset = 0; };
+    std::vector<Entry> entries;
+    std::set<std::string> names;
+    for (auto &f : chat_files().asArr()) {
+      const std::string stored = jstr(f, "file");
+      if (!wanted.empty() && !wanted.count(stored)) continue;
+      const std::string path = room_.file_path(stored);
+      struct stat st{};
+      if (path.empty() || stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+      std::string name = jstr(f, "name", stored);
+      for (auto &c : name) if (c == '/' || c == '\\' || (unsigned char)c < 32) c = '_';
+      const time_t t = (time_t)(jnum(f, "ts") / 1000);
+      char day[16];
+      std::strftime(day, sizeof day, "%Y-%m-%d", std::localtime(&t));
+      std::string full = jstr(f, "group") + "/" + day + " " + name;
+      for (int i = 2; names.count(full); ++i) full = jstr(f, "group") + "/" + day + " " + std::to_string(i) + " " + name;
+      names.insert(full);
+      std::tm lt{};
+      localtime_r(&t, &lt);
+      const uint32_t when = (uint32_t)(((std::max(lt.tm_year - 80, 0) << 9) | ((lt.tm_mon + 1) << 5) | lt.tm_mday) << 16) |
+                            (uint32_t)((lt.tm_hour << 11) | (lt.tm_min << 5) | (lt.tm_sec / 2));
+      entries.push_back({path, full, (uint64_t)st.st_size, when});
+      if (st.st_size >= 0xffffffffLL) return http::send_error(fd, 413, "Eine Datei ist für ein ZIP zu groß");
+    }
+    if (entries.empty()) return http::send_error(fd, 404, "Keine Dateien");
+    uint64_t total = 22, central = 0;
+    for (auto &e : entries) total += 30 + e.name.size() + e.size + 16, central += 46 + e.name.size();
+    total += central;
+    if (total >= 0xffffffffULL) return http::send_error(fd, 413, "Zu viele Daten für ein ZIP; bitte weniger auswählen");
+    static uint32_t table[256];
+    static std::once_flag once;
+    std::call_once(once, [] {
+      for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t c = i;
+        for (int k = 0; k < 8; ++k) c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1;
+        table[i] = c;
+      }
+    });
+    auto le = [](std::string &out, uint64_t v, int bytes) { for (int i = 0; i < bytes; ++i) out += (char)((v >> (8 * i)) & 0xff); };
+    char stamp[32];
+    const time_t now = time(nullptr);
+    std::strftime(stamp, sizeof stamp, "%Y-%m-%d", std::localtime(&now));
+    const http::Headers h = {{"Content-Disposition", std::string("attachment; filename*=UTF-8''") + url_encode(std::string("MAG Dateien ") + stamp + ".zip")}};
+    timeval tv{60, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    if (!http::write_all(fd, http::head(200, "application/zip", (long long)total, h))) return;
+    uint64_t at = 0;
+    std::vector<char> buf(1 << 20);
+    for (auto &e : entries) {
+      e.offset = at;
+      std::string local;
+      le(local, 0x04034b50, 4); le(local, 20, 2); le(local, 0x0808, 2); le(local, 0, 2); // stored, data descriptor, UTF-8 name
+      le(local, e.when, 4); le(local, 0, 4); le(local, 0, 4); le(local, 0, 4);
+      le(local, e.name.size(), 2); le(local, 0, 2);
+      local += e.name;
+      if (!http::write_all(fd, local)) return;
+      at += local.size();
+      const int file = open(e.path.c_str(), O_RDONLY | O_CLOEXEC);
+      uint64_t left = e.size;
+      uint32_t c = 0xffffffffu;
+      while (file >= 0 && left > 0) {
+        const ssize_t got = ::read(file, buf.data(), std::min<uint64_t>(buf.size(), left));
+        if (got <= 0) break;
+        for (ssize_t i = 0; i < got; ++i) c = table[(c ^ (unsigned char)buf[i]) & 0xff] ^ (c >> 8);
+        if (!http::write_all(fd, buf.data(), (size_t)got)) { close(file); return; }
+        left -= (uint64_t)got;
+      }
+      if (file >= 0) close(file);
+      if (left > 0) return; // the file shrank under us: cut the answer off rather than send a broken ZIP
+      e.crc = c ^ 0xffffffffu;
+      std::string desc;
+      le(desc, 0x08074b50, 4); le(desc, e.crc, 4); le(desc, e.size, 4); le(desc, e.size, 4);
+      if (!http::write_all(fd, desc)) return;
+      at += e.size + desc.size();
+    }
+    std::string dir;
+    for (auto &e : entries) {
+      le(dir, 0x02014b50, 4); le(dir, 20, 2); le(dir, 20, 2); le(dir, 0x0808, 2); le(dir, 0, 2);
+      le(dir, e.when, 4); le(dir, e.crc, 4); le(dir, e.size, 4); le(dir, e.size, 4);
+      le(dir, e.name.size(), 2); le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 4);
+      le(dir, e.offset, 4);
+      dir += e.name;
+    }
+    le(dir, 0x06054b50, 4); le(dir, 0, 2); le(dir, 0, 2); le(dir, entries.size(), 2); le(dir, entries.size(), 2);
+    le(dir, central, 4); le(dir, at, 4); le(dir, 0, 2);
+    http::write_all(fd, dir);
   }
 
   // ---- the bots' sites ----------------------------------------------------

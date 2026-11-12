@@ -307,6 +307,16 @@
     return '';
   }
   MAG.lightbox = lightbox;
+  // A message of the loaded history, scrolled to and marked for a moment.
+  MAG.showMessage = (id) => {
+    const node = nodes.get(id);
+    if (!node) return false;
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    node.classList.remove('flash');
+    void node.offsetWidth;
+    node.classList.add('flash');
+    return true;
+  };
   // What a model or a scene should do is said right below it. The line goes
   // into the chat as a message about it, to the bot that built the scene if
   // it is there, else to one that is. A scene shows the request it was made

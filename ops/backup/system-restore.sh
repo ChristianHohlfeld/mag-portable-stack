@@ -103,5 +103,5 @@ echo "Models: mag-modeld downloads and checks them after the reboot (ops/models/
 echo "Idol weights: sudo bash ops/idol/install.sh (the fetch scripts are pinned), unless the backup was made --with-models."
 run systemctl daemon-reload
 echo
-(( apply )) && echo 'Done. Reboot now; then the room is at https://mag.stardenburg.de (deploy ops/deploy.sh once if a release is missing).' ||
+(( apply )) && echo 'Done. Reboot now; then the room answers at its name again (MAG_DOMAIN; deploy ops/deploy.sh once if a release is missing).' ||
   echo 'Dry run. Add --apply to restore.'

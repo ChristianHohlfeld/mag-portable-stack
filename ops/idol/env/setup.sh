@@ -2,14 +2,16 @@
 # The Idol worker's environment on a new host, from pins in this repository:
 # ~/idol-mi50 with the ROCm torch venv, idol-sdk at its commit with the MI50
 # patch (Apache-2.0, speridlabs), TripoSG at its commit (MIT, VAST-AI) and the
-# weights. Run as root; the files belong to MAG_USER (default chris). Leaves
+# weights. Run as root; the files belong to the owner (ops/host.env). Leaves
 # what is already there alone. The gated Idol weights need a Hugging Face
 # token in /etc/mag-stack/hf-token (template: ops/install/secrets.md).
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 here=$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)
-user=${MAG_USER:-chris}
-BASE=$(getent passwd "$user" | cut -d: -f6)/idol-mi50
+# shellcheck source=../../host.sh
+source "$here/../../host.sh"
+user=$MAG_OWNER
+BASE=$MAG_IDOL_BASE
 as() { sudo -u "$user" -H "$@"; }
 IDOL_SDK_COMMIT=4702a7f00850e34b6e83a2170cc123c3e9570744
 TRIPOSG_COMMIT=fc5c409

@@ -2,6 +2,8 @@
 # Per-VM tailnet site. DNS and the wildcard certificate stay shared.
 set -euo pipefail
 root="${MAG_BOTS_ROOT:-/var/lib/mag-bots}"
+# The zone of this host (/etc/mag-stack/host.env, ops/host.env); sudo and units carry no environment.
+[[ -n ${MAG_BOTS_ZONE:-} ]] || MAG_BOTS_ZONE=$(grep -h '^MAG_BOTS_ZONE=' /etc/mag-stack/host.env 2>/dev/null | tail -1 | cut -d= -f2)
 zone="${MAG_BOTS_ZONE:-bot.stardenburg.de}"
 publish_url="${MAG_BOTS_PUBLISH_URL:-http://192.168.122.1:8091/publish}"
 magbot="${MAG_BOTS_MAGBOT:-/usr/local/bin/magbot}"

@@ -16,6 +16,8 @@ Group=magbot
 WorkingDirectory=/opt/mag-stack/current
 # Brave search key and VAPID keys for push (root-only file, never in Git).
 EnvironmentFile=-/etc/default/mag-room
+# Who and where this host is (MAG_DOMAIN, MAG_BOTS_ZONE, ...; ops/host.env).
+EnvironmentFile=-/etc/mag-stack/host.env
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room
 Environment=MAG_ROOM_WEB=/opt/mag-stack/current/web
 Environment=MAG_ROOM_BIND=127.0.0.1

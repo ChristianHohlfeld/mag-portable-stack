@@ -24,7 +24,8 @@ while (( $# )); do
   esac
 done
 KEY=${MAG_TAILSCALE_AUTHKEY_FILE:-/etc/credstore/tailscale.authkey}
-EXPECTED_IP=100.123.114.16
+# The address /etc/mag-stack/host.env names, if it names one (ops/host.env).
+EXPECTED_IP=$(grep -h '^MAG_TAILNET_IP=' "$(cd -- "$(dirname -- "$0")" && pwd)/../host.env" /etc/mag-stack/host.env 2>/dev/null | tail -1 | cut -d= -f2)
 log() { echo "tailscale: $*"; }
 
 # shellcheck disable=SC1091
@@ -94,8 +95,8 @@ else
   echo "tailscale: not logged in and no $KEY; place a key there (root, 0600) and rerun, or run 'tailscale up' manually." >&2
 fi
 ip4=$(tailscale ip -4 2>/dev/null | head -1 || true)
-if [[ -n $ip4 && $ip4 != "$EXPECTED_IP" ]]; then
-  echo "tailscale: WARN Tailnet IP is $ip4, but clients and DNS use $EXPECTED_IP (pages.env)." >&2
-  echo "           Restore the old node state from the backup. Do not point nginx at this address; tailscaled owns :443." >&2
+if [[ -n $ip4 && -n $EXPECTED_IP && $ip4 != "$EXPECTED_IP" ]]; then
+  echo "tailscale: WARN Tailnet IP is $ip4, but /etc/mag-stack/host.env names $EXPECTED_IP." >&2
+  echo "           Set MAG_TAILNET_IP= (empty: this address) there, or give this node $EXPECTED_IP in the admin console." >&2
 fi
 exit 0

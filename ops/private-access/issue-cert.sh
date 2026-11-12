@@ -5,7 +5,7 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo "root required" >&2; exit 1; }
 [[ $# -le 1 ]] || { echo "Usage: $0 staging|production|renew" >&2; exit 2; }
 . /etc/mag-acme/lego.env
-[[ ${MAG_ACME_DOMAIN:-} == mag.stardenburg.de ]] || { echo "Unexpected ACME domain" >&2; exit 1; }
+[[ ${MAG_ACME_DOMAIN:-} =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$ ]] || { echo "Invalid ACME domain" >&2; exit 1; }
 : "${ACME_DNS_API_BASE:?missing ACME DNS endpoint}"
 : "${ACME_DNS_STORAGE_PATH:?missing ACME DNS state}"
 export ACME_DNS_API_BASE ACME_DNS_STORAGE_PATH

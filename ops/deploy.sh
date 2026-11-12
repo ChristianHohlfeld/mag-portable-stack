@@ -36,6 +36,15 @@ STATE=/var/lib/magbot/room
 ROOM=http://127.0.0.1:8766
 NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
 UNITS=/etc/systemd/system
+# Who and where this host is (ops/host.env, /etc/mag-stack/host.env; the
+# latter is written once from the template, the checkout's owner as owner).
+if [[ ! -e /etc/mag-stack/host.env ]]; then
+  install -d -m 0755 /etc/mag-stack
+  sed "s/^MAG_OWNER=.*/MAG_OWNER=$(stat -c %U "$SOURCE")/" "$SOURCE/ops/install/templates/host.env" > /etc/mag-stack/host.env
+  chmod 0644 /etc/mag-stack/host.env
+fi
+# shellcheck source=host.sh
+source "$SOURCE/ops/host.sh"
 log() { printf 'deploy: %s\n' "$*"; }
 warn() { printf 'deploy: WARN: %s\n' "$*" >&2; }
 soft() { "$@" || warn "optional step failed: $*"; }
@@ -245,7 +254,7 @@ soft bash "$SOURCE/ops/tts/install.sh"
 # rendered goes on through the worker's restart.
 soft bash "$SOURCE/ops/scene/install.sh"
 # Optional Idol worker (photo to 3D on the MI50).
-if [[ -x /home/chris/idol-mi50/venv/bin/python && -d /home/chris/idol-mi50/weights/idol ]]; then
+if [[ -x $MAG_IDOL_BASE/venv/bin/python && -d $MAG_IDOL_BASE/weights/idol ]]; then
   soft bash "$SOURCE/ops/idol/install.sh"
 fi
 # The bots' sites (<name>.bot.stardenburg.de): vhost and publisher.

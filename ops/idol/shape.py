@@ -26,10 +26,12 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
+# The Idol environment of this host's owner (ops/host.env; ~/idol-mi50).
+IDOL_BASE = os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50"))
 
-SOURCE = os.environ.get("MAG_TRIPOSG_SOURCE", "/home/chris/idol-mi50/triposg/src")
-WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", "/home/chris/idol-mi50/weights/triposg")
-IDOL = os.environ.get("MAG_IDOL_WEIGHTS", "/home/chris/idol-mi50/weights/idol")
+SOURCE = os.environ.get("MAG_TRIPOSG_SOURCE", os.path.join(IDOL_BASE, "triposg/src"))
+WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", os.path.join(IDOL_BASE, "weights/triposg"))
+IDOL = os.environ.get("MAG_IDOL_WEIGHTS", os.path.join(IDOL_BASE, "weights/idol"))
 STEPS = int(os.environ.get("MAG_TRIPOSG_STEPS", "50"))
 
 
@@ -40,7 +42,7 @@ def cut_out(job):
     photo.load()
     if photo.mode == "RGBA" and np.asarray(photo.getchannel(3)).min() < 255:
         return photo
-    sys.path.insert(0, "/home/chris/idol-mi50/idol-sdk")
+    sys.path.insert(0, os.path.join(IDOL_BASE, "idol-sdk"))
     from safetensors.torch import load_file
     from idol.models import BiRefNet
     net = BiRefNet()

@@ -17,8 +17,10 @@ import sys
 from pathlib import Path
 
 import torch
+# The Idol environment of this host's owner (ops/host.env; ~/idol-mi50).
+IDOL_BASE = os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50"))
 
-WEIGHTS = os.environ.get("MAG_FLUX_WEIGHTS", "/home/chris/idol-mi50/weights/flux2-klein-4b")
+WEIGHTS = os.environ.get("MAG_FLUX_WEIGHTS", os.path.join(IDOL_BASE, "weights/flux2-klein-4b"))
 STEPS = 4                                   # the distilled klein models are made for four steps
 
 

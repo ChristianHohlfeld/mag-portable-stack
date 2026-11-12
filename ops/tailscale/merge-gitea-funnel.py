@@ -13,37 +13,40 @@ switch cannot read those vhosts. HTTP vhosts must not bind
 proxies and are not funneled.
 """
 import json
+import os
 import pathlib
 import re
 import sys
 
-NODE = "mag.tail3e02ae.ts.net"
+# This host's MagicDNS name and Tailscale address (ops/host.sh exports them).
+NODE = os.environ.get("MAG_TS_NAME") or "mag.tail3e02ae.ts.net"
+TAILNET_IP = os.environ.get("MAG_TAILNET_IP") or "100.123.114.16"
 FUNNEL_PORT = 443
 # Raw TLS + PROXY v2. nginx on this socket terminates TLS and picks SNI.
 FUNNEL_TCP = "127.0.0.1:4443"
 FUNNEL_PROXY_PROTOCOL = 2
 # Gitea behind the shared nginx vhost (not tailscaled HTTP).
 FUNNEL_PROXY = "http://127.0.0.1:3000"
-FUNNEL_ORIGIN = "https://mag.tail3e02ae.ts.net"
+FUNNEL_ORIGIN = "https://" + NODE
 # Shared by every tailnet vhost. A second listen on this socket with different
 # flags is an nginx emerg. HTTP must not bind 100.123.114.16:443; tailscaled
 # TCP-forwards that address here.
 NGINX_LISTEN = "listen 127.0.0.1:4443 ssl http2 proxy_protocol;"
 # Live mag-room.conf since 2026-10-24 uses this exact line. Bots/pages may
 # omit http2. Any listen on the Tailscale address :443 is the collision.
-OLD_NGINX_LISTEN = "listen 100.123.114.16:443 ssl http2;"
+OLD_NGINX_LISTEN = f"listen {TAILNET_IP}:443 ssl http2;"
 # Live bots/pages still use this after @TAILNET_BIND@ substitution. Any
 # listen on the Tailscale address :443 is the Funnel collision, including
 # variants without http2 and leftover template placeholders.
 # HTTP/ssl leftover only. A stream `listen 100.123.114.16:443;` has no ssl
 # and must not be rewritten onto 4443.
 OLD_NGINX_LISTEN_RE = re.compile(
-    r"^([ \t]*)listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b[^;]*\bssl[^;]*;",
+    r"^([ \t]*)listen[ \t]+(?:" + re.escape(TAILNET_IP) + r"|@TAILNET_BIND@):443\b[^;]*\bssl[^;]*;",
     re.M,
 )
 NGINX_T_FILE_RE = re.compile(r"^# configuration file (.+):$")
 TAILNET_443_NEEDLE = re.compile(
-    r"listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b[^;]*\bssl\b"
+    r"listen[ \t]+(?:" + re.escape(TAILNET_IP) + r"|@TAILNET_BIND@):443\b[^;]*\bssl\b"
 )
 # Existing tailnet-only serves. 8443 is already in use. The room stays on 8446.
 TAILNET = {
@@ -353,7 +356,7 @@ def main(argv):
         leftover = files_from_nginx_t(raw)
         if leftover:
             sys.stderr.write(
-                "gitea funnel: nginx still listens on 100.123.114.16:443 in:\n"
+                f"gitea funnel: nginx still listens on {TAILNET_IP}:443 in:\n"
             )
             for path in leftover:
                 sys.stderr.write(f"  {path}\n")

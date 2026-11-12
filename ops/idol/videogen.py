@@ -29,8 +29,10 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+# The Idol environment of this host's owner (ops/host.env; ~/idol-mi50).
+IDOL_BASE = os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50"))
 
-WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", "/home/chris/idol-mi50/weights/wan22-i2v"))
+WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", os.path.join(IDOL_BASE, "weights/wan22-i2v")))
 STEPS = 4                                   # what the Lightning LoRA is made for
 SIGMAS = [1.0, 0.75, 0.5, 0.25]             # its steps (1000, 750, 500, 250), shifted by 5, Euler
 SHIFT = 5.0

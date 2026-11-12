@@ -8,7 +8,15 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 site=/etc/nginx/sites-available/mag-room.conf
 enabled=/etc/nginx/sites-enabled/mag-room.conf
-template="$here/mag-room.nginx.conf"
+# shellcheck source=../host.sh
+if [[ -r $here/../host.sh ]]; then source "$here/../host.sh"; else source /opt/mag-stack/current/ops/host.sh; fi
+# The vhost for this host's name and address (ops/host.env). A copy of this
+# script kept for a rollback renders the release's template.
+src_template=$here/mag-room.nginx.conf
+[[ -r $src_template ]] || src_template=/opt/mag-stack/current/ops/private-access/mag-room.nginx.conf
+template=$(mktemp /run/mag-room.nginx.XXXXXX)
+trap 'rm -f "$template"' EXIT
+mag_render "$src_template" > "$template"
 snippet=/etc/nginx/snippets/mag-tailnet-ok.inc
 snippet_src="$here/../nginx/mag-tailnet-ok.inc"
 probe_file=/etc/mag-stack/deploy-owner-probe.conf
@@ -37,7 +45,7 @@ probe_config(){
       die 'Owner SOCKS5 port out of range'
     [[ ${MAG_DEPLOY_OWNER_IP:-} =~ ^100[.]([0-9]{1,3}[.]){2}[0-9]{1,3}$ ]] ||
       die 'Pin MAG_DEPLOY_OWNER_IP to the second real Tailnet node in SOCKS5 mode'
-    [[ $MAG_DEPLOY_OWNER_IP != 100.123.114.16 ]] ||
+    [[ $MAG_DEPLOY_OWNER_IP != "$MAG_TAILNET_IP" ]] ||
       die 'MAG may never be its own Owner probe'
   fi
   jq -e --arg id "$MAG_DEPLOY_OWNER_LOGIN" \
@@ -53,7 +61,7 @@ probe_config(){
       "$MAG_DEPLOY_OWNER_SSH" 'tailscale ip -4') ||
     die 'Owner probe must have the Tailscale CLI installed'
   [[ $remote_ip =~ ^100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ &&
-     $remote_ip != 100.123.114.16 ]] ||
+     $remote_ip != "$MAG_TAILNET_IP" ]] ||
     die 'Owner probe must be a SECOND real Tailscale device (not MAG)'
   if [[ -n ${MAG_DEPLOY_OWNER_SOCKS5:-} ]]; then
     [[ $remote_ip == "$MAG_DEPLOY_OWNER_IP" ]] ||
@@ -91,8 +99,8 @@ local_smoke(){
   # after tailscaled is forwarding; this check talks to nginx directly.
   status=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
     --haproxy-protocol \
-    --resolve mag.stardenburg.de:4443:127.0.0.1 \
-    https://mag.stardenburg.de:4443/ || true)
+    --resolve "$MAG_DOMAIN:4443:127.0.0.1" \
+    "https://$MAG_DOMAIN:4443/" || true)
   [[ $status =~ ^(200|401|403)$ ]] || die "Local ingress check failed (HTTP $status)"
   echo "Smoke OK (local): nginx and room answer on 443 (HTTP $status)"
 }
@@ -107,11 +115,11 @@ preflight(){
   nginx -t || die 'Current nginx config already invalid'
   systemctl is-active --quiet nginx.service || die 'nginx not active'
   systemctl is-active --quiet tailscaled.service || die 'tailscaled not active'
-  grep -Fq '100.123.114.16/' <<<"$(ip -4 addr show)" ||  # no SIGPIPE under pipefail
-    die 'Expected Tailnet IP 100.123.114.16 missing'
+  [[ -n $MAG_TAILNET_IP ]] && grep -Fq "$MAG_TAILNET_IP/" <<<"$(ip -4 addr show)" ||  # no SIGPIPE under pipefail
+    die "Expected Tailnet IP ${MAG_TAILNET_IP:-(none)} missing"
   [[ -s /etc/mag-nginx/tls/cert.pem && -s /etc/mag-nginx/tls/key.pem ]] ||
     die 'Staged mag-nginx certificate/key missing'
-  openssl x509 -in /etc/mag-nginx/tls/cert.pem -checkhost mag.stardenburg.de -noout |
+  openssl x509 -in /etc/mag-nginx/tls/cert.pem -checkhost "$MAG_DOMAIN" -noout |
     grep -Fq 'does match' || die 'Certificate hostname mismatch'
   openssl x509 -in /etc/mag-nginx/tls/cert.pem -checkend 86400 -noout ||
     die 'Certificate expires soon'
@@ -210,14 +218,14 @@ smoke(){
   fi
   data=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
     "$MAG_DEPLOY_OWNER_SSH" \
-    "curl -q --silent --show-error --fail --connect-timeout 3 --max-time 12 --proto '=https' $proxy_args https://mag.stardenburg.de/api/state") ||
+    "curl -q --silent --show-error --fail --connect-timeout 3 --max-time 12 --proto '=https' $proxy_args https://$MAG_DOMAIN/api/state") ||
     die 'Owner-origin /api/state failed (403/5xx/TLS/proxy/network)'
   jq -e --arg id "$MAG_DEPLOY_OWNER_LOGIN" \
     '.you.role=="owner" and (.you.login|ascii_downcase)==($id|ascii_downcase)' \
     <<<"$data" >/dev/null || die 'Owner /api/state role/login mismatch'
   status=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
     "$MAG_DEPLOY_OWNER_SSH" \
-    "curl -q --silent --show-error --fail --connect-timeout 3 --max-time 12 --proto '=https' $proxy_args --output /dev/null --write-out '%{http_code}' https://mag.stardenburg.de/") ||
+    "curl -q --silent --show-error --fail --connect-timeout 3 --max-time 12 --proto '=https' $proxy_args --output /dev/null --write-out '%{http_code}' https://$MAG_DOMAIN/") ||
     die 'Owner-origin / failed (403/5xx/TLS/proxy/network)'
   [[ $status == 200 ]] || die "Owner / not HTTP 200 ($status)"
   echo 'Smoke OK: / and /api/state through nginx from external Owner'
@@ -272,7 +280,7 @@ case "${1:-}" in
    MAG_NGINX_TXN=$(mktemp -d /var/backups/mag-stack/nginx-XXXXXXXX)
    export MAG_NGINX_TXN
    chmod 0700 "$MAG_NGINX_TXN"
-   trap 'rc=$?; if ((rc)); then rollback || true; fi' EXIT
+   trap 'rc=$?; rm -f "$template"; if ((rc)); then rollback || true; fi' EXIT
    stage; activate; smoke
    rm -f "$MAG_NGINX_TXN/nginx.staged"
    trap - EXIT

@@ -4,7 +4,7 @@
 #   sudo bash ops/audit/install-audit.sh            Trockenlauf: zeigt alles, ändert nichts
 #   sudo bash ops/audit/install-audit.sh --apply    ausführen
 #
-# Aus dem Git-Repo (/home/chris/mag-stack) oder einem Release starten. Laufzeitdateien werden
+# Aus dem Git-Repo (~/mag-stack des Owners) oder einem Release starten. Laufzeitdateien werden
 # rollback-stabil kopiert: /opt/mag-audit (Gateway, Addon, mitmproxy-venv), /etc/mag-audit
 # (Konfiguration, CA, VM-Paket), /etc/systemd/system (Units), /etc/nftables.d (Regeln).
 # Optional: ALI_USER=<user> (sonst automatisch, wenn ein User "ali" existiert).
@@ -39,7 +39,9 @@ if [[ -n "$owner" && "$owner" != python3* && "$owner" != mag-audit-gate* ]]; the
   echo "Port 8080 ist von '$owner' belegt. Audit-Installation wird ohne Eingriff abgebrochen."; exit 1
 fi
 
-READERS=(chris)
+# shellcheck source=../host.sh
+source "$SRC/ops/host.sh"
+READERS=("$MAG_OWNER")
 if [[ -n "${ALI_USER:-}" ]]; then READERS+=("$ALI_USER"); elif id ali >/dev/null 2>&1; then READERS+=(ali); fi
 for u in "${READERS[@]}"; do id "$u" >/dev/null 2>&1 || { echo "User $u existiert nicht"; exit 1; }; done
 

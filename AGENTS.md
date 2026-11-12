@@ -12,7 +12,13 @@ A fresh server is installed with `sudo ./install.sh` (`ops/install/run.sh`,
 phases that go on where they stopped, docs/INSTALL.md): everything the host
 runs comes from this repository; secrets only from the documented templates
 (`ops/install/templates`). Whatever a host needs must be installed by it: a
-change made by hand on mag belongs in the installer or a deploy.
+change made by hand on mag belongs in the installer or a deploy. Who and
+where the host is (owner, domain, bot zone, Tailnet address and name) is one
+file, `/etc/mag-stack/host.env` (defaults `ops/host.env`); scripts source
+`ops/host.sh`, and units, nginx sites, `models.json` and `app.ini` keep the
+reference host's values in the repository and are rendered with `mag_render`
+when they are installed. Never write a host's name, address or owner into a
+script.
 
 Build with CMake/Ninja. Run `python3 mag-room/tests/test_native.py` after
 changes to HTTP, scheduling, persistence or room routing, and

@@ -3,6 +3,8 @@
 # was registered once by hand; this script must not create another one and
 # must not request the apex name (the live certificate is wildcard-only).
 set -euo pipefail
+# The zone of this host (/etc/mag-stack/host.env, ops/host.env); sudo and units carry no environment.
+[[ -n ${MAG_BOTS_ZONE:-} ]] || MAG_BOTS_ZONE=$(grep -h '^MAG_BOTS_ZONE=' /etc/mag-stack/host.env 2>/dev/null | tail -1 | cut -d= -f2)
 zone="${MAG_BOTS_ZONE:-bot.stardenburg.de}"
 [[ $zone =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $zone == *.* && $zone != *..* ]] || {
   echo "Invalid bot zone" >&2; exit 2; }

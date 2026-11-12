@@ -10,6 +10,15 @@ reading aloud runs on the device. Models, speech and media generation run
 on this host; only web search and plugins Chris connects reach outside.
 Every part is in this repository.
 
+Install on a fresh Ubuntu 24.04 server (who and where the host is goes into
+`/etc/mag-stack/host.env`; secrets only where [docs/INSTALL.md](docs/INSTALL.md)
+lists them):
+
+```bash
+git clone https://github.com/ChristianHohlfeld/mag-portable-stack.git ~/mag-stack
+cd ~/mag-stack && sudo ./install.sh
+```
+
 Read next:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): processes, ports, request

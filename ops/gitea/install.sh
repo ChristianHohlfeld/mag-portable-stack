@@ -37,7 +37,10 @@ install -d -o git -g git -m 0750 /var/lib/gitea /var/lib/gitea/data /var/lib/git
 install -d -o git -g git -m 0750 /var/lib/gitea/data/gitea-repositories
 install -d -o git -g git -m 0750 /var/log/gitea
 if [[ ! -e /etc/gitea/app.ini ]]; then
-  install -m 0640 -o root -g git "$here/app.ini.example" /etc/gitea/app.ini
+  # shellcheck source=../host.sh
+  source "$here/../host.sh"
+  install -m 0640 -o root -g git /dev/null /etc/gitea/app.ini
+  mag_render "$here/app.ini.example" > /etc/gitea/app.ini
   # Gitea's own generator: JWT_SECRET must be unpadded URL-safe base64 of
   # 32 bytes (a hex string makes Gitea rewrite the read-only app.ini and
   # crash-loop), INTERNAL_TOKEN a signed token.

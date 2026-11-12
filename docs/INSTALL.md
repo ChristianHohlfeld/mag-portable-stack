@@ -41,8 +41,8 @@ the `deploy` phase, in the background) and about 120 GB of Idol weights.
 - About 700 GB of free disk.
 - Optional: an AMD MI50 (PCI id 1002:66a1) for photo to 3D, pictures and
   video. Its power cap stays at 72 W (`ops/idol/power-cap.sh` only lowers it).
-- The owner account `chris` (the units name `/home/chris`) and the checkout
-  in `/home/chris/mag-stack`.
+- An owner account with the checkout in its home (`~/mag-stack`); the
+  installer takes the account that runs `sudo` (see the host's identity below).
 
 ## Secrets: what you put where
 
@@ -55,6 +55,7 @@ creates what can be generated; templates are in `ops/install/templates`.
 | `/var/lib/magbot/room/access.json` (magbot 0640) | the owner's Tailscale login(s) | copy `templates/access.json`, fill in `owners` |
 | `/etc/mag-acme/acme-dns.json` | the acme-dns accounts of `mag.stardenburg.de` and `bot.stardenburg.de` | `curl -X POST https://auth.acme-dns.io/register` once per name, store as in `templates/acme-dns.json`, CNAME `_acme-challenge.<name>` to its `fulldomain` |
 | `/etc/credstore/tailscale.authkey` | optional: join the tailnet without a login link | a Tailscale auth key |
+| `/etc/credstore/tailscale-api.key` | optional: give the new node the old Tailnet address by itself | a Tailscale API key (devices) |
 | `/etc/mag-stack/hf-token` | optional: Hugging Face token with access to `speridlabs/idol` | without it photo to 3D stays off |
 | `/etc/mag-backup/system.env` | optional: `MAG_SYSTEM_REPO` (and `RESTIC_PASSWORD_FILE`) for the whole-system backup off the host | see `ops/backup/system.sh` |
 
@@ -63,12 +64,27 @@ the audit CA, the runner token, the Let's Encrypt keys, the bots' VM keys.
 
 ## The host's identity
 
-MAG answers on the Tailscale address `100.123.114.16` with the names
-`mag.stardenburg.de`, `*.bot.stardenburg.de` and `mag.tail3e02ae.ts.net`
-(Gitea over Funnel). On a new server, in the Tailscale admin console: remove
-the old node `mag`, name the new one `mag` and set its IPv4 to
-`100.123.114.16`. DNS and certificates then stay as they are; the
-`tailscale` phase stops with this hint until the address is right.
+Who and where the host is lives in one file, `/etc/mag-stack/host.env`
+(template `ops/install/templates/host.env`, defaults `ops/host.env`; not
+secret). The installer writes it once, with the account that ran `sudo` as
+the owner; every script, unit, nginx site, `models.json` and Gitea's
+`app.ini` is rendered from it (`ops/host.sh`, `mag_render`).
+
+| Key | Meaning | Default |
+|---|---|---|
+| `MAG_OWNER` | account with the models, the Idol environment, the checkout | who ran `sudo ./install.sh` |
+| `MAG_DOMAIN` | the room's name (TLS by ACME DNS-01) | `mag.stardenburg.de` |
+| `MAG_BOTS_ZONE` | zone of the bots' sites | `bot.stardenburg.de` |
+| `MAG_TAILNET_IP` | the host's Tailscale address; empty = whatever the node has | `100.123.114.16` |
+| `MAG_TS_NAME` | MagicDNS name (Gitea over Funnel); empty = read from tailscale | empty |
+| `MAG_CONTACT` | contact for Web Push and Let's Encrypt | `mailto:mag@stardenburg.de` |
+
+The fixed address keeps the DNS of `MAG_DOMAIN` valid on a new server. With
+a Tailscale API key in `/etc/credstore/tailscale-api.key` (root 0600, devices
+read/write) the `tailscale` phase gives the new node that address by itself
+and removes the old node first if it is offline. Without the key it stops and
+offers the two ways: the key, or `MAG_TAILNET_IP=` (empty) and the DNS A
+records of `MAG_DOMAIN` and `*.MAG_BOTS_ZONE` pointed at the new address.
 
 ## The phases
 
@@ -98,7 +114,8 @@ the old node `mag`, name the new one `mag` and set its IPv4 to
 
 ## What stays by hand
 
-- The acme-dns registration and its CNAMEs (once per domain), the owner's
-  login in `access.json`, the Tailscale address of the new node.
+- The acme-dns registration and its CNAMEs (once per domain) and the owner's
+  login in `access.json`. Everything else comes from `/etc/mag-stack/host.env`
+  and the secrets above.
 - Chris's phone daemon (`devices/s23`) is his own and not part of the install.
 - The Brave key and the Hugging Face token, if wanted.

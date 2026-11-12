@@ -4,7 +4,7 @@
 # single resolver only sees a subset. Union that pool with every resolver.
 set -euo pipefail
 [[ $EUID == 0 ]] || exit 1
-[[ "$(id -u magbot)" == 993 ]] || { echo 'Unexpected magbot uid, refusal' >&2; exit 1; }
+uid=$(id -u magbot) || { echo 'User magbot missing, refusal' >&2; exit 1; }
 command -v nft >/dev/null
 command -v dig >/dev/null
 nft list chain inet mag_audit output >/dev/null
@@ -75,7 +75,7 @@ for family in v4 v6; do
   comment="magbot_tailscale_${family}_only"
   if ! nft list chain inet mag_audit output | grep -Fq "$comment"; then
     dest="ip"; [[ "$family" == v6 ]] && dest="ip6"
-    nft insert rule inet mag_audit output meta skuid 993 \
+    nft insert rule inet mag_audit output meta skuid "$uid" \
       "$dest" daddr "@$setname" tcp dport 443 accept comment "$comment"
   fi
 done
@@ -87,4 +87,4 @@ done
     printf 'add element inet mag_audit mag_tailscale_api_v6 { %s }\n' "$(IFS=,; echo "${v6s[*]}")"
   fi
 } | nft -f -
-echo 'MAG Tail API IPv4/v6 allowlist union refreshed (no flush, magbot uid 993, TCP/443)'
+echo 'MAG Tail API IPv4/v6 allowlist union refreshed (no flush, magbot uid '"$uid"', TCP/443)'

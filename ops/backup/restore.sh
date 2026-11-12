@@ -56,8 +56,8 @@ case "$part" in
  gitea) paths=(var/lib/gitea etc/gitea);;
  cron) paths=(etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
  tailscale) paths=(var/lib/tailscale);;
- config) paths=(etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
- all) paths=(var/lib/magbot/room var/lib/gitea etc/gitea etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs var/lib/tailscale);;
+ config) paths=(etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
+ all) paths=(var/lib/magbot/room var/lib/gitea etc/gitea etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs var/lib/tailscale);;
 esac
 destination="${target:-/}"
 # Preflight EVERY service prerequisite before copying ANY live path, so a

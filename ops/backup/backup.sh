@@ -145,7 +145,7 @@ if [[ -f "$src/var/lib/gitea/data/gitea.db" ]]; then
 fi
 for p in /etc/gitea /etc/mag-acme \
   /etc/mag-nginx /etc/nginx /etc/magbot /etc/default/mag-room \
-  /etc/mag-stack /etc/credstore/mag-guest-oauth /etc/credstore/mag-secrets-key \
+  /etc/mag-stack \
   /etc/mag-audit /var/lib/mag-audit /var/lib/mag-deploy \
   /var/lib/mag-private-cutover /etc/systemd/system \
   /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily \

@@ -6,7 +6,9 @@
 #   issue-tailscale-cert.sh [--no-reload]
 set +x
 set -euo pipefail
-name=mag.tail3e02ae.ts.net
+# This node's MagicDNS name (installed to /usr/local/lib/mag-ci without ops/host.sh).
+name=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // "" | rtrimstr(".")')
+[[ $name =~ ^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net$ ]] || { echo 'tailscale cert: MagicDNS name unknown (tailscale up first)' >&2; exit 1; }
 dir=/etc/mag-nginx/tls/tailscale
 crt=$dir/$name.crt
 key=$dir/$name.key

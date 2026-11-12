@@ -2,7 +2,9 @@
 # Optional MAG Idol service only. Preserve already-working ROCm torch and patch.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "root required" >&2; exit 1; }
-BASE=/home/chris/idol-mi50
+# shellcheck source=../host.sh
+source "$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)/../host.sh"
+BASE=$MAG_IDOL_BASE
 PY="$BASE/venv/bin/python"
 [[ -x $PY && -d $BASE/weights/idol && -d $BASE/weights/dinov3-timm && -d $BASE/weights/flux2vae ]] || {
   echo 'Idol MI50 venv/local weights missing; optional worker skipped' >&2
@@ -42,7 +44,7 @@ PY
 # Its weights are fetched once, pinned; without them the page says so in
 # words and photo to 3D works as before.
 if [[ ! -s $BASE/weights/sam2/model.safetensors ]]; then
-  sudo -u chris env HF_HUB_OFFLINE=0 "$PY" - "$BASE/weights/sam2" <<'PY' || echo 'SAM 2 weights not fetched; object selection stays off' >&2
+  sudo -u "$MAG_OWNER" env HF_HUB_OFFLINE=0 "$PY" - "$BASE/weights/sam2" <<'PY' || echo 'SAM 2 weights not fetched; object selection stays off' >&2
 import sys
 from huggingface_hub import snapshot_download
 snapshot_download("facebook/sam2.1-hiera-small", revision="ee5bba1d82bb8749febdf90f45e84b687142ba03", local_dir=sys.argv[1],
@@ -53,7 +55,7 @@ fi
 # objects of a photo stand, for a scene of the photo's whole room. Fetched
 # once, pinned; without it "Ganze Szene" says so in words.
 if [[ ! -s $BASE/weights/depth/model.safetensors ]]; then
-  sudo -u chris env HF_HUB_OFFLINE=0 "$PY" - "$BASE/weights/depth" <<'PY' || echo 'Depth weights not fetched; whole-room scenes stay off' >&2
+  sudo -u "$MAG_OWNER" env HF_HUB_OFFLINE=0 "$PY" - "$BASE/weights/depth" <<'PY' || echo 'Depth weights not fetched; whole-room scenes stay off' >&2
 import sys
 from huggingface_hub import snapshot_download
 snapshot_download("depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf", revision="8078d68a9c75a972131914f6afd0c1723be0da7f", local_dir=sys.argv[1],
@@ -66,11 +68,11 @@ fi
 # weights (8 GB, resumable). Without them the mesh is made from the splat.
 TRIPO=$BASE/triposg
 if [[ -d $TRIPO/src && ! -x $TRIPO/venv/bin/python ]]; then
-  sudo -u chris python3 -m venv "$TRIPO/venv"
+  sudo -u "$MAG_OWNER" python3 -m venv "$TRIPO/venv"
   site=$("$PY" -c 'import site; print(site.getsitepackages()[0])')
   mine=$("$TRIPO/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
   echo "$site" > "$mine/zz-idol-venv.pth"
-  sudo -u chris "$TRIPO/venv/bin/pip" install -q --no-deps einops jaxtyping typeguard wadler-lindig peft omegaconf 'antlr4-python3-runtime==4.9.3' accelerate psutil \
+  sudo -u "$MAG_OWNER" "$TRIPO/venv/bin/pip" install -q --no-deps einops jaxtyping typeguard wadler-lindig peft omegaconf 'antlr4-python3-runtime==4.9.3' accelerate psutil \
     || echo 'TripoSG environment incomplete; the mesh is made from the splat' >&2
 fi
 # A video from a picture (videogen.py): Wan 2.2 I2V-A14B in an environment of
@@ -79,16 +81,16 @@ fi
 # until they are complete the room says so instead of queueing a video.
 VIDEO=$BASE/video
 if [[ ! -x $VIDEO/venv/bin/python ]]; then
-  install -d -o chris -g chris "$VIDEO"
-  sudo -u chris python3 -m venv "$VIDEO/venv"
+  install -d -o "$MAG_OWNER" -g "$MAG_OWNER" "$VIDEO"
+  sudo -u "$MAG_OWNER" python3 -m venv "$VIDEO/venv"
   site=$("$PY" -c 'import site; print(site.getsitepackages()[0])')
   mine=$("$VIDEO/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
   echo "$site" > "$mine/zz-idol-venv.pth"
-  sudo -u chris "$VIDEO/venv/bin/pip" install -q --no-deps gguf ftfy wcwidth peft accelerate sentencepiece \
+  sudo -u "$MAG_OWNER" "$VIDEO/venv/bin/pip" install -q --no-deps gguf ftfy wcwidth peft accelerate sentencepiece \
     || echo 'Video environment incomplete; videos stay off' >&2
 fi
-install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
-install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
+install -d -o "$MAG_OWNER" -g "$MAG_OWNER" -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
+mag_render /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf > /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf
 install -d -o root -g root -m 0755 /usr/local/lib/mag-idol
 install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/power-cap.sh /usr/local/lib/mag-idol/power-cap.sh
@@ -99,7 +101,9 @@ if grep -q '^Environment=MIOPEN_USER_DB_PATH=' /opt/mag-stack/current/ops/idol/m
   rm -f /etc/systemd/system/mag-idol.service.d/miopen.conf
   rmdir /etc/systemd/system/mag-idol.service.d 2>/dev/null || :
 fi
-install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.service /etc/systemd/system/mag-idol.service
+mag_render /opt/mag-stack/current/ops/idol/mag-idol.service > /etc/systemd/system/mag-idol.service.next
+chmod 0644 /etc/systemd/system/mag-idol.service.next
+mv -f /etc/systemd/system/mag-idol.service.next /etc/systemd/system/mag-idol.service
 systemctl daemon-reload
 systemctl enable mag-idol.service
 # Restart the worker only when its code or unit changed. Its jobs survive

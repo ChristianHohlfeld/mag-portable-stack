@@ -19,10 +19,18 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run with sudo: sudo ./install.sh' >&2; exit 1; }
 REPO=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
-OWNER=${MAG_OWNER:-${SUDO_USER:-chris}}
-OWNER_HOME=$(getent passwd "$OWNER" | cut -d: -f6 || true)
 DONE=/var/lib/mag-install
 TPL=$REPO/ops/install/templates
+# Who and where this host is: /etc/mag-stack/host.env, written once from the
+# template with the account that ran sudo as its owner (ops/host.env).
+install -d -m 0755 /etc/mag-stack
+if [[ ! -e /etc/mag-stack/host.env ]]; then
+  sed "s/^MAG_OWNER=.*/MAG_OWNER=${MAG_OWNER:-${SUDO_USER:-chris}}/" "$TPL/host.env" > /etc/mag-stack/host.env
+  chmod 0644 /etc/mag-stack/host.env
+fi
+# shellcheck source=../host.sh
+source "$REPO/ops/host.sh"
+OWNER=$MAG_OWNER OWNER_HOME=$MAG_OWNER_HOME
 CPUS=${MAG_BUILD_CPUS:-28-55}
 install -d -m 0700 "$DONE"
 log() { printf '\n== install: %s\n' "$*"; }
@@ -38,8 +46,8 @@ p_preflight() {
   . /etc/os-release
   [[ ${ID:-} == ubuntu && ${VERSION_ID:-} == 24.04 ]] || stop "Ubuntu 24.04 is required (this is ${PRETTY_NAME:-unknown})"
   [[ $(uname -m) == x86_64 ]] || stop 'x86_64 is required'
-  [[ -n $OWNER_HOME && -d $OWNER_HOME ]] || stop "the owner user '$OWNER' must exist (MAG_OWNER=...); the repo expects /home/$OWNER"
-  [[ $OWNER == chris ]] || note "WARN: units and models.json name /home/chris; with owner '$OWNER' adapt them first"
+  id "$OWNER" >/dev/null 2>&1 && [[ -d $OWNER_HOME ]] || stop "the owner account '$OWNER' (MAG_OWNER in /etc/mag-stack/host.env) does not exist"
+  note "owner $OWNER ($OWNER_HOME), room https://$MAG_DOMAIN, bots *.$MAG_BOTS_ZONE (/etc/mag-stack/host.env)"
   [[ $REPO == "$OWNER_HOME/mag-stack" ]] || note "WARN: the checkout is $REPO; deploys expect $OWNER_HOME/mag-stack"
   [[ -e /dev/kvm ]] || stop '/dev/kvm is missing: enable virtualisation in the BIOS'
   local nodes cpus
@@ -95,14 +103,14 @@ p_secrets() {
   elif jq -e '.owners | index("chris@github")' /var/lib/magbot/room/access.json >/dev/null && [[ ${MAG_OWNER_LOGIN_OK:-0} != 1 ]]; then
     note 'access.json still names the template owner chris@github; set MAG_OWNER_LOGIN_OK=1 if that is really the login'
   fi
-  [[ -s /etc/mag-acme/acme-dns.json ]] || missing+=("/etc/mag-acme/acme-dns.json (root 0600): the acme-dns account of mag.stardenburg.de and bot.stardenburg.de, see $TPL/acme-dns.json and docs/INSTALL.md (register once: curl -X POST https://auth.acme-dns.io/register, then CNAME _acme-challenge.<name> to its fulldomain)")
+  [[ -s /etc/mag-acme/acme-dns.json ]] || missing+=("/etc/mag-acme/acme-dns.json (root 0600): the acme-dns account of $MAG_DOMAIN and $MAG_BOTS_ZONE, see $TPL/acme-dns.json and docs/INSTALL.md (register once: curl -X POST https://auth.acme-dns.io/register, then CNAME _acme-challenge.<name> to its fulldomain)")
   [[ -s /etc/mag-stack/hf-token ]] || note 'optional: /etc/mag-stack/hf-token (root 0600, a Hugging Face token with access to speridlabs/idol): without it photo to 3D stays off'
   if ! tailscale status >/dev/null 2>&1 && [[ ! -s /etc/credstore/tailscale.authkey ]]; then
     note 'Tailscale: /etc/credstore/tailscale.authkey (root 0600) joins without asking; without it the next phase prints a login link'
   fi
   if (( ${#missing[@]} )); then stop "secrets missing:$(printf '\n  - %s' "${missing[@]}")"; fi
   install -d -m 0755 /etc/mag-acme
-  [[ -e /etc/mag-acme/lego.env ]] || install -m 0644 "$REPO/ops/private-access/env.conf" /etc/mag-acme/lego.env
+  [[ -e /etc/mag-acme/lego.env ]] || { mag_render "$REPO/ops/private-access/env.conf" > /etc/mag-acme/lego.env; chmod 0644 /etc/mag-acme/lego.env; }
   chmod 0600 /etc/mag-acme/acme-dns.json
   chown magbot:magbot /var/lib/magbot/room/access.json
 }
@@ -110,11 +118,41 @@ p_secrets() {
 p_tailscale() {
   bash "$REPO/ops/tailscale/install.sh"
   tailscale status >/dev/null 2>&1 || stop 'Tailscale is not logged in yet: open the link above (or sudo tailscale up), then run again'
-  local ip; ip=$(tailscale ip -4 | head -1)
-  if [[ $ip != 100.123.114.16 ]]; then
-    stop "this node has the Tailnet address $ip; MAG answers on 100.123.114.16 (nginx, DNS of mag.stardenburg.de).
-  In the Tailscale admin console: remove the old node 'mag', name this one 'mag' and set its IPv4 to 100.123.114.16 (Machines > ... > Edit IP), then run again"
+  local ip want
+  ip=$(tailscale ip -4 | head -1)
+  want=$(grep -h '^MAG_TAILNET_IP=' /etc/mag-stack/host.env | tail -1 | cut -d= -f2)
+  # A fixed address (the old host's): with a Tailscale API key the node takes
+  # it by itself; an offline node of the same name that holds it goes first.
+  if [[ -n $want && $ip != "$want" ]]; then
+    [[ -s /etc/credstore/tailscale-api.key ]] ||
+      stop "this node has the address $ip, /etc/mag-stack/host.env wants $want. Either put a Tailscale API key into
+  /etc/credstore/tailscale-api.key (root 0600; the installer then moves the address), or set MAG_TAILNET_IP= (empty) to use $ip
+  and point the DNS of $MAG_DOMAIN and *.$MAG_BOTS_ZONE at it"
+    tailnet_take_address "$want"
+    ip=$(tailscale ip -4 | head -1)
+    [[ $ip == "$want" ]] || stop "the address $want was asked for; this node still has $ip (sudo tailscale down && sudo tailscale up, then run again)"
   fi
+  MAG_TAILNET_IP=$ip
+  local dns; dns=$(dig +short "$MAG_DOMAIN" A 2>/dev/null | tail -1)
+  [[ $dns == "$ip" ]] || note "WARN: $MAG_DOMAIN resolves to ${dns:-nothing}, this node is $ip: point its A record (and *.$MAG_BOTS_ZONE) at $ip"
+}
+# Moves the Tailnet address <ip> to this node through the Tailscale API.
+tailnet_take_address() {
+  local want=$1 key self api=https://api.tailscale.com/api/v2 devices old
+  key=$(cat /etc/credstore/tailscale-api.key)
+  self=$(tailscale status --json | jq -r '.Self.ID')
+  devices=$(curl -fsS -u "$key:" "$api/tailnet/-/devices") || stop 'Tailscale API refused the key (devices:read/write needed)'
+  # Only a node that is offline and is not this one gives its address up.
+  old=$(jq -r --arg ip "$want" --arg self "$self" '.devices[] | select((.addresses | index($ip)) and .nodeId != $self and .id != $self) |
+        select((.lastSeen // "") < (now - 600 | todate)) | .id' <<<"$devices" | head -1)
+  if [[ -n $old ]]; then
+    note "removing the offline node that held $want"
+    curl -fsS -u "$key:" -X DELETE "$api/device/$old" >/dev/null
+  fi
+  curl -fsS -u "$key:" -H 'Content-Type: application/json' -d "{\"ipv4\":\"$want\"}" "$api/device/$self/ip" >/dev/null ||
+    stop "Tailscale API did not give this node $want (still held by an online node?)"
+  # The node learns its new address with the next network map.
+  for _ in $(seq 1 30); do [[ $(tailscale ip -4 | head -1) == "$want" ]] && return 0; sleep 2; done
 }
 
 p_trust() {
@@ -155,7 +193,8 @@ p_tls() {
   nginx -t && systemctl enable --now nginx && systemctl reload nginx
   install -d -m 0755 /usr/local/lib/mag-acme
   install -m 0755 "$REPO/ops/private-access/issue-cert.sh" "$REPO/ops/private-access/deploy-hook.sh" /usr/local/lib/mag-acme/
-  install -m 0644 "$REPO/ops/private-access/mag-acme-renew.service" "$REPO/ops/private-access/mag-acme-renew.timer" /etc/systemd/system/
+  local u
+  for u in mag-acme-renew.service mag-acme-renew.timer; do mag_render "$REPO/ops/private-access/$u" > "/etc/systemd/system/$u"; done
   systemctl daemon-reload
   systemctl enable --now mag-acme-renew.timer
   [[ -s /etc/mag-nginx/tls/cert.pem ]] || /usr/local/lib/mag-acme/issue-cert.sh production
@@ -182,7 +221,7 @@ p_media() {
 
 p_idol() {
   grep -qs 0x66a1 /sys/bus/pci/devices/*/device || { note 'no MI50: Idol skipped'; return; }
-  MAG_USER=$OWNER pinned bash "$REPO/ops/idol/env/setup.sh"
+  pinned bash "$REPO/ops/idol/env/setup.sh"
 }
 
 # The release: room, gateway, model supervisor (it downloads and checks the
@@ -224,7 +263,7 @@ p_check() {
   bash "$REPO/ops/boot/ensure-boot.sh"
   cat <<EOF
 
-MAG is installed. https://mag.stardenburg.de from a device of the tailnet.
+MAG is installed. https://$MAG_DOMAIN from a device of the tailnet.
  - The models download now (about 400 GB): /usr/local/lib/mag-models/mag-modeld status
  - Bot VMs: agent1 (Lena), agent2 (Noah); each bot's sheet shows its VM.
  - Backups: nightly room/Gitea, nightly VM saves, weekly whole system

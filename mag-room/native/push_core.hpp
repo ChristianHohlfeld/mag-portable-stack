@@ -170,7 +170,7 @@ static PushKeys &push_keys() {
 static bool push_configured() { return push_keys().ok; }
 static std::string push_public_b64() { return push_keys().pub_b64; }
 static std::string push_subject() {
-  std::string s = env("MAG_ROOM_VAPID_SUBJECT", "mailto:mag@stardenburg.de");
+  std::string s = env("MAG_ROOM_VAPID_SUBJECT", env("MAG_CONTACT", "mailto:mag@stardenburg.de"));
   if (s.rfind("mailto:", 0) != 0 && s.rfind("https://", 0) != 0)
     s = "mailto:mag@stardenburg.de";
   if (s.size() > 200)

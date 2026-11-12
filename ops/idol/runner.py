@@ -9,6 +9,8 @@ import os
 import runpy
 import sys
 from pathlib import Path
+# The Idol environment of this host's owner (ops/host.env; ~/idol-mi50).
+IDOL_BASE = os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50"))
 
 
 def check_photo(path):
@@ -55,8 +57,8 @@ def main():
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["ATTN_BACKEND"] = "sdpa"
-    os.environ.setdefault("IDOL_DINOV3", "/home/chris/idol-mi50/weights/dinov3-timm")
-    os.environ.setdefault("IDOL_FLUX2_VAE", "/home/chris/idol-mi50/weights/flux2vae")
+    os.environ.setdefault("IDOL_DINOV3", os.path.join(IDOL_BASE, "weights/dinov3-timm"))
+    os.environ.setdefault("IDOL_FLUX2_VAE", os.path.join(IDOL_BASE, "weights/flux2vae"))
     os.environ["PYTHONUNBUFFERED"] = "1"
     for name in ("IDOL_DINOV3", "IDOL_FLUX2_VAE"):
         if not Path(os.environ[name]).is_dir():

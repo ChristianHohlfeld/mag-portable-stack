@@ -12,8 +12,11 @@ set +x
 set -eEuo pipefail
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd -- "$here/../.." && pwd)
-origin=https://mag.tail3e02ae.ts.net
-node=mag.tail3e02ae.ts.net
+# shellcheck source=../host.sh
+source "$root/ops/host.sh"
+[[ -n $MAG_TS_NAME && -n $MAG_TAILNET_IP ]] || { echo 'gitea funnel: Tailscale name/address unknown (ops/host.env, tailscale up)' >&2; exit 1; }
+origin=https://$MAG_TS_NAME
+node=$MAG_TS_NAME
 test_mode=${MAG_GITEA_FUNNEL_TEST:-0}
 nginx_root=${MAG_GITEA_FUNNEL_NGINX:-/etc/nginx}
 mag_ci_root=${MAG_GITEA_FUNNEL_MAG_CI:-/etc/mag-ci}
@@ -358,13 +361,15 @@ if (( ${#to_retarget[@]} )); then
       echo "gitea funnel: cannot install $file" >&2
       exit 1
     }
-    echo "gitea funnel: moved $file off 100.123.114.16:443"
+    echo "gitea funnel: moved $file off $MAG_TAILNET_IP:443"
   done
 fi
 run_cmd install -d -m 0755 "$mag_ci_root" || die 1 "install -d $mag_ci_root"
-run_cmd install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy" ||
+mag_render "$root/ops/gitea-ci/gitea-proxy.inc" > "$tmp/gitea-proxy.inc"
+mag_render "$root/ops/gitea-ci/public.nginx.in" > "$tmp/mag-git.conf"
+run_cmd install -m 0644 "$tmp/gitea-proxy.inc" "$proxy" ||
   die 1 "install gitea-proxy.inc"
-run_cmd install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site" ||
+run_cmd install -m 0644 "$tmp/mag-git.conf" "$site" ||
   die 1 "install mag-git.conf"
 if ! run_cmd nginx -t || ! run_cmd systemctl reload nginx.service; then
   die 1 'nginx -t || systemctl reload nginx.service'
@@ -375,8 +380,8 @@ if command -v ss >/dev/null; then
   ss_tries=${MAG_GITEA_FUNNEL_SS_TRIES:-30}
   ss_sleep=${MAG_GITEA_FUNNEL_SS_SLEEP:-0.5}
   for ((i=1; i<=ss_tries; i++)); do
-    ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443' || break
-    echo "gitea funnel: waiting for 100.123.114.16:443 to leave ($i/${ss_tries})" >&2
+    ss -ltnH 'sport = :443' | grep -qF "$MAG_TAILNET_IP:443" || break
+    echo "gitea funnel: waiting for $MAG_TAILNET_IP:443 to leave ($i/${ss_tries})" >&2
     sleep "$ss_sleep"
   done
 fi
@@ -385,12 +390,12 @@ fi
 # A stream listen without ssl is allowed; scan only flags HTTP/ssl leftovers.
 dump_nginx_t "$tmp/nginx-scan"
 if ! python3 "$here/merge-gitea-funnel.py" scan <"$tmp/nginx-scan"; then
-  die 1 'nginx HTTP still binds 100.123.114.16:443 (scan)'
+  die 1 "nginx HTTP still binds $MAG_TAILNET_IP:443 (scan)"
 fi
-if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
-  echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
-  grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' "$tmp/nginx-scan" >&2 || true
-  die 1 'ss: 100.123.114.16:443 still taken'
+if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -qF "$MAG_TAILNET_IP:443"; then
+  echo "gitea funnel: $MAG_TAILNET_IP:443 is still taken; refusing to enable Funnel" >&2
+  grep -nF "$MAG_TAILNET_IP:443" "$tmp/nginx-scan" >&2 || true
+  die 1 "ss: $MAG_TAILNET_IP:443 still taken"
 fi
 keep_nginx=1
 if [[ $test_mode != 1 && -s $ini ]]; then
@@ -459,9 +464,9 @@ systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
 systemctl start mag-gitea-funnel.timer
 funnel_admin_note() {
   cat >&2 <<'EOF'
-Public DNS for mag.tail3e02ae.ts.net is published by Tailscale's control
+Public DNS for this node's MagicDNS name (MAG_TS_NAME) is published by Tailscale's control
 plane, not by this repo. The node already posts ServeConfig via LocalAPI
-(AllowFunnel mag.tail3e02ae.ts.net:443 -> tcp://127.0.0.1:4443 PROXY).
+(AllowFunnel <name>:443 -> tcp://127.0.0.1:4443 PROXY).
 That is `tailscale funnel --bg --tcp=443` with proxy protocol, not
 `tailscale funnel --bg` HTTPS. Do not add HTTPS-on-443: that swallows
 mag.stardenburg.de / bots / pages. Do not add a second serve on :443.
@@ -483,12 +488,12 @@ Network admin), not bootstrap:
 2. DNS page: MagicDNS ON and HTTPS Certificates ON. Funnel does not
    publish a public A/AAAA until both are on.
 3. Wait up to 10 minutes. Flush a cached NXDOMAIN (`dig @8.8.8.8
-   mag.tail3e02ae.ts.net A`). Local resolvers can keep NXDOMAIN longer.
+   <name> A`). Local resolvers can keep NXDOMAIN longer.
 EOF
 }
 if ! grep -Fq '127.0.0.1:4443' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
-  echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
-  echo 'nginx HTTP is off 100.123.114.16:443; tailscaled TCP-forwards :443 to 127.0.0.1:4443.' >&2
+  echo "gitea funnel: public Funnel is not active, so $MAG_TS_NAME has no public DNS" >&2
+  echo "nginx HTTP is off $MAG_TAILNET_IP:443; tailscaled TCP-forwards :443 to 127.0.0.1:4443." >&2
   funnel_admin_note
   if [[ ${MAG_GITEA_FUNNEL_REQUIRE_PUBLIC:-0} == 1 ]]; then
     die 1 'public Funnel is not active'

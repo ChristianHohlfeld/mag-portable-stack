@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run as chris. Builds the pinned, CPU-only llama.cpp server that both bots
+# Run as the owner (ops/host.env, chris on mag). Builds the pinned, CPU-only llama.cpp server that both bots
 # use (models.json: runtime.rev, runtime.dir). No GPU backend is compiled in:
 # the MI50 belongs to MAG Idol alone. A finished build is never rebuilt.
 set -euo pipefail
@@ -7,16 +7,18 @@ set -euo pipefail
 if [[ -z ${MAG_BUILD_PINNED:-} ]] && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
   MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 bash "$0" "$@"
 fi
-[[ $(id -un) == chris ]] || { echo 'run as chris, not root' >&2; exit 4; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-REV=$(jq -r '.runtime.rev' "$ROOT/ops/models/models.json")
-DIR=$(jq -r '.runtime.dir' "$ROOT/ops/models/models.json")
-[[ $REV =~ ^[a-f0-9]{40}$ && $DIR == /home/chris/* ]] || exit 4
+# shellcheck source=../host.sh
+source "$ROOT/ops/host.sh"
+[[ $(id -un) == "$MAG_OWNER" ]] || { echo "run as $MAG_OWNER, not $(id -un)" >&2; exit 4; }
+REV=$(mag_render "$ROOT/ops/models/models.json" | jq -r '.runtime.rev')
+DIR=$(mag_render "$ROOT/ops/models/models.json" | jq -r '.runtime.dir')
+[[ $REV =~ ^[a-f0-9]{40}$ && $DIR == "$MAG_OWNER_HOME"/* ]] || exit 4
 BIN="$DIR/$REV/bin/llama-server"
 if [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]]; then
   echo "model runtime already built: $BIN"; exit 0
 fi
-SRC=/home/chris/.local/src/mag-coding-llama.cpp
+SRC=$MAG_OWNER_HOME/.local/src/mag-coding-llama.cpp
 BUILD="$SRC/build-mag-models"
 if [[ ! -e $SRC/.git ]]; then
   mkdir -p "$(dirname "$SRC")"

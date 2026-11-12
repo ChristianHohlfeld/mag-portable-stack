@@ -5,7 +5,7 @@
 # (lightx2v, Apache-2.0). Resumable, one writer only (a lock), every large
 # file checked against its SHA256. Never deletes anything.
 set -e
-OUT=/home/chris/idol-mi50/weights/wan22-i2v
+OUT=${MAG_IDOL_BASE:-$HOME/idol-mi50}/weights/wan22-i2v
 mkdir -p "$OUT"; cd "$OUT"
 exec 9>"$OUT/.fetch.lock"
 flock -n 9 || { echo 'another fetch is running' >&2; exit 1; }

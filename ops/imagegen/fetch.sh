@@ -3,7 +3,7 @@
 # Resumable, one writer only (a lock), and every large file checked against its SHA256.
 set -e
 R=https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27
-OUT=/home/chris/idol-mi50/weights/flux2-klein-4b
+OUT=${MAG_IDOL_BASE:-$HOME/idol-mi50}/weights/flux2-klein-4b
 mkdir -p "$OUT"; cd "$OUT"
 exec 9>"$OUT/.fetch.lock"
 flock -n 9 || { echo 'another fetch is running' >&2; exit 1; }

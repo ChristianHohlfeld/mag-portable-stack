@@ -6,7 +6,7 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo "root required" >&2; exit 1; }
 [[ $# == 0 || ( $# == 1 && $1 == --no-reload ) ]] || exit 2
 . /etc/mag-acme/lego.env
-[[ ${MAG_ACME_DOMAIN:-} == mag.stardenburg.de ]] || exit 1
+[[ ${MAG_ACME_DOMAIN:-} =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$ ]] || exit 1
 src=/etc/mag-acme/lego/certificates
 crt=$src/$MAG_ACME_DOMAIN.crt
 key=$src/$MAG_ACME_DOMAIN.key

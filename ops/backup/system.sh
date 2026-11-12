@@ -25,6 +25,8 @@ set -euo pipefail
 umask 077
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 here=$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)
+# shellcheck source=../host.sh
+source "$here/../host.sh" 2>/dev/null || source /opt/mag-stack/current/ops/host.sh
 with_models=0
 [[ ${1:-} == --with-models ]] && with_models=1
 exec 9>/run/lock/mag-backup-system.lock
@@ -96,8 +98,8 @@ if [[ -f /var/lib/gitea/data/gitea.db ]]; then
   sqlite3 /var/lib/gitea/data/gitea.db ".timeout 10000" ".backup '$meta/gitea.db'"
 fi
 # Models: what they are and where they come from (no weights).
-cp "$here/../models/models.json" "$meta/models.json" 2>/dev/null || :
-find /home/chris/models /home/chris/idol-mi50/weights -type f -printf '%s\t%p\n' 2>/dev/null > "$meta/model-files.txt" || :
+cp /usr/local/lib/mag-models/models.json "$meta/models.json" 2>/dev/null || :
+find "$MAG_MODELS_HOME" "$MAG_IDOL_BASE/weights" -type f -printf '%s\t%p\n' 2>/dev/null > "$meta/model-files.txt" || :
 
 # --------------------------------------------------- a fresh save of each VM
 # A running VM's disk is never copied as it is; its newest save is.
@@ -131,7 +133,7 @@ cat > "$excludes" <<EOF
 /var/lib/mag-idol/tmp
 EOF
 if (( ! with_models )); then
-  printf '%s\n' /home/chris/models /home/chris/idol-mi50/weights '*.gguf' >> "$excludes"
+  printf '%s\n' "$MAG_MODELS_HOME" "$MAG_IDOL_BASE/weights" '*.gguf' >> "$excludes"
 fi
 trap 'rm -f "$excludes"; fail "aborted (exit $?)"' ERR
 tags=(--tag system)

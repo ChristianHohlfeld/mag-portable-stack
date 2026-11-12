@@ -6,6 +6,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../mag-units.sh
 source "$here/../mag-units.sh"
+# shellcheck source=../host.sh
+source "$here/../host.sh"
 test_mode=${MAG_BOTS_TESTING:-0}
 if [[ $test_mode != 1 && $EUID != 0 ]]; then
   echo "bot site install skipped (not root)" >&2
@@ -85,8 +87,8 @@ if grep -E '^[[:space:]]*listen[[:space:]]+(100\.123\.114\.16:443|@TAILNET_BIND@
   echo "bot vhost must not bind the Tailscale address" >&2
   exit 1
 fi
-sed -e 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' \
-    "$here/mag-bots.nginx.in" > "$conf.next"
+zone_regex=${MAG_BOTS_ZONE//./\\\\.}
+mag_render "$here/mag-bots.nginx.in" | sed -e "s|@ZONE_REGEX@|$zone_regex|g" > "$conf.next"
 install -m 0644 "$conf.next" "$conf"
 rm -f "$conf.next"
 restore_conf() {

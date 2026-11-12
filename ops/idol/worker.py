@@ -29,12 +29,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 from uuid import uuid4
+# The Idol environment of this host's owner (ops/host.env; ~/idol-mi50).
+IDOL_BASE = os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50"))
 
 ROOT = Path(os.environ.get("MAG_IDOL_JOB_ROOT", "/var/lib/mag-idol/jobs"))
-PYTHON = os.environ.get("MAG_IDOL_PYTHON", "/home/chris/idol-mi50/venv/bin/python")
-WEIGHTS = os.environ.get("MAG_IDOL_WEIGHTS", "/home/chris/idol-mi50/weights/idol")
-DINO = os.environ.get("IDOL_DINOV3", "/home/chris/idol-mi50/weights/dinov3-timm")
-VAE = os.environ.get("IDOL_FLUX2_VAE", "/home/chris/idol-mi50/weights/flux2vae")
+PYTHON = os.environ.get("MAG_IDOL_PYTHON", os.path.join(IDOL_BASE, "venv/bin/python"))
+WEIGHTS = os.environ.get("MAG_IDOL_WEIGHTS", os.path.join(IDOL_BASE, "weights/idol"))
+DINO = os.environ.get("IDOL_DINOV3", os.path.join(IDOL_BASE, "weights/dinov3-timm"))
+VAE = os.environ.get("IDOL_FLUX2_VAE", os.path.join(IDOL_BASE, "weights/flux2vae"))
 PORT = int(os.environ.get("MAG_IDOL_PORT", "8793"))
 CPUS = os.environ.get("MAG_IDOL_CPUS", "28-55")  # never the models' cores
 # A stage has no time limit: sampling on the MI50 at its 72 W takes as long
@@ -56,8 +58,8 @@ IMAGE_STEP = re.compile(r"MAG-IMAGE (\d+)/(\d+)")
 VIDEO_RESULTS = {"video.mp4": "video/mp4"}
 VIDEO_STEP = re.compile(r"MAG-VIDEO (\d+)/(\d+)")
 VIDEO_STAGE = re.compile(r"MAG-VIDEO-STAGE (.+)")
-VIDEO_PYTHON = os.environ.get("MAG_VIDEO_PYTHON", "/home/chris/idol-mi50/video/venv/bin/python")
-VIDEO_WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", "/home/chris/idol-mi50/weights/wan22-i2v"))
+VIDEO_PYTHON = os.environ.get("MAG_VIDEO_PYTHON", os.path.join(IDOL_BASE, "video/venv/bin/python"))
+VIDEO_WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", os.path.join(IDOL_BASE, "weights/wan22-i2v")))
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
 STEP = re.compile(r"(?<!\d)(\d{1,2})\s*/\s*50(?!\d)")
 STEP_ALT = re.compile(r"\b(?:step|schritt)\s*(\d{1,2})\s*(?:of|/|von)\s*50\b", re.I)
@@ -72,8 +74,8 @@ MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
 LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log", "image": "image.log", "video": "video.log"}
 # The whole shape (shape.py, TripoSG on the MI50) in an environment of its own;
 # where it is not installed, the mesh is made from the splat alone.
-SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", "/home/chris/idol-mi50/triposg/venv/bin/python")
-SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", "/home/chris/idol-mi50/weights/triposg")
+SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", os.path.join(IDOL_BASE, "triposg/venv/bin/python"))
+SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", os.path.join(IDOL_BASE, "weights/triposg"))
 # The MI50 does one thing at a time. Jobs of this queue already run one after
 # the other; a stage that uses the card also holds this lock for as long as it
 # runs (it is the stage's process that holds it, so it holds across a restart

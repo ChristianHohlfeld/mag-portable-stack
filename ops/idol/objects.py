@@ -22,10 +22,12 @@ import numpy as np
 import torch
 from PIL import Image, ImageOps
 from transformers import Sam2Model, Sam2Processor
+# The Idol environment of this host's owner (ops/host.env; ~/idol-mi50).
+IDOL_BASE = os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50"))
 
-WEIGHTS = os.environ.get("MAG_IDOL_SAM2", "/home/chris/idol-mi50/weights/sam2")
-DEPTH = os.environ.get("MAG_IDOL_DEPTH", "/home/chris/idol-mi50/weights/depth")
-IDOL = os.environ.get("MAG_IDOL_WEIGHTS", "/home/chris/idol-mi50/weights/idol")
+WEIGHTS = os.environ.get("MAG_IDOL_SAM2", os.path.join(IDOL_BASE, "weights/sam2"))
+DEPTH = os.environ.get("MAG_IDOL_DEPTH", os.path.join(IDOL_BASE, "weights/depth"))
+IDOL = os.environ.get("MAG_IDOL_WEIGHTS", os.path.join(IDOL_BASE, "weights/idol"))
 SIDE = 1536          # the photo is looked at no larger than this
 GRID = 12            # --all asks at GRID x GRID places
 MOST = 12            # ... and keeps at most this many objects

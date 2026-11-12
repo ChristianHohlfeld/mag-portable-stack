@@ -5,6 +5,7 @@
 #include "engine.hpp"
 #include "idol.hpp"
 #include "push.hpp"
+#include "vault.hpp"
 
 #include <regex>
 
@@ -12,8 +13,10 @@ namespace mag {
 
 class Api {
 public:
-  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, Plugins &plugins, auth::Gate &gate, Push &push, Assist &assist)
-      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), plugins_(plugins), gate_(gate), push_(push), assist_(assist) {
+  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, Plugins &plugins, auth::Gate &gate, Push &push, Assist &assist,
+      Vault &vault)
+      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), plugins_(plugins), gate_(gate), push_(push), assist_(assist),
+        vault_(vault) {
     // A photo's whole room: when the last of its models is through, they become one scene.
     idol_.on_scene_part = [this](const std::string &group) { assemble(group); };
     std::thread([this] { idol_.settle_scenes(); }).detach();
@@ -127,6 +130,13 @@ public:
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
         Val v = Val::object();
         v["plugins"] = plugins_.list();
+        return http::send_json(fd, 200, v);
+      }
+      if (p == "/api/pay/cards") {
+        // Chris's saved cards as the page shows them: brand, last four digits, expiry, name.
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        Val v = Val::object();
+        v["cards"] = vault_.list();
         return http::send_json(fd, 200, v);
       }
       if (p == "/api/system") return system_info(fd);
@@ -263,6 +273,36 @@ public:
       if (!plugins_.decide(id, decision) && !assist_.decide(id, decision)) return http::send_error(fd, 409, "Diese Freigabe wartet nicht mehr");
       return http::send_ok(fd);
     }
+    if (starts_with(p, "/api/pay/cards")) {
+      // Chris's saved cards: brand and last four digits out, a whole card in, sealed.
+      if (r.method == "DELETE" && p.size() > 15) return vault_.remove(p.substr(15)) ? http::send_ok(fd) : http::send_error(fd, 404, "Karte nicht gefunden");
+      if (r.method == "POST") {
+        Val in = jparse(r.body);
+        const std::string why = vault_.add(jstr(in, "number"), jstr(in, "exp"), jstr(in, "name"));
+        in = Val();
+        if (!why.empty()) return http::send_error(fd, 422, why);
+        Val v = Val::object();
+        v["cards"] = vault_.list();
+        return http::send_json(fd, 200, v);
+      }
+    }
+    if (r.method == "POST" && starts_with(p, "/api/pay/fill/")) {
+      // At a checkout in a bot's browser: the chosen card, with the security
+      // code Chris gives now, typed into the page by the room.
+      const Val card = assist_.waiting_card(p.substr(14));
+      if (!card.isObj() || jstr(card, "action") != "pay") return http::send_error(fd, 409, "Diese Bezahlung wartet nicht mehr");
+      Val in = jparse(r.body);
+      Val saved = vault_.open(jstr(in, "card"));
+      std::string cvc = jstr(in, "cvc");
+      in = Val();
+      if (!saved.isObj()) return http::send_error(fd, 404, "Karte nicht gefunden");
+      const std::string why = fill_card(jstr(room_.bot(jstr(card, "bot")), "vm"), saved, cvc, card);
+      saved = Val();
+      std::fill(cvc.begin(), cvc.end(), '\0');
+      if (!why.empty()) return http::send_error(fd, 422, why);
+      assist_.decide(jstr(card, "id"), "done");
+      return http::send_ok(fd);
+    }
     if (r.method == "POST" && starts_with(p, "/api/login/")) {
       // Chris's login for a page that waits in a bot's browser: typed into the
       // page by the room, never stored, never logged, never shown to a model.
@@ -342,6 +382,7 @@ private:
   auth::Gate &gate_;
   Push &push_;
   Assist &assist_;
+  Vault &vault_;
   std::string version_, web_;
 
   static constexpr const char *kNoAccess =
@@ -818,6 +859,69 @@ private:
     int again_user = 0, again_pass = 0;
     if (fields(again_user, again_pass) && again_pass)
       return "Die Seite fragt noch nach dem Passwort (falsch, oder ein weiterer Schritt). Übernimm den Browser selbst.";
+    return "";
+  }
+
+  // Types a saved card into the checkout in a bot's browser. Fields the page
+  // itself has are found by their names; a card form in a frame of the
+  // payment provider is reached by the field the bot named (its number or
+  // point): clicked, the number typed, then Tab and each further field in
+  // the order the bot gave. Nothing of it is logged or returned.
+  std::string fill_card(const std::string &vm, const Val &saved, const std::string &cvc, const Val &card) {
+    if (!vm::valid_name(vm)) return "Dieser Bot hat keinen Browser.";
+    const auto type = [&](const Val &target, const std::string &text) {
+      Val body = Val::object();
+      body["text"] = text;
+      if (target.find("n")) body["n"] = jnum(target, "n");
+      return guests_.browser(vm, "POST", "/type", mj::dump(body), 60, nullptr).status == 200;
+    };
+    const std::string number = jstr(saved, "number"), exp = jstr(saved, "exp"), name = jstr(saved, "name");
+    // 1. Fields of the page itself, by their names.
+    const auto r = guests_.browser(vm, "GET", "/elements", "", 30, nullptr);
+    if (r.status != 200) return "Der Browser des Bots antwortet nicht.";
+    const Val v = jparse(r.body);
+    int n_number = 0, n_exp = 0, n_cvc = 0, n_name = 0;
+    static const std::regex is_number("kartennummer|card ?number|cardnumber|cc-?number|nummer der karte", std::regex::icase),
+        is_exp("ablauf|gültig|expir|mm ?/ ?(yy|jj)|cc-?exp", std::regex::icase), is_cvc("cvc|cvv|prüf|sicherheitscode|security code|cc-?csc", std::regex::icase),
+        is_name("inhaber|name on card|cardholder|cc-?name|name auf der karte", std::regex::icase);
+    if (const Val *els = v.find("elements"); els && els->isArr())
+      for (auto &e : els->asArr()) {
+        const std::string kind = jstr(e, "kind"), label = jstr(e, "label");
+        if (kind != "text" && kind != "tel" && kind != "number" && kind != "password") continue;
+        const int n = (int)jnum(e, "n");
+        if (!n_number && std::regex_search(label, is_number)) n_number = n;
+        else if (!n_exp && std::regex_search(label, is_exp)) n_exp = n;
+        else if (!n_cvc && std::regex_search(label, is_cvc)) n_cvc = n;
+        else if (!n_name && std::regex_search(label, is_name)) n_name = n;
+      }
+    const auto at = [](int n) { Val t = Val::object(); t["n"] = (double)n; return t; };
+    if (n_number) {
+      if (!type(at(n_number), number)) return "Die Kartennummer ließ sich nicht eintragen.";
+      if (n_exp && !type(at(n_exp), exp)) return "Das Ablaufdatum ließ sich nicht eintragen.";
+      if (n_cvc && !cvc.empty() && !type(at(n_cvc), cvc)) return "Die Prüfnummer ließ sich nicht eintragen.";
+      if (n_name && !name.empty() && !type(at(n_name), name)) return "Der Name ließ sich nicht eintragen.";
+      return "";
+    }
+    // 2. A form in a frame: by the field the bot named, then Tab from field to field.
+    const Val target = Assist::at(card, "target");
+    if (!target.isObj() || (!target.find("n") && !target.find("x"))) return "Das Kartenfeld ist auf der Seite nicht zu finden. Übernimm den Browser selbst.";
+    Val click = Val::object();
+    for (const char *k : {"n", "x", "y"}) if (target.find(k)) click[k] = jnum(target, k);
+    if (guests_.browser(vm, "POST", "/click", mj::dump(click), 45, nullptr).status != 200) return "Das Kartenfeld ließ sich nicht anklicken.";
+    usleep(300000);
+    if (!type(Val::object(), number)) return "Die Kartennummer ließ sich nicht eintragen.";
+    std::vector<std::string> order = {"exp", "cvc", "name"};
+    if (const Val *o = card.find("order"); o && o->isArr() && !o->asArr().empty()) {
+      order.clear();
+      for (auto &x : o->asArr()) if (x.type == Val::STR) order.push_back(x.asStr());
+    }
+    for (auto &field : order) {
+      const std::string text = field == "exp" ? exp : field == "cvc" ? cvc : field == "name" ? name : "";
+      if (text.empty()) continue;
+      guests_.browser(vm, "GET", "/key?key=Tab", "", 30, nullptr);
+      usleep(150000);
+      if (!type(Val::object(), text)) return "Ein Kartenfeld ließ sich nicht eintragen.";
+    }
     return "";
   }
 

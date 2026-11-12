@@ -141,6 +141,7 @@ public:
     std::lock_guard<std::mutex> lk(mu_);
     round_limit_ = limit;
     bot_turns_ = 0;
+    lead_.clear(); // a new request: whoever acts on it first carries it out
     passes_ = 0;
     audience_.clear();
     if (only) audience_.insert(to.begin(), to.end());
@@ -581,6 +582,7 @@ private:
   vm::Guests &guests_;
   Scenes &scenes_;
   Plugins &plugins_;
+  std::string lead_; // the bot that carries out Chris's current request (the first one to act on it)
   const bool phone_; // the phone's control daemon was set up when the room started: only then the bots have its tools
   std::vector<std::unique_ptr<Bot>> bots_;
   std::mutex mu_;
@@ -748,6 +750,8 @@ private:
       s += "\nWerkzeuge\n"
            "- Du hast eine eigene Linux-VM (Benutzer bot, Home /home/bot) mit Shell, Dateien und einem echten Chrome-Browser. Chris sieht jeden Schritt live mit Befehl, Ausgabe und Laufzeit und kann ihn abbrechen.\n"
            "- Nutze Werkzeuge, statt Handlungen nur zu beschreiben, und schreibe vor dem ersten Werkzeug einen kurzen Satz, was du vorhast. Behaupte kein Ergebnis, das kein Werkzeug geliefert hat.\n"
+           "- Trägt Chris dir etwas auf, verfolgst du das Ziel selbst bis zum Ende: Schritt für Schritt, nach einem Fehler neu hinsehen und einen anderen Weg nehmen, nie mitten drin aufhören. Nur eine echte Sperre (Anmeldung, Freigabe, Bezahlung) gibst du über ihre Karte an Chris. Am Ende ein, zwei Sätze auf Deutsch mit dem Ergebnis. Führt schon der andere Bot die Aufgabe aus, machst du sie nicht noch einmal.\n"
+           "- Kartendaten tippst du nie: an der Kasse rufst du browser_pay auf.\n"
            "- Nach zweimal demselben Fehler prüfst du die Ursache, statt blind zu wiederholen. Eine Zugriffssperre einer Website ist kein Cookie-Problem, solange nichts darauf hinweist. Login, CAPTCHA und 2FA umgehst du nicht: dafür rufst du browser_login auf (keine Freigabe nötig), Chris erledigt es auf der Karte.\n"
            "- Vor folgenreichen Aktionen (Geld, Veröffentlichen, Nachrichten an Dritte, fremde Daten löschen, eine Routine einrichten) rufst du direkt davor selbst das Werkzeug consent auf und tust nur, was es freigibt. Bitte nie im Text um Erlaubnis: Chris entscheidet auf der Karte, die consent ihm zeigt; ein Ja im Chat ist keine Freigabe. Kartennummern und Passwörter gibst du nie in ein Werkzeug oder den Chat; bezahlen tut Chris selbst in deinem Browser, wenn kein anderer Weg freigegeben ist.\n"
            "- Im Browser arbeitest du wie ein Mensch am Bildschirm: browser_look zeigt die Seite mit nummerierten Elementen, du klickst oder tippst per Nummer und siehst danach nach, was passiert ist. Bleib dran, bis das Ziel erreicht ist; ein Klick ins Leere ist kein Grund aufzuhören. "
@@ -1839,6 +1843,31 @@ private:
     look.found = true;
   }
 
+  // Tools that do something (as opposed to reading or remembering): one bot carries out a request.
+  static bool acts(const std::string &tool) {
+    static const std::set<std::string> doing = {"shell", "write_file", "share_file", "consent", "routine", "image_generate",
+                                                "video_generate", "photo_to_3d", "scene_3d", "browser_login", "browser_pay"};
+    return doing.count(tool) || (starts_with(tool, "browser_") && tool != "browser_read") || starts_with(tool, "s23_") ||
+           Plugins::is_tool(tool);
+  }
+
+  // A text that says what the bot will do instead of doing it.
+  static bool announces(const std::string &text) {
+    const std::string low = lower(text);
+    for (const char *w : {"ich werde ", "als nächstes", "als nächstes ", "jetzt klicke", "jetzt öffne", "jetzt suche", "ich versuche jetzt",
+                          "versuche ich", "ich klicke", "ich öffne", "ich gehe jetzt", "einen moment", "i will ", "let me ", "next, i", "i'll "})
+      if (low.find(w) != std::string::npos) return true;
+    return false;
+  }
+
+  // What Chris asked last (or a routine), for the goal driver's note.
+  std::string goal_of() {
+    const std::vector<Val> all = room_.all();
+    for (auto it = all.rbegin(); it != all.rend(); ++it)
+      if (jstr(*it, "role") == "user" && !trim(jstr(*it, "text")).empty()) return trim(jstr(*it, "text"));
+    return "die letzte Bitte von Chris";
+  }
+
   // An answer that asks Chris in words for an approval (to buy, send, delete,
   // publish) instead of calling consent.
   static bool asks_in_words(const std::string &text) {
@@ -2131,6 +2160,9 @@ private:
     std::string reasoning;   // the turn's thoughts as the model wrote them; the message shows them tidied
     bool visible = false;
     bool ok_tool = false;
+    bool last_ok = true;     // how the last tool call went
+    bool blocked = false;    // a card ended without a yes (consent, login): a real blocker
+    int drives = 0;          // times the room sent the bot back to its goal in this turn
     std::string tool_sig;
     int steps = 0;
     size_t asked_at = 0;     // parts of the message that were there when Chris last wrote into this turn
@@ -2466,6 +2498,25 @@ private:
           save_wire(b);
           continue;
         }
+        // The goal driver: a bot that worked with tools for Chris and stops
+        // after a failed step, without a word, or saying what it will do
+        // next, is sent back to the goal (three times a turn at most). A
+        // card that ended without a yes is a real blocker and ends the work.
+        if (reason == "human" && t.steps > 0 && !t.blocked && t.drives < 3 && (!t.last_ok || trim(content).empty() || announces(content))) {
+          ++t.drives;
+          logf("engine: " + b.id + " stopped short of its goal; the room sends it on (" + std::to_string(t.drives) + ")");
+          Val note = Val::object();
+          note["role"] = "user";
+          note["content"] = "(Notiz des Raums, nicht von Chris: Das Ziel ist noch nicht erreicht: »" + clip(goal_of(), 400, "…") + "«. " +
+                            std::string(!t.last_ok ? "Der letzte Schritt ging schief. Sieh dir die Lage neu an (browser_look oder ein anderer Befehl) und nimm einen anderen Weg. "
+                                                   : "Mach jetzt selbst weiter, statt es anzukündigen. ") +
+                            "Hör erst auf, wenn das Ziel erreicht ist oder ein echter Blocker da ist (dann browser_login oder consent, die Karte erledigt Chris). "
+                            "Am Ende schreibst du Chris kurz auf Deutsch das Ergebnis.)";
+          note["_turn"] = t.token;
+          b.wire["messages"].push(note);
+          save_wire(b);
+          continue;
+        }
         break;
       }
 
@@ -2491,8 +2542,21 @@ private:
         const int index = room_.add_step(t.id, part);
         set_phase(b, "tool", title);
         tools::Result result;
+        std::string lead;
+        if (acts(c.name)) {
+          // One bot carries out what Chris asked; the other does not do it a second time.
+          std::lock_guard<std::mutex> lk(mu_);
+          if (lead_.empty()) lead_ = b.id;
+          if (lead_ != b.id) lead = lead_;
+        }
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
+        } else if (!lead.empty()) {
+          std::string who = lead;
+          const Val all = room_.bots();
+          for (auto &o : all.asArr()) if (jstr(o, "id") == lead) who = jstr(o, "name");
+          result = {who + " erledigt diese Aufgabe schon. Mach sie nicht doppelt: ergänze höchstens kurz mit Worten, was " + who +
+                        " fehlt, sonst antworte PASS.", false};
         } else if (bad_args) {
           result = tools::fail("Die Argumente dieses Aufrufs waren kein gültiges JSON-Objekt (unvollständig oder falsch geschlossen); er wurde nicht ausgeführt. "
                                "Rufe das Werkzeug noch einmal mit vollständigen Argumenten auf, wenn du es noch brauchst.");
@@ -2544,6 +2608,39 @@ private:
                 result = {decision == "stopped" ? "abgebrochen (Stop)" : decision == "timeout" ? "Chris hat sich in 15 Minuten nicht angemeldet. Sag ihm kurz, dass du dort auf ihn wartest."
                           : "Chris hat die Anmeldung abgelehnt. Mach dort nicht weiter.", false};
               }
+            } else if (c.name == "browser_pay" && assist && vm::valid_name(jstr(me, "vm"))) {
+              // First the purchase, by Chris's rules (a consent card or his auto mode
+              // within the limits); then the card, which the room types into the page.
+              Val buy = Val::object();
+              buy["action"] = "buy";
+              buy["what"] = jstr(args, "what");
+              buy["to"] = jstr(args, "shop");
+              buy["amount_eur"] = jnum(args, "amount_eur");
+              bool yes = false;
+              const std::string said = assist->consent(b.id, buy, cancel.get(), card, &yes);
+              if (!yes) {
+                result = {said, false};
+              } else {
+                Val ask = Val::object();
+                ask["bot"] = b.id;
+                ask["action"] = "pay";
+                ask["label"] = "Bezahlen";
+                ask["site"] = clip(trim(jstr(args, "shop")), 120, "…");
+                ask["what"] = clip(trim(jstr(args, "what")), 300, "…");
+                ask["amount_eur"] = jnum(args, "amount_eur");
+                Val target = Val::object();
+                for (const char *k : {"n", "x", "y"}) if (args.find(k)) target[k] = jnum(args, k);
+                ask["target"] = target;
+                if (const Val *order = args.find("order"); order && order->isArr()) ask["order"] = *order;
+                const std::string decision = assist->await_card(ask, cancel.get(), card);
+                if (decision == "done") {
+                  tools::Result seen = tools::look(ctx, jstr(me, "vm"));
+                  result = {"Die Karte ist eingetragen (du siehst sie nicht). Prüfe die Seite und schließe die Bestellung ab:\n" + seen.text, true};
+                } else {
+                  result = {decision == "stopped" ? "abgebrochen (Stop)" : decision == "timeout" ? "Chris hat die Karte in 15 Minuten nicht eingetragen."
+                            : "Chris hat die Bezahlung abgebrochen. Bestelle nicht.", false};
+                }
+              }
             } else if ((c.name == "consent" || c.name == "routine") && !assist) {
               result = tools::fail("Freigaben und Routinen sind hier nicht eingerichtet.");
             } else if (c.name == "consent") {
@@ -2580,6 +2677,9 @@ private:
           if (c.name == "shell" && starts_with(result.text, "exit=")) s["exit"] = atoi(result.text.c_str() + 5);
         });
         if (result.ok) t.ok_tool = true;
+        t.last_ok = result.ok || was_cancelled;
+        if (!result.ok && (c.name == "consent" || c.name == "browser_login" || c.name == "browser_pay" || result.text.find(" erledigt diese Aufgabe schon") != std::string::npos))
+          t.blocked = true;
         t.tool_sig += c.name + ":" + c.arguments + ";";
         ++t.steps;
         Val tr = Val::object();

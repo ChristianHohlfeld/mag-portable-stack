@@ -339,6 +339,24 @@
           }
         }).catch(() => {});
         loadAssist();
+
+        // Payment cards, sealed on the server; the bots never see them. At a checkout the room types the chosen one into the page.
+        const cardsCard = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Zahlung' }), cardsCard,
+          el('p', { class: 'fine', text: 'Karten liegen verschlüsselt auf dem Server (AES-256-GCM); die Prüfnummer wird nie gespeichert, du gibst sie an der Kasse. Die Bots sehen nur Marke und die letzten vier Ziffern. PayPal und Co.: über die Anmeldekarte im Chat.' }));
+        const loadCards = () => MAG.api('GET', '/api/pay/cards').then((out) => {
+          cardsCard.replaceChildren(...out.cards.map((c) => row(c.brand + ' •••• ' + c.last4, c.exp + (c.name ? ' · ' + c.name : ''),
+            el('button', { class: 'pill danger', text: 'Löschen', onclick: () => call('DELETE', '/api/pay/cards/' + c.id).then(loadCards) }))));
+          const number = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'cc-number', placeholder: 'Kartennummer', 'aria-label': 'Kartennummer' });
+          const exp = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'cc-exp', placeholder: 'MM/JJ', 'aria-label': 'Ablauf', maxLength: 7 });
+          const holder = el('input', { type: 'text', autocomplete: 'cc-name', placeholder: 'Name auf der Karte', 'aria-label': 'Name auf der Karte' });
+          const save = el('button', { class: 'btn', text: 'Karte speichern', onclick: () => {
+            save.disabled = true;
+            call('POST', '/api/pay/cards', { number: number.value, exp: exp.value, name: holder.value }).then(() => { number.value = exp.value = holder.value = ''; loadCards(); }, () => { save.disabled = false; });
+          } });
+          cardsCard.append(el('details', { class: 'mem skill add' }, el('summary', {}, el('b', { text: 'Karte hinzufügen' })), el('div', { class: 'form' }, number, exp, holder, save)));
+        }).catch(() => {});
+        loadCards();
       }
 
       // What the bots wrote down for each other: how they do recurring work.

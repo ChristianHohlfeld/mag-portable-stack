@@ -83,7 +83,7 @@
     };
     // A plugin tool, or an action the bot asked about (consent: send, buy, delete, publish, a routine).
     const euro = (n) => n.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-    const asking = !ask ? null : ask.action === 'login' ? loginCard(m, ask) : ask.action ? el('span', { class: 'ask' },
+    const asking = !ask ? null : ask.action === 'login' ? loginCard(m, ask) : ask.action === 'pay' ? payCard(m, ask) : ask.action ? el('span', { class: 'ask' },
       el('b', { text: MAG.name(m.from) + ' bittet um Freigabe: ' + ask.label + (ask.amount_eur ? ' · ' + euro(ask.amount_eur) : '') + (ask.to ? ' · ' + ask.to : '') }),
       el('span', { class: 'what', text: ask.what }),
       S.you.role === 'owner' ? el('span', { class: 'btns' },
@@ -141,16 +141,7 @@
           (x) => { go.disabled = false; note.textContent = x.message; });
     } }, user, pass, go);
     // The bot's browser in a sheet: Chris logs in himself (passkey, code), then lets the bot go on.
-    const takeOver = () => {
-      let live = null;
-      const sheet = MAG.sheet('Browser von ' + name, (content, _, close) => {
-        live?.stop();
-        live = MAG.liveView(m.from);
-        content.append(el('p', { class: 'fine', text: 'Melde dich hier selbst an (Passkey, Code per SMS, Captcha). Danach macht ' + name + ' weiter.' }), live.node,
-          el('div', { class: 'btns' }, el('button', { class: 'btn', text: 'Fertig, weiter', onclick: () => { decide('done'); close(); } })));
-      });
-      sheet.addEventListener('closed', () => live?.stop());
-    };
+    const takeOver = () => browserSheet(m.from, 'Melde dich hier selbst an (Passkey, Code per SMS, Captcha). Danach macht ' + name + ' weiter.', () => decide('done'));
     return el('span', { class: 'ask' },
       el('b', { text: name + ' braucht eine Anmeldung bei ' + (ask.site || 'einer Seite') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,
@@ -159,6 +150,50 @@
         el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); takeOver(); } }),
         el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
       note);
+  }
+
+  // A checkout in a bot's browser: Chris picks a saved card and gives its
+  // security code; the room types the card into the page (the bot never
+  // sees it). Or he pays himself in the bot's browser.
+  function payCard(m, ask) {
+    const name = MAG.name(m.from), owner = S.you.role === 'owner';
+    const note = el('small', { class: 'note' });
+    const decide = (decision) => MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
+    const choice = el('select', { 'aria-label': 'Karte' });
+    const cvc = el('input', { type: 'password', inputMode: 'numeric', autocomplete: 'cc-csc', placeholder: 'Prüfnummer (CVC)', maxLength: 4 });
+    const go = el('button', { class: 'yes', type: 'submit', text: 'Karte eintragen' });
+    if (owner) MAG.api('GET', '/api/pay/cards').then((out) => {
+      if (!out.cards.length) { note.textContent = 'Noch keine Karte gespeichert (Einstellungen › Zahlung). Oder bezahle selbst im Browser.'; go.disabled = true; }
+      for (const c of out.cards) choice.append(el('option', { value: c.id, text: c.brand + ' •••• ' + c.last4 + ' · ' + c.exp }));
+    }).catch(() => {});
+    const form = el('form', { class: 'login', onsubmit: (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      note.textContent = 'Wird in den Browser von ' + name + ' eingetragen …';
+      MAG.api('POST', '/api/pay/fill/' + ask.id, { card: choice.value, cvc: cvc.value })
+        .then(() => { cvc.value = ''; note.textContent = 'Eingetragen; ' + name + ' schließt die Bestellung ab.'; },
+          (x) => { go.disabled = false; note.textContent = x.message; });
+    } }, choice, cvc, go);
+    const euro = ask.amount_eur ? ask.amount_eur.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) : '';
+    return el('span', { class: 'ask' },
+      el('b', { text: name + ' ist an der Kasse: ' + (ask.site || '') + (euro ? ' · ' + euro : '') }),
+      ask.what ? el('span', { class: 'what', text: ask.what }) : null,
+      owner ? form : null,
+      owner ? el('span', { class: 'btns' },
+        el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Bezahle hier selbst. Danach macht ' + name + ' weiter.', () => decide('done')); } }),
+        el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
+      note);
+  }
+  // The bot's browser in a sheet, with one button that lets the bot go on.
+  function browserSheet(bot, hint, done) {
+    let live = null;
+    const sheet = MAG.sheet('Browser von ' + MAG.name(bot), (content, _, close) => {
+      live?.stop();
+      live = MAG.liveView(bot);
+      content.append(el('p', { class: 'fine', text: hint }), live.node,
+        el('div', { class: 'btns' }, el('button', { class: 'btn', text: 'Fertig, weiter', onclick: () => { done(); close(); } })));
+    });
+    sheet.addEventListener('closed', () => live?.stop());
   }
 
   // Only the newest browser picture of an answer stands in its line; the others open with their step.

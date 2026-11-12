@@ -188,6 +188,18 @@ his login into a form that the room fills into the VM's page (never stored,
 logged or shown to a model) or takes the bot's browser over himself; then
 the bot sees the page and goes on. Sessions and cookies stay in the VM's
 Chrome profile. A model's thoughts are never shown in the chat.
+At a checkout a bot calls `browser_pay`: the purchase goes through
+`consent` (kind buy, Chris's rules and limits), then a card where Chris
+picks a saved card and gives its security code; the room types it into the
+page (fields of the page by their names, a provider's frame by the field
+the bot named and Tab). Cards are sealed in `STATE/pay/cards.enc`
+(AES-256-GCM, key `STATE/pay/vault.key`, 0600); the security code is never
+stored; the page and the bots see brand and last four digits only.
+The room drives a bot to its goal: one bot carries out a request (the first
+to act on it; the other's acting tools are refused with who does it), and a
+bot that worked with tools and stops after a failed step, without a word or
+announcing what it will do is sent on by a room note, three times a turn at
+most; a card that ended without a yes is a real blocker and ends the work.
 The bots read the whole chat: text files inline, 3D orders and their
 results, images and documents. A document is read for them once: the text of
 a PDF (OCR on the first pages of a scan), a Word, OpenDocument or PowerPoint

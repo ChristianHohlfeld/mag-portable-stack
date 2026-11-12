@@ -16,7 +16,7 @@ units=(
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service
   mag-gitea-runner.service mag-gitea-funnel.service mag-gitea-funnel.timer
   mag-tailscale-cert.timer mag-tailscale-egress.timer mag-acme-renew.timer
-  mag-stack-check.timer mag-agent-drift.timer mag-bot-saves.timer cpu-perf.service
+  mag-stack-check.timer mag-agent-drift.timer mag-bot-saves.timer mag-backup-system.timer cpu-perf.service
   mag-backup-daily.timer mag-backup-weekly.timer mag-backup-monthly.timer
   mag-backup-monitor.timer mag-backup-restore-test.timer mag-backup-clear.timer
 )

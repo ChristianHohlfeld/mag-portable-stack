@@ -94,7 +94,7 @@ install -d -m 0700 "$BACKUP"
 # but does not block a release: the rollback copy below is always taken.
 if systemctl cat mag-backup-deploy.service >/dev/null 2>&1; then
   install -d -m 0755 /usr/local/lib/mag-backup
-  for name in common.sh backup.sh restore.sh maintenance.sh; do
+  for name in common.sh backup.sh restore.sh maintenance.sh system.sh system-restore.sh install-restic-0181.sh; do
     install -m 0755 "$SOURCE/ops/backup/$name" "/usr/local/lib/mag-backup/$name"
   done
   printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
@@ -207,7 +207,8 @@ for unit in "$SOURCE"/ops/backup/units/*.service; do
   [[ ! -e $UNITS/$(basename "$unit") ]] || install -m 0644 "$unit" "$UNITS/$(basename "$unit")"
 done
 # The backup Chris asks for (settings or chat) runs where the backup is installed.
-[[ ! -e $UNITS/mag-backup-daily.service ]] || install -m 0644 "$SOURCE/ops/backup/units/mag-backup-chat.service" $UNITS/
+[[ ! -e $UNITS/mag-backup-daily.service ]] || install -m 0644 "$SOURCE/ops/backup/units/mag-backup-chat.service" \
+  "$SOURCE/ops/backup/units/mag-backup-system.service" "$SOURCE/ops/backup/units/mag-backup-system.timer" $UNITS/
 systemctl daemon-reload
 systemctl enable mag-120.service mag-browser-webrtc.service >/dev/null 2>&1 || :
 # VM isolation rules come from the release (ops/firewall.sh, mag-agents.nft).
@@ -254,6 +255,8 @@ soft systemctl enable --now mag-stack-check.timer
 [[ ! -e $UNITS/mag-audit-nft.service ]] || soft bash "$SOURCE/ops/audit/apply-nft.sh"
 # Every bot VM is saved each night (magbot save-all; the last four per bot).
 soft systemctl enable --now mag-bot-saves.timer
+# The whole system, weekly (ops/backup/system.sh; a disk at /mnt/mag-backup is used by itself).
+[[ ! -e $UNITS/mag-backup-system.timer ]] || soft systemctl enable --now mag-backup-system.timer
 soft bash "$SOURCE/ops/boot/ensure-boot.sh"
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   soft bash "$SOURCE/ops/prune-releases.sh"

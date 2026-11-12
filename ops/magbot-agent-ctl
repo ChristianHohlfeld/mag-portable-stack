@@ -30,6 +30,10 @@ if [[ $# == 2 && $1 == saves && $2 =~ ^agent[0-9]+$ ]]; then exec "$magbot" save
 if [[ $# == 1 && $1 == backup ]]; then
   exec systemctl --no-block start mag-backup-chat.service mag-bot-saves@chat.service
 fi
+# ... or of the whole system (ops/backup/system.sh), for a new machine.
+if [[ $# == 1 && $1 == backup-system ]]; then
+  exec systemctl --no-block start mag-backup-system.service
+fi
 [[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == reset || $1 == audit-proxy || $1 == ip || $1 == verify) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
 if [[ $1 == verify ]]; then
   # Native read-only registry check. Exit 3 means missing metadata; any other

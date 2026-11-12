@@ -304,6 +304,38 @@
         pushState().then((on) => { sw.firstChild.checked = on; state.textContent = Notification.permission === 'denied' ? 'im Browser blockiert' : on ? 'bei fertigen langen Antworten und Fehlern' : 'aus'; });
       }
 
+      // Approvals per action and the auto mode; the routines the bots run by themselves.
+      if (owner()) {
+        const rulesCard = el('div', { class: 'card' }), routinesCard = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Freigaben' }), rulesCard,
+          el('p', { class: 'fine', text: 'Vor Senden, Kaufen, Löschen, Veröffentlichen und neuen Routinen fragen die Bots um Freigabe. „Fragen“ zeigt eine Karte im Chat. Der Auto-Modus erlaubt alles, was auf „Fragen“ steht, ohne Rückfrage; Käufe nur innerhalb der Grenzen, „Nie“ bleibt nie. Jede Entscheidung steht im Journal. Kartennummern und Passwörter bekommen die Bots nie.' }),
+          el('h3', { text: 'Routinen' }), routinesCard);
+        const kinds = [['send', 'Senden'], ['buy', 'Kaufen'], ['delete', 'Löschen'], ['publish', 'Veröffentlichen'], ['routine', 'Routine einrichten']];
+        const euros = [[0, 'keine'], [10, '10 €'], [25, '25 €'], [50, '50 €'], [100, '100 €'], [250, '250 €'], [500, '500 €']];
+        const loadAssist = () => MAG.api('GET', '/api/routines').then((out) => {
+          const r = out.rules, save = (patch) => call('PUT', '/api/settings', { assist: Object.assign({ auto: r.auto, rules: r.rules, once_eur: r.once_eur, day_eur: r.day_eur }, patch) }).then(loadAssist);
+          rulesCard.replaceChildren(
+            row('Auto-Modus', 'Die Bots arbeiten ohne Rückfrage, in diesen Regeln und Grenzen', toggle(r.auto, (v) => save({ auto: v }))),
+            ...kinds.map(([k, label]) => row(label, null, select(r.rules[k], [['ask', 'Fragen'], ['auto', 'Ohne Nachfrage'], ['never', 'Nie']], (v) => save({ rules: Object.assign({}, r.rules, { [k]: v }) })))),
+            row('Höchstens je Kauf', 'Darüber kommt immer eine Karte', select(r.once_eur, euros, (v) => save({ once_eur: +v }))),
+            row('Höchstens je Tag', 'Heute freigegeben: ' + r.spent_today.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }), select(r.day_eur, euros.concat([[1000, '1000 €']]), (v) => save({ day_eur: +v }))));
+          routinesCard.replaceChildren();
+          if (!out.routines.length) routinesCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keine. Bitte einen Bot im Chat, etwas regelmäßig zu tun („Lena, schick mir jeden Morgen um 7 …“).' }))));
+          for (const one of out.routines) {
+            const act = (what) => () => call(what === 'remove' ? 'DELETE' : 'POST', '/api/routines/' + one.id + (what === 'remove' ? '' : '/' + what)).then(loadAssist);
+            routinesCard.append(el('details', { class: 'mem skill' },
+              el('summary', {}, el('b', { text: one.name }), el('small', { text: ' · ' + (MAG.bot(one.bot)?.name || one.bot) + ' · ' + one.when_text + (one.paused ? ' · pausiert' : '') })),
+              el('p', {}, one.instruction),
+              el('p', {}, el('small', { text: (one.last ? 'Zuletzt ' + MAG.day(one.last * 1000) + ' · ' : '') + (one.next && !one.paused ? 'Nächstes Mal ' + MAG.day(one.next * 1000) : '') })),
+              el('span', { class: 'pair' },
+                el('button', { class: 'pill', text: 'Jetzt ausführen', onclick: act('run') }),
+                el('button', { class: 'pill', text: one.paused ? 'Fortsetzen' : 'Pausieren', onclick: act(one.paused ? 'resume' : 'pause') }),
+                el('button', { class: 'pill danger', text: 'Löschen', onclick: act('remove') }))));
+          }
+        }).catch(() => {});
+        loadAssist();
+      }
+
       // What the bots wrote down for each other: how they do recurring work.
       const skills = el('div', { class: 'card' }, el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'wird geladen …' }))));
       content.append(el('h3', { text: 'Skills der Bots' }), skills);

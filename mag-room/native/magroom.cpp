@@ -41,7 +41,23 @@ int main() {
     const Val image = picture(name, error);
     return image.isObj() ? idol.start(image, quality, error) : std::string();
   };
-  Api api(room, engine, guests, idol, scenes, plugins, gate, push);
+  // Approvals per action and routines: a routine that is due is a message of
+  // the chat to its bot, answered in a normal turn.
+  Assist assist(room);
+  engine.assist = &assist;
+  assist.fire = [&room, &engine](const Val &routine, const std::string &why) {
+    Val m = Val::object(), to = Val::array();
+    const std::string bot = jstr(routine, "bot");
+    m["from"] = "routine";
+    m["role"] = "user";
+    m["text"] = "Routine »" + jstr(routine, "name") + "« (" + why + "): " + jstr(routine, "instruction");
+    m["routine"] = jstr(routine, "id");
+    to.push(bot);
+    m["mentions"] = to;
+    const Val stored = room.add(m);
+    engine.on_human(stored, {bot}, true);
+  };
+  Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);
   engine.on_answer = [&](const std::string &bot, const std::string &text, int64_t seconds, bool failed) {

@@ -399,6 +399,34 @@ result and what needs Chris's approval. A skill grants nothing; credentials
 in a skill are refused. Chris reads and removes skills in the settings
 (`/api/skills`).
 
+### Approvals and routines (`assist.hpp`)
+
+`consent` (action send, buy, delete, publish or routine; what, to,
+amount_eur) is called by a bot right before a consequential action. The
+rules are `assist` in the settings (`auto`, `rules` per kind ask/auto/never,
+`once_eur`, `day_eur`): never refuses, auto (or the auto mode for ask)
+allows at once, a purchase only within both limits (the day's sum comes
+from the journal), anything else puts a card on the bot's step
+(`approval` with `action`, the same `/api/approval/<id>` as plugin cards,
+allow or deny, 15 minutes, a push notification). Every decision is appended
+to `STATE/assist/ledger.jsonl`. The room cannot intercept a click in a VM's
+browser, so for actions there the rule lives in the tool and the prompt;
+plugin tools keep their enforced card. No payment data is stored: a Stripe
+vault (PaymentMethod ids only, the key as a 0600 file) needs Chris's Stripe
+account and his decision to load Stripe.js from js.stripe.com.
+
+`routine` (add, list, remove, pause, resume, run) keeps routines in
+`STATE/routines.json`: a name, a bot, an instruction and when (`time` with
+`days` 1-7, `every_minutes` at least 15, `once` as a time, or `event`
+picture or job_done), with `next` and `last`. Setting one up goes through
+`consent` (kind routine). A tick every 30 s fires what is due as a chat
+message from `routine` (role user, mentions its bot, `routine` id) and
+`Engine::on_human` for that bot only. A run missed while the room was down
+runs once if it is at most 12 hours late; an event routine runs at most
+every 15 minutes, so one that makes pictures cannot set itself off.
+`GET /api/routines` lists them with the rules; the owner pauses, resumes,
+runs (`POST /api/routines/<id>/<what>`) and removes (`DELETE`) them.
+
 ## Models (`ops/models`)
 
 `models.json` declares both bots: the GGUF (path, Hugging Face URL, size,

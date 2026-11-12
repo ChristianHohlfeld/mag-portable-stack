@@ -10,8 +10,8 @@ namespace mag {
 
 class Api {
 public:
-  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, Plugins &plugins, auth::Gate &gate, Push &push)
-      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), plugins_(plugins), gate_(gate), push_(push) {
+  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, Plugins &plugins, auth::Gate &gate, Push &push, Assist &assist)
+      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), plugins_(plugins), gate_(gate), push_(push), assist_(assist) {
     // A photo's whole room: when the last of its models is through, they become one scene.
     idol_.on_scene_part = [this](const std::string &group) { assemble(group); };
     std::thread([this] { idol_.settle_scenes(); }).detach();
@@ -92,6 +92,18 @@ public:
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
       if (p == "/api/skills") { Val v = Val::object(); v["skills"] = room_.skills(); return http::send_json(fd, 200, v); }
+      if (p == "/api/routines") {
+        // The routines with when they run next, and the rules of approval with what was spent today.
+        Val v = Val::object(), list = Val::array();
+        const Val all = assist_.routines();
+        for (auto r : all.asArr()) {
+          r["when_text"] = Assist::describe_when(r["when"]);
+          list.push(r);
+        }
+        v["routines"] = list;
+        v["rules"] = assist_.rules();
+        return http::send_json(fd, 200, v);
+      }
       if (p == "/api/plugins") {
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
         Val v = Val::object();
@@ -228,8 +240,22 @@ public:
     if (starts_with(p, "/api/plugins")) return plugins(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/approval/")) {
       // Chris's answer to a plugin call that waits for him: allow, always or deny.
-      if (!plugins_.decide(p.substr(14), jstr(jparse(r.body), "decision"))) return http::send_error(fd, 409, "Diese Freigabe wartet nicht mehr");
+      const std::string id = p.substr(14), decision = jstr(jparse(r.body), "decision");
+      if (!plugins_.decide(id, decision) && !assist_.decide(id, decision)) return http::send_error(fd, 409, "Diese Freigabe wartet nicht mehr");
       return http::send_ok(fd);
+    }
+    if (starts_with(p, "/api/routines/") && (r.method == "DELETE" || r.method == "POST")) {
+      // A routine paused, resumed, run now or removed by Chris.
+      std::string rest = p.substr(14), what = "remove";
+      if (r.method == "POST") {
+        const size_t cut = rest.rfind('/');
+        if (cut == std::string::npos) return http::send_error(fd, 400, "pause, resume oder run");
+        what = rest.substr(cut + 1);
+        rest = rest.substr(0, cut);
+        if (what != "pause" && what != "resume" && what != "run") return http::send_error(fd, 400, "pause, resume oder run");
+      }
+      const std::string why = assist_.act(url_decode(rest), what);
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 404, why);
     }
     if (r.method == "DELETE" && starts_with(p, "/api/skills/"))
       return room_.remove_skill(url_decode(p.substr(12))) ? http::send_ok(fd) : http::send_error(fd, 404, "Skill nicht gefunden");
@@ -280,6 +306,7 @@ private:
   Plugins &plugins_;
   auth::Gate &gate_;
   Push &push_;
+  Assist &assist_;
   std::string version_, web_;
 
   static constexpr const char *kNoAccess =
@@ -963,6 +990,7 @@ private:
     room_.update_settings([&](Val &s) {
       if (const Val *v = in.find("bot_rounds"); v && v->type == Val::NUM) s["bot_rounds"] = std::max(0.0, std::min(1000.0, v->num));
       if (const Val *v = in.find("web"); v && v->type == Val::BOOL) { s["web"] = v->b; net = true; }
+      if (const Val *v = in.find("assist"); v && v->isObj()) s["assist"] = Assist::clean_rules(*v);
     });
     if (net) engine_.apply_netmode();
     engine_.settings_changed();

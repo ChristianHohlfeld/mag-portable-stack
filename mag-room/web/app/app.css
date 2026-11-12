@@ -276,6 +276,8 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .step .ask button.yes { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
 .step .ask button.no { color: var(--bad); }
 .step .ask button:disabled { opacity: .5; }
+.step .ask .what { font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.user .bubble.routine .tag { display: block; font-size: 12px; opacity: .75; margin-bottom: 2px; }
 
 /* ---- page card: a bot's HTML, running from the bot's own site ----------- */
 .page { margin: 8px 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }

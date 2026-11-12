@@ -172,8 +172,9 @@
     const form = el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ user: user.value, password: pass.value }, go).then(() => { pass.value = ''; }); } }, user, pass, go);
     const saved = (ask.saved || []).map((l) => el('button', { class: 'yes', text: 'Gespeicherten Login verwenden: ' + (l.user || ask.site),
       onclick: (e) => { e.preventDefault(); send({ saved: l.id }, e.currentTarget); } }));
-    const other = saved.length ? el('details', { class: 'other' }, el('summary', { text: 'Anderen Login eingeben' }), form) : form;
-    const stage = !fields.length ? 'Kein Anmeldefeld gefunden; trag es ein oder übernimm den Browser.' : fields.includes('user') ? '' : 'Die Seite fragt jetzt nach dem Passwort.';
+    // Where the page shows no login field (a passkey, a captcha, a page of its own), the browser is the way; the form waits folded.
+    const other = saved.length || !fields.length ? el('details', { class: 'other' }, el('summary', { text: saved.length ? 'Anderen Login eingeben' : 'Login hier eintragen' }), form) : form;
+    const stage = !fields.length ? 'Die Seite zeigt gerade kein Anmeldefeld: übernimm den Browser.' : fields.includes('user') ? '' : 'Die Seite fragt jetzt nach dem Passwort.';
     return el('span', { class: 'ask', onclick: keepOpen },
       el('b', { text: name + ' braucht eine Anmeldung bei ' + (ask.site || 'einer Seite') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,

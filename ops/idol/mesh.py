@@ -505,102 +505,6 @@ def by_camera(shape, points, camera):
     return r, turn @ shift + pts.mean(axis=0)
 
 
-def capped(mesh, level):
-    """The open rims of a mesh that was cut by the level plane at `level`,
-    each closed with a flat face (ear clipping in the plane, winding against
-    the rim so it looks outwards). None: a rim is not a simple loop, or it
-    does not lie in that plane (a hole the mesh had before is not closed
-    with a flat lid somewhere else)."""
-    faces = np.asarray(mesh.faces, np.int64)
-    directed = faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
-    key = directed[:, 0] * len(mesh.vertices) + directed[:, 1]
-    back = directed[:, 1] * len(mesh.vertices) + directed[:, 0]
-    rim = directed[~np.isin(key, back)]                       # an edge no face goes back along
-    if len(rim) == 0:
-        return mesh
-    after = {}
-    for a, b in rim:
-        if a in after:
-            return None
-        after[int(a)] = int(b)
-    pts = np.asarray(mesh.vertices, np.float64)
-    added = []
-    while after:
-        start = next(iter(after))
-        loop, at = [start], after.pop(start)
-        while at != start:
-            if at not in after:
-                return None
-            loop.append(at)
-            at = after.pop(at)
-        if len(loop) < 3 or np.abs(pts[loop][:, 1] - level).max() > 1e-6 * max(1.0, float(np.ptp(pts[:, 1]))) + 1e-7:
-            return None
-        flat = pts[loop][:, [0, 2]]                               # the plane is level: x and z
-        area = 0.5 * float(np.sum(flat[:, 0] * np.roll(flat[:, 1], -1) - np.roll(flat[:, 0], -1) * flat[:, 1]))
-        sign = 1.0 if area > 0 else -1.0
-        left = list(range(len(loop)))
-        guard = 0
-        while len(left) > 3 and guard < 4 * len(loop):
-            guard += 1
-            n = len(left)
-            for k in range(n):
-                i, j, m = left[k - 1], left[k], left[(k + 1) % n]
-                a, b, c = flat[i], flat[j], flat[m]
-                turn = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-                if turn * sign <= 1e-14:
-                    continue
-                rest = flat[[q for q in left if q not in (i, j, m)]]
-                if len(rest):
-                    d1 = (rest[:, 0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (rest[:, 1] - b[1])
-                    d2 = (rest[:, 0] - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (rest[:, 1] - c[1])
-                    d3 = (rest[:, 0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (rest[:, 1] - a[1])
-                    if np.any((d1 * sign < 0) & (d2 * sign < 0) & (d3 * sign < 0)):
-                        continue
-                added.append((loop[m], loop[j], loop[i]))         # against the rim: the base looks outwards
-                del left[k]
-                break
-            else:
-                break
-        if len(left) > 3:                                         # no plain outline
-            return None
-        added.append((loop[left[2]], loop[left[1]], loop[left[0]]))
-    return trimesh.Trimesh(pts, np.vstack([faces, np.asarray(added, np.int64)]), process=False)
-
-
-def based(shape, camera, job):
-    """A shape whose photo ends below it (a bust cut off by the photo's lower
-    edge) stands on a clean, flat base where the photo ends, instead of on
-    what TripoSG made up beneath it. `camera`: front_of's, in the shape's
-    frame (y up). Unchanged where the photo shows the thing to its foot, or
-    where the cut would not leave a solid."""
-    import json
-    try:
-        bottom = json.loads((job / "outputs" / "shape_cut.json").read_text()).get("bottom")
-    except (OSError, ValueError, AttributeError):
-        return shape
-    if not isinstance(bottom, (int, float)):
-        return shape
-    _, (y0, y1), _ = camera.see(np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]))
-    if abs(y1 - y0) < 1e-9:
-        return shape
-    level = (float(bottom) + 0.003 - y0) / (y1 - y0)            # a hair below the photo's last row
-    low, high = shape.bounds[0, 1], shape.bounds[1, 1]
-    if not low + 0.005 * (high - low) < level < low + 0.5 * (high - low):
-        return shape
-    try:
-        part = trimesh.intersections.slice_mesh_plane(shape, plane_normal=[0.0, 1.0, 0.0], plane_origin=[0.0, level, 0.0], cap=False)
-        part = trimesh.Trimesh(part.vertices, part.faces, process=True)
-        out = capped(part, level)
-    except Exception as exc:
-        print(f"Shape: no base ({type(exc).__name__})", flush=True)
-        return shape
-    if out is None or not solid(out) or out.volume <= 0:
-        print("Shape: no base (the cut is not closed cleanly)", flush=True)
-        return shape
-    print(f"Shape: stands on a flat base where the photo ends ({100 * (level - low) / (high - low):.0f} % of its height cut away)", flush=True)
-    return out
-
-
 def shape_picture(job):
     """The picture the shape was made from, as fine as the photo has it, and
     the thing's outline in it; None: the shape stage left none."""
@@ -796,8 +700,6 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
             # The camera of the picture it was made from, in its own frame: the photo is laid on with it.
             picture = shape_picture(output_dir)
             own, whole = facing(whole, picture[1]) if picture is not None else (None, whole)
-            if own is not None:
-                whole = based(whole, own, output_dir)
             strong = alpha > 0.3
             fitted = fit_shape(whole, xyz[strong])
             source = the_photo(input_path.parent) if fitted is None else None
@@ -899,7 +801,7 @@ def reconstruct_shape(output_dir: Path, quality="normal"):
     if own is None:
         raise RuntimeError("Die Form deckt ihr Bild nicht")
     own.cover, own.colour = 1.0, 0.0
-    geometry = based(whole, own, output_dir)
+    geometry = whole
     for _ in range(5):                                    # closed, whatever TripoSG's grid left open
         if solid(geometry):
             break

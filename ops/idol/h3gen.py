@@ -75,21 +75,32 @@ def h3d(method, path, body=None, timeout=10):
 
 def by_h3d(job, prompt, width, height, frames, seed, picture, use):
     """The clip through h3d into job/h3.part.webm. False when h3d is not there
-    (or turned the clip down before it began), so that sd-cli makes it."""
+    (or turns the clip down, or stays away a quarter of an hour), so that
+    sd-cli makes it, from the last finished step on.
+
+    Resumable like every job of the MI50's line: h3d writes the sampler's
+    state after every step into job/h3state (it is told where by the file
+    jobs/.h3d-state-dir: one clip at a time, under the MI50's lock). A restart
+    of the worker leaves this stage running and h3d with it; a restart of h3d
+    or a reboot loses h3d's job, so it is given again and goes on after the
+    last finished step (and only decodes when all steps were done)."""
     if h3d("GET", "/sdcpp/v1/models/status", timeout=3)[0] != 200:
         return False
     kind = "ref2va" if use == "ref" else "fl2va"
     mark = job / "h3d.json"                  # the h3d job of this stage: followed again after a restart
-    known = json.loads(mark.read_text()) if mark.is_file() else {}
-    status, state = (h3d("GET", "/sdcpp/v1/jobs/" + known["id"]) if known.get("id") else (404, None))
-    if status != 200:
+    control = job.parent / ".h3d-state-dir"
+    state_dir = job / "h3state"
+    state_dir.mkdir(exist_ok=True)
+
+    def submit():
         say("Modell laden")
+        control.write_text(str(state_dir) + "\n")
         h3d("POST", "/sdcpp/v1/models/refresh", timeout=60)   # files that came after its start
         models = {slot: name.format(kind) for slot, name in MODELS.items()}
         status, state = h3d("POST", "/sdcpp/v1/models/load", {"recipe": "minimax-h3-" + kind, "models": models}, timeout=1800)
         if status != 200:
             print("h3d load: %s %s" % (status, (state or {}).get("error", "")), flush=True)
-            return False
+            return None
         image = base64.b64encode(picture.read_bytes()).decode() if picture else None
         body = {"prompt": prompt, "negative_prompt": "", "width": width, "height": height, "seed": seed,
                 "video_frames": frames, "fps": FPS, "init_image": image if use == "first" else None,
@@ -103,27 +114,48 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
         status, state = h3d("POST", "/sdcpp/v1/vid_gen", body, timeout=60)
         if status != 202 or not (state or {}).get("id"):
             print("h3d vid_gen: %s %s" % (status, (state or {}).get("error", "")), flush=True)
-            return False
+            return None
         mark.write_text(json.dumps({"id": state["id"]}))
-    ident = json.loads(mark.read_text())["id"]
+        return state["id"]
+
+    def let_go():
+        mark.unlink(missing_ok=True)
+        try:
+            if control.read_text().strip() == str(state_dir):
+                control.write_text("")
+        except OSError:
+            pass
+
+    ident = None
 
     def cancel(*_):
-        h3d("POST", "/sdcpp/v1/jobs/%s/cancel" % ident)
+        if ident:
+            h3d("POST", "/sdcpp/v1/jobs/%s/cancel" % ident)
+        let_go()
         sys.exit(5)
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
-    told, quiet = None, 0
+    told, away = None, None
     while True:
-        status, state = h3d("GET", "/sdcpp/v1/jobs/" + ident)
-        if status != 200 or not state:
-            quiet += 1
-            if quiet > 60:                   # two minutes without an answer: h3d is gone
-                mark.unlink(missing_ok=True)
-                print("MAG-ERROR Der Videodienst antwortet nicht mehr.", flush=True)
-                sys.exit(3)
-            time.sleep(2)
+        ident = json.loads(mark.read_text()).get("id") if mark.is_file() else None
+        status, state = h3d("GET", "/sdcpp/v1/jobs/" + ident) if ident else (404, None)
+        if status == 0:                      # h3d is away (restarting): wait for it
+            away = away or time.monotonic()
+            if time.monotonic() - away > 900:
+                print("h3d away for a quarter of an hour; sd-cli goes on from the last step", flush=True)
+                let_go()
+                return False
+            time.sleep(5)
             continue
-        quiet = 0
+        away = None
+        if status != 200 or not state:       # h3d does not know it (restarted): given again, resumed
+            if ident:
+                print("h3d lost the clip; given again, from the last finished step", flush=True)
+            told = None
+            if submit() is None:
+                let_go()
+                return False
+            continue
         now = state.get("status")
         if now == "completed":
             data = base64.b64decode(((state.get("result") or {}).get("b64_json") or ""))
@@ -131,10 +163,10 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
                 print("MAG-ERROR H3 hat kein Video geliefert.", flush=True)
                 sys.exit(3)
             (job / "h3.part.webm").write_bytes(data)
-            mark.unlink(missing_ok=True)
+            let_go()
             return True
         if now in ("failed", "cancelled"):
-            mark.unlink(missing_ok=True)
+            let_go()
             error = state.get("error") or {}
             print("h3d: %s" % (error.get("message") if isinstance(error, dict) else error), flush=True)
             print("MAG-ERROR H3 hat kein Video erzeugt.", flush=True)
@@ -245,7 +277,8 @@ def main():
             command += ["--ref-image" if use == "ref" else "--init-img", str(picture)]
         # One path: ggml's HIP backend for gfx906 (int8 dp4a matrix products,
         # fused flash attention) against the unpacked ROCm 6.3.4.
-        env = dict(os.environ, HIP_VISIBLE_DEVICES="0", ROCR_VISIBLE_DEVICES="0",
+        (job / "h3state").mkdir(exist_ok=True)   # the sampler's state after every step: resumed from there
+        env = dict(os.environ, HIP_VISIBLE_DEVICES="0", ROCR_VISIBLE_DEVICES="0", SD_STATE_DIR=str(job / "h3state"),
                    LD_LIBRARY_PATH=str(ROCM / "lib") + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
         code, _ = run(job, command, env)
         if code != 0 or not (job / "h3.part.webm").is_file():

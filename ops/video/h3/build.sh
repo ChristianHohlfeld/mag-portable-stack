@@ -29,6 +29,9 @@ git apply ../hyperflow-two-time.patch
 # v_dot2_f32_f16, online softmax in fp32) behind ggml_sage_attn, and RMSNorm
 # + weight + AdaLN modulation fused into one pass (rms_modulate.cu).
 git apply "$HERE/gfx906-kernels.patch"
+# ...and the sampler's state on disk after every step, so that a clip goes on
+# after a restart from its last finished step (SD_STATE_DIR, SD_STATE_DIR_FILE).
+git apply "$HERE/sample-state.patch"
 # ...and in ggml: Conv3d (the VAE) as gfx906's own implicit GEMM with v_dot2_f32_f16.
 git -C ggml apply "$HERE/gfx906-ggml.patch"
 CPU="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"

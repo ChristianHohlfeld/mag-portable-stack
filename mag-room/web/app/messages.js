@@ -570,7 +570,7 @@
     if (m3.state === 'queued') card.append(lineActs(m));
     // A finished H3 video goes on: a new part from its last frame, the whole video as a new message.
     if (h3 && m3.state === 'done' && S.you?.role === 'owner')
-      card.append(el('div', { class: 'line-acts' }, el('button', { class: 'pill', title: 'Das Video ab seinem letzten Bild weiterführen', onclick: () => continueVideo(m) },
+      card.append(el('div', { class: 'line-acts go' }, el('button', { class: 'pill', title: 'Das Video ab seinem letzten Bild weiterführen', onclick: () => continueVideo(m) },
         MAG.icon('play'), el('b', { text: 'Fortsetzen' }))));
     return card;
   }

@@ -690,7 +690,8 @@ html[data-voice="making"] .act[data-speak]::after { animation: voice-making 1.6s
 .video-ask img { max-width: 100%; max-height: 200px; object-fit: contain; border-radius: 12px; align-self: center; }
 .video-ask textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; padding: 10px 12px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--surface); color: inherit; }
-.video-ask .pill { align-self: flex-end; }
+/* Full width: nothing at the right edge of a phone (a panel, the keyboard's bar) can cover it. */
+.video-ask .pill { align-self: stretch; justify-content: center; }
 .m3 .src img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .line-acts { display: flex; gap: 6px; margin-top: 8px; }
 .line-acts .pill { padding: 4px 10px; font-size: 12.5px; min-height: 0; }
@@ -740,3 +741,6 @@ article.flash { animation: flash 1.6s ease-out; }
 /* The video's maker (Wan 2.2 or H3 with its sound) and its length, side by side; on a phone they wrap. */
 .video-choice { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .staged .video-choice { flex: 1 1 auto; }
+/* "Fortsetzen" at a finished video: its own row inside the card, the whole width. */
+.m3 .line-acts.go { padding: 0 10px 10px; margin-top: 0; }
+.m3 .line-acts.go .pill { flex: 1; justify-content: center; min-height: 36px; }

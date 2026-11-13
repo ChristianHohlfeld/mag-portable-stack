@@ -161,6 +161,19 @@ public:
     if (path.empty() || !read_file(path, bytes, 500u << 20) || bytes.size() < 8) { error = "Das Video fehlt oder ist größer als 500 MB."; return ""; }
     const std::string said = clip(trim(prompt), 1500, "");
     if (said.empty()) { error = "Was soll im nächsten Teil geschehen?"; return ""; }
+    // A worker from before continuing (in the minute of a deploy between the
+    // room and the worker) would take the video for a picture and refuse it
+    // as one: it is asked first, and the owner is told in words.
+    {
+      http::ClientOptions probe;
+      probe.timeout_s = 3;
+      probe.connect_timeout_s = 2;
+      probe.headers.push_back({"X-Mag-Idol-UI", "1"});
+      if (!jbool(jparse(http::fetch(room_.cfg.idol_url + "/api/idol/health", probe).body), "continue")) {
+        error = "Der Videodienst wird gerade aktualisiert; bitte in einer Minute noch einmal.";
+        return "";
+      }
+    }
     http::ClientOptions opt = options("POST");
     opt.body = bytes;
     opt.headers.push_back({"Content-Type", "application/octet-stream"});

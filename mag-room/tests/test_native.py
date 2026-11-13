@@ -722,9 +722,11 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(message(second)["model3d"]["scene"]["lift"], 0.9)
         # The first is finished: no scene yet, the others are still under way.
         r.wait(lambda: message(first)["model3d"]["state"] == "running", "first running")
-        r.idol.hold = False
+        r.idol.hold = {message(i)["model3d"].get("job") for i in (second, third)}   # the others are still under way
         r.wait(lambda: message(first)["state"] == "done", "first done")
+        time.sleep(1.0)
         self.assertEqual((scenes(), r.scene.specs), ([], []))
+        r.idol.hold = False
         r.wait(lambda: message(third)["state"] == "done" and scenes(), "the room is put together", 40)
         # All are through: the room is one scene, each object where it stood, as tall as it was, turned as the photo saw it.
         spec = r.scene.specs[-1]

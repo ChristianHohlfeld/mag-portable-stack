@@ -10,7 +10,7 @@ class FakeIdol:
     def __init__(self, glb=b"glTF-fake"):
         self.jobs, self.deleted, self.purges, self.cancelled = {}, [], 0, []
         self.glb = glb
-        self.hold = False  # True: jobs stay "running" until a test lets go
+        self.hold = False  # True: jobs stay "running" until a test lets go; a set: these jobs do
         self.fails = ""    # not empty: jobs end as an error with these words
         self.retried = []
         self.images = []    # what was asked to be painted
@@ -41,7 +41,8 @@ class FakeIdol:
                     return self.reply(200, None, raw=b"\x89PNG\r\n\x1a\n" + b"p" * 40 if parts[4] == "image.png" else fake.glb)
                 job["polls"] += 1
                 if job["state"] not in ("cancelled", "error"):
-                    job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or fake.hold else "error" if fake.fails else "done"
+                    held = fake.hold is True or (isinstance(fake.hold, set) and parts[3] in fake.hold)
+                    job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or held else "error" if fake.fails else "done"
                 step = min(50, job["polls"] * 15)
                 out = {"id": parts[3], "state": job["state"], "stage": "3D-Form berechnen", "phase": 2, "phases": 5,
                        "step": step, "total_steps": 50, "progress": step / 50, "eta": 90, "started": 1000,

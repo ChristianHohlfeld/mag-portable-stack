@@ -84,6 +84,7 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
     status, state = (h3d("GET", "/sdcpp/v1/jobs/" + known["id"]) if known.get("id") else (404, None))
     if status != 200:
         say("Modell laden")
+        h3d("POST", "/sdcpp/v1/models/refresh", timeout=60)   # files that came after its start
         models = {slot: name.format(kind) for slot, name in MODELS.items()}
         status, state = h3d("POST", "/sdcpp/v1/models/load", {"recipe": "minimax-h3-" + kind, "models": models}, timeout=1800)
         if status != 200:

@@ -8,6 +8,8 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- The MI50's power cap is 100 W (at 85 W the card ran its cores at 1032 of 1725 MHz and
+  its HBM at the lowest of three clocks); `ops/idol/power-cap.sh` never writes more than 100 W.
 - H3 videos are decoded by madebyollin's tiny autoencoder `taeh3` (MIT): seconds instead
   of about two minutes per 5 s clip.
 - The MI50's power cap is 85 W (Chris, 2026-11-13; 78 W and 73 W for a while that day);

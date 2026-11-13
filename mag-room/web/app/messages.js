@@ -871,6 +871,9 @@
   const DE = new Set('ich die der das und zu ist nicht ein eine mit auf für du dich dein deine jetzt bitte den dem es wird werde sie wir kann noch auch einloggen anmelden öffne klicke seite'.split(' '));
   function tidy(text) {
     if (!text) return text;
+    // The room's markers and a lone PASS are for the room (it takes them out too; this is for a page from before).
+    text = text.replace(/\[\[MAG:[^\]]*\]\]/g, '');
+    if (/^[\s*_`"'.()[\]]*pass[\s*_`"'.!()[\]]*$/i.test(text)) return '';
     // A fenced block that is a tool call written out (JSON with an action or a function name).
     text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n```/g, (all, inner) => {
       try { const v = JSON.parse(inner); return v && typeof v === 'object' && (v.action || v.name || v.arguments || v.tool) ? '' : all; } catch { return all; }

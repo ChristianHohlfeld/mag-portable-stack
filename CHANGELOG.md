@@ -6,15 +6,19 @@ version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
 
-## Unreleased
+## 5.2.0 (2026-11-13)
 
-- H3's linear layers are ggml's MMQ again: the own W8A8 GEMM of #544 brought no speed.
-- The MI50's power cap is 100 W (at 85 W the card ran its cores at 1032 of 1725 MHz and
-  its HBM at the lowest of three clocks); `ops/idol/power-cap.sh` never writes more than 100 W.
-- H3 videos are decoded by madebyollin's tiny autoencoder `taeh3` (MIT): seconds instead
-  of about two minutes per 5 s clip.
-- The MI50's power cap is 85 W (Chris, 2026-11-13; 78 W and 73 W for a while that day);
-  `ops/idol/power-cap.sh` only lowers it and never writes more than 85 W.
+- Teilen in every message's ⋯ menu and in the file preview: the files through
+  the phone's own sharing (Web Share), else a download; words are shared or
+  copied (#545).
+- H3 videos are decoded by madebyollin's tiny autoencoder `taeh3` (MIT): seconds
+  instead of about two minutes per 5 s clip (#548).
+- H3's linear layers are ggml's MMQ again: the own W8A8 GEMM of #544 brought no
+  speed (#550).
+- The MI50's power cap is 82 W (Chris, 2026-11-13; 73, 85 and 100 W for a while
+  that day, #546, #547, #549); `ops/idol/power-cap.sh` only lowers it and never
+  writes more than 82 W.
+
 ## 5.1.0 (2026-11-13)
 
 Videos with sound by HyperFlow H3, painted 3D models, and a chat whose every

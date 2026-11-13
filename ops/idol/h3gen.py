@@ -201,25 +201,55 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
 
 
 QUOTES = re.compile(r'„([^“”"]+)[“”"]|“([^”"]+)[”"]|»([^«]+)«|"([^"]+)"')
+ENGLISH = re.compile(r"\b(the|you|your|i'm|i am|is|are|was|what|where|why|how|hello|hi|yes|no|please|thank|thanks|watch|look|come|go|it's|don't|let's|we|they|my|this|that)\b", re.I)
 GERMAN = re.compile(r"[äöüÄÖÜß]|\b(ich|du|wir|ihr|nicht|und|der|die|das|ist|bin|bist|sind|mein|dein|hallo|ja|nein|was|wie|wo|warum|komm|geh)\b", re.I)
 
 
 def dialogue(prompt):
-    """H3's own form for speech: what is said, word for word and never
-    translated, inside <d>[Language] ... </d>, said by (S1), (S2) ... A
-    prompt that has <d> already is left as it is; otherwise every quoted
-    passage („...", "...", »...«) becomes one line of speech, and when no
-    speaker is marked it is the one speaker (S1). Nothing is made up."""
+    """Speech in the form of MiniMax's prompt guide (VIDEO_PROMPT_WRITING_GUIDE_base_en):
+    who speaks and the speaker ID outside, then ": <d>[Language] the words</d>",
+    the words verbatim and never translated. A prompt that has <d> already is
+    left as it is; otherwise every quoted passage („...", "...", »...«) becomes
+    one line of speech, and when no speaker ID is given it is (S1). Nothing is
+    made up."""
     if "<d>" in prompt:
         return prompt
 
     def line(found):
         text = next(g for g in found.groups() if g is not None).strip()
-        return "<d>[%s] %s</d>" % ("German" if GERMAN.search(text) else "English", text)
-    spoken = QUOTES.sub(line, prompt)
-    if spoken != prompt and not re.search(r"\(S\d+\)", spoken):
-        spoken = spoken.replace("<d>", "(S1) <d>")
+        english = ENGLISH.search(text) and not GERMAN.search(text)   # German unless it is plainly English
+        return ": <d>[%s] %s</d>" % ("English" if english else "German", text)
+    spoken = re.sub(r"\s*:?\s*(?=„|“|»|\")", "", prompt) if QUOTES.search(prompt) else prompt
+    spoken = QUOTES.sub(line, spoken)
+    if spoken != prompt and not re.search(r"\(S\d+(,S\d+)*\)", spoken):
+        spoken = spoken.replace(": <d>", " (S1): <d>")
     return spoken
+
+
+FIRST_FRAME = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
+
+
+def context(prompt, first_frame, continuing):
+    """The prompt as H3 was trained to read it (MiniMax's guide, the "H3
+    Context IR"): with a first frame the alignment line and a blank line, then
+    integrated_multimodal_description: [Shot 1] ..., overall_soundscape: ...,
+    non_diegetic_music: .... A prompt that is in this form already (a bot's,
+    as video_generate asks) keeps its words; only a missing alignment line is
+    put in front."""
+    if "integrated_multimodal_description" not in prompt:
+        body = dialogue(prompt).strip()
+        if continuing:
+            body = ("The shot shown in <Picture 1> continues seamlessly with no cut: the same characters, appearance, "
+                    "place, light, camera and voices carry on as " + body)
+        elif first_frame:
+            body = "Starting exactly from <Picture 1>, preserving its characters, appearance and composition, " + body
+        prompt = ("integrated_multimodal_description: [Shot 1] " + body + "\n\n"
+                  "overall_soundscape: The ambient sound of the place and the sounds of the actions described, "
+                  "in sync with what is seen.\n\n"
+                  "non_diegetic_music: N/A")
+    if first_frame and "is fully referenced" not in prompt and "aligns with the" not in prompt:
+        prompt = FIRST_FRAME + "\n\n" + prompt
+    return prompt
 
 
 def say(stage):
@@ -282,7 +312,7 @@ def run(job, command, env):
 def main():
     job = Path(sys.argv[1])
     asked = json.loads((job / "prompt.json").read_text())
-    prompt = str(asked.get("prompt", "")).strip()[:1500]
+    prompt = str(asked.get("prompt", "")).strip()[:6000]
     seconds = 10 if int(asked.get("seconds", 5) or 5) >= 10 else 5
     previous = job / "prev.mp4" if asked.get("continues") and (job / "prev.mp4").is_file() else None
     if previous and not (job / "input.png").is_file():
@@ -303,12 +333,13 @@ def main():
     if not CLI.is_file() or not ROCM.is_dir() or not (WEIGHTS / ".complete").is_file():
         print("MAG-ERROR H3 ist noch nicht ganz eingerichtet (Gewichte oder Programm fehlen).", flush=True)
         sys.exit(2)
-    prompt = dialogue(prompt)               # speech in H3's form: <d>[German] word for word</d>
-    if previous:
-        # The same shot goes on: the model is told so, so that people, look and sound stay.
-        prompt = ("Continuation of the same shot, the same characters, look, light and sound, no cut: " + prompt)[:1500]
-    if use == "ref" and "<Picture 1>" not in prompt:
-        prompt = "<Picture 1> " + prompt
+    if use == "ref":
+        prompt = dialogue(prompt)
+        if "<Picture 1>" not in prompt:
+            prompt = "<Picture 1> " + prompt
+    else:
+        # MiniMax's form (a first frame: also a continued video's last frame)
+        prompt = context(prompt, picture is not None, previous is not None)
     sound = job / "h3.webm"                 # what the model made; done is never done twice
     if not sound.is_file() and by_h3d(job, prompt, *shape(picture), FRAMES[seconds],
                                        int(asked.get("seed", 0)) or 1, picture, use):

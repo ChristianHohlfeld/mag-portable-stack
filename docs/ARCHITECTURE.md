@@ -829,10 +829,19 @@ lyrics and caption marks up to 151675, at the ids of MiniMax's tokenizer as
 ComfyUI's minimax.py has them); `h3-tokenizer.patch` gives H3 that tokenizer
 in stable-diffusion.cpp (sd-cli and h3d). What is said stands word for word,
 never translated, in `<d>[German] ...</d>` with a speaker mark (S1), (S2):
-`video_generate` asks the bots for it (directions in English, a described
-voice per speaker, no made-up lines), and h3gen.py turns quoted speech of a
-prompt typed in the page („...", "...", »...«) into it (one unmarked speaker
-is (S1); a prompt with `<d>` stays as it is). A continued video gets the last
+The prompt has the form of MiniMax's prompt guide
+(`VIDEO_PROMPT_WRITING_GUIDE_base_en`, what their hosted "H3 Context IR"
+writes and the model card calls critical to quality): with a first frame the
+line "For the target video, at 0.00 seconds into the target video, <Picture
+1> (from [Shot 1]) is fully referenced." and a blank line, then
+`integrated_multimodal_description: [Shot 1] ...`, `overall_soundscape: ...`
+and `non_diegetic_music: ...`, speech as "the speaker with a described voice
+(S1) says: <d>[German] the words</d>". `video_generate` asks the bots for
+exactly this (in English, the words verbatim, no made-up lines); h3gen.py
+puts a prompt typed in the page into it (quoted speech becomes `(S1): <d>`
+lines, German unless plainly English; a prompt in the form already keeps its
+words, only a missing first-frame line is added). Prompts may be 6000
+characters long. A continued video gets the last
 frame and the words only, no voice of the part before: the voice can change.
 A finished H3 video goes on ("Fortsetzen" at its card, `POST
 /api/video/continue`, a bot's `video_generate` with `continue`): the room

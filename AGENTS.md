@@ -259,7 +259,10 @@ gfx906 it is the same model as GGUF in stable-diffusion.cpp, one native
 path: HIP on ROCm 6.3.4 (unpacked for the owner, never installed into the
 system; `ops/idol/h3gen.py`, `ops/video/h3`); no Vulkan, no ComfyUI. "Video erzeugen" in the
 plus menu takes a picture from the gallery or the camera, or words alone; a
-bot's `video_generate` names the picture as the chat shows it or none.
+bot's `video_generate` names the picture as the chat shows it or none. An H3
+video goes on ("Fortsetzen", `video_generate` with `continue`): a new part
+from its last frame, and one new message with the whole video, joined
+without a seam.
 MiniMax licensed H3 to Chris personally (2026-11-13: private,
 non-commercial, nothing passed on, marked as made by AI, no training of
 other models, only him): its weights stay on his host, never in this

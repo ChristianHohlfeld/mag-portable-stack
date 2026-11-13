@@ -549,7 +549,8 @@
     const m3 = m.model3d, card = el('div', { class: 'm3 image ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
     const video = m3.kind === 'video', h3 = video && m3.model === 'h3';
-    const model = h3 ? 'KI-generiert · MiniMax H3 · mit Ton' : video ? 'Wan 2.2' : 'FLUX.2 klein';   // Wan: videos from before H3
+    const model = (h3 ? 'KI-generiert · MiniMax H3 · mit Ton' : video ? 'Wan 2.2' : 'FLUX.2 klein')   // Wan: videos from before H3
+      + (h3 && m3.continues ? ' · fortgesetzt, ' + (m3.total_seconds || '') + ' s' : '');
     const sub = m3.state === 'done' ? (m3.took ? model + ' · ' + MAG.dur(m3.took * 1000) : model)
       : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : m3.state === 'queued' ? waiting(m3) : m3.stage || 'Malt';
     // Text to video: the picture comes first, the video follows by itself.
@@ -567,7 +568,29 @@
       card.append(el('div', { class: 'prog' }, el('div', { class: 'segs' }, el('i', { style: 'width:' + Math.round(100 * part) + '%' }))));
     }
     if (m3.state === 'queued') card.append(lineActs(m));
+    // A finished H3 video goes on: a new part from its last frame, the whole video as a new message.
+    if (h3 && m3.state === 'done' && S.you?.role === 'owner')
+      card.append(el('div', { class: 'line-acts' }, el('button', { class: 'pill', title: 'Das Video ab seinem letzten Bild weiterführen', onclick: () => continueVideo(m) },
+        MAG.icon('play'), el('b', { text: 'Fortsetzen' }))));
     return card;
+  }
+  function continueVideo(m) {
+    MAG.sheet('Video fortsetzen', (content, _, close) => {
+      const words = el('textarea', { rows: 3, placeholder: 'Was passiert als Nächstes, was hört man? Figuren, Ort und Klang bleiben.' });
+      const go = el('button', { class: 'pill on', type: 'submit' }, MAG.icon('play'), el('b', { text: 'Fortsetzen' }));
+      const hint = el('p', { class: 'hint' });
+      const choice = MAG.videoChoice((pick) => { hint.textContent = continueHint(pick); });
+      const continueHint = (pick) => 'Der neue Teil (' + pick.seconds + ' s) beginnt mit dem letzten Bild; das ganze Video kommt als neue Nachricht, nahtlos zusammengefügt.';
+      hint.textContent = continueHint(choice.pick);
+      const form = el('form', { class: 'video-ask', onsubmit: (e) => {
+        e.preventDefault();
+        go.disabled = true;
+        MAG.api('POST', '/api/video/continue', { message: m.id, prompt: words.value.trim(), seconds: choice.pick.seconds })
+          .then(() => { close(); MAG.scrollToEnd(); }, (x) => { go.disabled = false; MAG.toast(x.message, true); });
+      } }, words, choice.box, hint, go);
+      content.append(form);
+      setTimeout(() => words.focus(), 50);
+    });
   }
   function build3d(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 ' + m3.state });

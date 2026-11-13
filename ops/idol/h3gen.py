@@ -256,6 +256,17 @@ def main():
     asked = json.loads((job / "prompt.json").read_text())
     prompt = str(asked.get("prompt", "")).strip()[:1500]
     seconds = 10 if int(asked.get("seconds", 5) or 5) >= 10 else 5
+    previous = job / "prev.mp4" if asked.get("continues") and (job / "prev.mp4").is_file() else None
+    if previous and not (job / "input.png").is_file():
+        # Going on: the new part begins with the very last frame of the video so far.
+        say("Letztes Bild lesen")
+        part = job / "input.part.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-sseof", "-1", "-i", str(previous), "-vsync", "0",
+                        "-update", "1", "-frames:v", "100", str(part)])
+        if not part.is_file():
+            print("MAG-ERROR Das letzte Bild des Videos ließ sich nicht lesen.", flush=True)
+            sys.exit(2)
+        part.rename(job / "input.png")
     picture = job / "input.png" if (job / "input.png").is_file() else None
     use = "ref" if picture and asked.get("use") == "ref" else "first"
     if not prompt:
@@ -264,6 +275,9 @@ def main():
     if not CLI.is_file() or not ROCM.is_dir() or not (WEIGHTS / ".complete").is_file():
         print("MAG-ERROR H3 ist noch nicht ganz eingerichtet (Gewichte oder Programm fehlen).", flush=True)
         sys.exit(2)
+    if previous:
+        # The same shot goes on: the model is told so, so that people, look and sound stay.
+        prompt = ("Continuation of the same shot, the same characters, look, light and sound, no cut: " + prompt)[:1500]
     if use == "ref" and "<Picture 1>" not in prompt:
         prompt = "<Picture 1> " + prompt
     sound = job / "h3.webm"                 # what the model made; done is never done twice
@@ -297,9 +311,26 @@ def main():
         (job / "h3.part.webm").rename(sound)
     say("Video schreiben")
     part = job / "video.part.mp4"
-    done = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(sound), "-c:v", "libx264", "-crf", "18",
-                           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-                           "-metadata", "comment=" + LABEL, "-metadata", "description=" + LABEL, str(part)])
+    if previous:
+        # The whole video: what there was, then the new part without its first
+        # frame (the same as the last one before), its sound shifted by that
+        # frame and welded on with 40 ms of crossfade; the new part in the size
+        # of the old one.
+        size = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                               "-of", "csv=p=0", str(previous)], capture_output=True, text=True).stdout.strip().split(",")
+        width, height = (int(size[0]), int(size[1])) if len(size) == 2 and all(x.isdigit() for x in size) else shape(picture)
+        graph = ("[1:v]trim=start_frame=1,setpts=PTS-STARTPTS,scale=%d:%d,fps=%d,format=yuv420p[nv];"
+                 "[0:v]fps=%d,format=yuv420p[ov];[ov][nv]concat=n=2:v=1:a=0[v];"
+                 "[1:a]atrim=start=%.6f,asetpts=PTS-STARTPTS,aresample=32000[na];[0:a]aresample=32000[oa];"
+                 "[oa][na]acrossfade=d=0.04:c1=tri:c2=tri[a]") % (width, height, FPS, FPS, 1.0 / FPS)
+        done = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(previous), "-i", str(sound), "-filter_complex", graph,
+                               "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+                               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                               "-metadata", "comment=" + LABEL, "-metadata", "description=" + LABEL, str(part)])
+    else:
+        done = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(sound), "-c:v", "libx264", "-crf", "18",
+                               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                               "-metadata", "comment=" + LABEL, "-metadata", "description=" + LABEL, str(part)])
     if done.returncode != 0 or not part.is_file():
         print("MAG-ERROR Das Video ließ sich nicht schreiben.", flush=True)
         sys.exit(4)

@@ -820,7 +820,16 @@ Idol's video stage, which holds the MI50's lock), and every other GPU stage,
 once the card is its own, has it unload the model, so 3D and pictures have
 the whole card. Where h3d does not answer, sd-cli makes the clip. The h3d job
 id is kept in the job folder, so a restarted stage follows the same clip.
-A clip is resumable like every job of the line: the sampler writes its state
+A finished H3 video goes on ("Fortsetzen" at its card, `POST
+/api/video/continue`, a bot's `video_generate` with `continue`): the room
+sends its mp4 to the worker (`?continue=1`), the stage takes its very last
+frame as the first frame of a new fl2va part (the model knows keyframes only
+at the start and the end, so there is no latent context to carry over), tells
+the model that the same shot goes on, and joins: the video so far, then the
+new part without its first frame (the same as the last one), its sound
+shifted by that frame and welded on with 40 ms of crossfade. The new message
+(`continues`, `total_seconds`) holds the whole video; every part is a job of
+the line and resumable. A clip is resumable like every job of the line: the sampler writes its state
 after every step into the job's `h3state` (`sample-state.patch`; sd-cli is
 told by `SD_STATE_DIR`, h3d by the file `jobs/.h3d-state-dir` that the stage
 writes, one clip at a time under the MI50's lock), and a run that finds a

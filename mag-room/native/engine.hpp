@@ -37,6 +37,8 @@ public:
   std::function<std::string(const std::string &, int, int, const std::string &, std::string &, const std::string &)> imagine; // ..., then_video
   // Set by main: how a bot's video is ordered (Idol::film; no picture: words alone).
   std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &, int, const std::string &)> film; // picture, prompt, by, error, seconds, use
+  // An H3 video of the chat goes on (Idol::extend): (video's name or "", prompt, by, error, seconds) -> message id.
+  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &, int)> extend;
   // Set by main: how a bot's 3D model from a picture is ordered (Idol::start).
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   // Set by main: approvals per action and routines.
@@ -1220,7 +1222,10 @@ private:
     if (painted && painted->isObj() && jstr(*painted, "kind") == "video") {
       // A video from a picture of the chat: what it shows and how it ended.
       const std::string st = jstr(*painted, "state"), asked = "\"" + clip(jstr(*painted, "prompt"), 600, "…") + "\"";
-      if (jstr(*painted, "model") == "h3")
+      if (jstr(*painted, "model") == "h3" && !jstr(*painted, "continues").empty())
+        body = "Video mit Ton, fortgesetzt aus " + jstr(*painted, "source") + " mit " + asked + " (insgesamt " +
+               std::to_string((long)jnum(*painted, "total_seconds")) + " s, HyperFlow H3 Flash, als KI-generiert gekennzeichnet): ";
+      else if (jstr(*painted, "model") == "h3")
         body = (jstr(*painted, "source").empty() ? std::string("Video mit Ton aus den Worten ")
                                                  : "Video mit Ton aus dem Bild " + jstr(*painted, "source") + " und den Worten ") +
                asked + " (HyperFlow H3 Flash, als KI-generiert gekennzeichnet): ";
@@ -2702,6 +2707,7 @@ private:
           ctx.scenes = &scenes_;
           ctx.imagine = imagine;
           ctx.film = film;
+          ctx.extend = extend;
           ctx.model = model;
           ctx.asked_at = t.asked_at;
           ctx.output = [&](const std::string &chunk) { room_.step_output(t.id, index, chunk); };

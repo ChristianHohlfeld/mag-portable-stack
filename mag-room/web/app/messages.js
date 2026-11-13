@@ -808,9 +808,13 @@
       speak.dataset.speak = m.id; // the one that is being read shows it (speak.js)
       row.append(speak);
     }
-    if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => MAG.menu(e.currentTarget, [
+    // Teilen: the message's files (a 3D result's model, scene and film too), or its words.
+    const files = (m.attachments || []).filter((a) => a.file);
+    const shareable = files.length || (words && !m.model3d);
+    if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
+      shareable ? { icon: 'share', label: 'Teilen', run: () => MAG.share(files, files.length ? '' : m.text) } : null,
       { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
-    ])));
+    ]); }));
     return row.children.length ? row : null;
   }
   // A message written at a scene or a 3D model says so; a tap leads there.

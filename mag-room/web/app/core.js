@@ -53,6 +53,7 @@
     play: svg('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>'),
     pause: svg('<path d="M8.5 5.5v13M15.5 5.5v13"/>'),
     film: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.3v5.4l4.6-2.7z" fill="currentColor"/>'),
+    share: svg('<path d="M12 15V3M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/>'),
     globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
   };
   MAG.icon = (name) => MAG.el('span', { class: 'ico', html: MAG.icons[name] }).firstChild;
@@ -123,6 +124,59 @@
     });
   };
   // A menu anchored to a button; closes on outside tap or Escape.
+  // Sharing, the same for every file of the chat (picture, video, 3D model,
+  // document) and for words: on a phone the device's own sharing with the
+  // files themselves, else a download (the files) or the clipboard (words).
+  // A phone shares only right after a tap, so the files are fetched before
+  // (MAG.shareReady when the menu opens) and handed over at the tap at once.
+  const fetched = new Map(); // file id -> Promise of a File
+  const asFile = (f) => {
+    if (!fetched.has(f.file)) {
+      if (fetched.size > 8) fetched.clear();
+      fetched.set(f.file, fetch('/api/file/' + encodeURIComponent(f.file)).then(async (r) => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const blob = await r.blob();
+        return new File([blob], f.name, { type: blob.type || 'application/octet-stream' });
+      }).catch((x) => { fetched.delete(f.file); throw x; }));
+    }
+    return fetched.get(f.file);
+  };
+  const canShareFiles = () => !!(navigator.canShare && navigator.share);
+  MAG.shareReady = (files) => { if (canShareFiles()) for (const f of files || []) asFile(f).catch(() => {}); };
+  MAG.share = async function (files, text) {
+    files = files || [];
+    if (!files.length) {
+      if (!text) return;
+      if (navigator.share) {
+        try { await navigator.share({ text }); } catch (x) { if (x.name !== 'AbortError') MAG.toast('Teilen nicht möglich', true); }
+        return;
+      }
+      try { await navigator.clipboard.writeText(text); MAG.toast('Text kopiert'); } catch { MAG.toast('Teilen nicht möglich', true); }
+      return;
+    }
+    if (canShareFiles()) {
+      try {
+        const all = await Promise.all(files.map(asFile));
+        const ok = all.filter((f) => navigator.canShare({ files: [f] }));
+        if (ok.length) {
+          await navigator.share(ok.length === 1 ? { files: ok, title: ok[0].name } : { files: ok });
+          return;
+        }
+      } catch (x) {
+        if (x.name === 'AbortError') return;
+        // The files took longer than the tap allows: they are here now.
+        if (x.name === 'NotAllowedError') { MAG.toast('Die Datei ist geladen: bitte noch einmal auf Teilen tippen'); return; }
+      }
+    }
+    for (const f of files) {
+      const a = MAG.el('a', { href: '/api/file/' + encodeURIComponent(f.file) + '?download=1', download: f.name });
+      document.body.append(a);
+      a.click();
+      a.remove();
+    }
+    MAG.toast(files.length > 1 ? files.length + ' Dateien werden heruntergeladen' : 'Wird heruntergeladen');
+  };
+
   MAG.menu = function (anchor, items) {
     document.querySelector('.menu')?.remove();
     const menu = MAG.el('div', { class: 'menu', role: 'menu' });

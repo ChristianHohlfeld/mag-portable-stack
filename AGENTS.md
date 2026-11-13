@@ -46,12 +46,12 @@ output; read only the configuration needed for a specific operation.
 ## Models
 
 Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
-Lena = Gemma 4 26B-A4B on NUMA0 (physical cores 0-13, :8191), Noah = gpt-oss
-120B on NUMA1 (cores 14-27, :8192). Lena also loads the Gemma vision projector
-(`mmproj`, on the CPU) so she sees images. Each bot has a drafter made for its own model
-(Lena: Gemma's MTP head, Noah: NVIDIA's EAGLE-3 head for gpt-oss-120b,
-converted on the host by `ops/models/build-draft.sh`); a drafter only guesses
-ahead, the bot's model checks every token, so it changes speed, never words. No GPU offload: the MI50 belongs to MAG
+Lena on NUMA0 (physical cores 0-13, :8191) and Noah on NUMA1 (cores 14-27,
+:8192) run the same model, Gemma 4 26B-A4B (HauhauCS build, the same file),
+with the same MTP drafter and the Gemma vision projector (`mmproj`, on the
+CPU), so both see images (Chris, 2026-11-13: "eine Kopie identischer Modelle
+von Lena"; gpt-oss 120B stays on disk, unused). A drafter only guesses ahead,
+the bot's model checks every token, so it changes speed, never words. No GPU offload: the MI50 belongs to MAG
 Idol alone and its power cap stays at 78 W (Chris, 2026-11-13; 82 W, 100 W, 85 W,
 78 W and 73 W for a while that day, 72 W before; the card is cooled passively,
 at 85 W its junction was 83 °C of 100; `ops/idol/power-cap.sh` only ever

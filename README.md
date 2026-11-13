@@ -39,7 +39,7 @@ Read next:
 | --- | --- | --- |
 | Room | `magroom` (C++17): page, API, event stream, conversation engine, tools; unit `mag-120.service` | `mag-room/native`, `mag-room/web` |
 | Lena | Gemma 4 26B-A4B (Q4_K_M) with vision projector, llama.cpp, CPU only, NUMA0, cores 0-13, port 8191 | `ops/models` |
-| Noah | gpt-oss 120B (MXFP4), llama.cpp, CPU only, NUMA1, cores 14-27, port 8192 | `ops/models` |
+| Noah | the same Gemma 4 26B-A4B (Q4_K_M) as Lena, with drafter and vision projector, llama.cpp, CPU only, NUMA1, cores 14-27, port 8192 | `ops/models` |
 | Model supervisor | `mag-modeld`: download, size and SHA256 check, start of `mag-model@<bot>.service`, `/run/mag-models/status.json` | `mag-room/native/mag_modeld.cpp`, `ops/models` |
 | Audit layer | `mag-audit-gateway` (only path to the models, full log), `mag-audit-webproxy` (mitmproxy, every web access), nft rules | `mag-room/native/mag_audit_gateway.cpp`, `ops/audit` |
 | Bot VMs | `magbot`: spawn, reset, save, restore of one KVM guest per bot from a golden image | `mag-room/native/vm.cpp`, `ops/vm`, `ops/mag-agents.nft` |
@@ -154,7 +154,7 @@ recorded here, read the upstream model card before relying on it.
 | MediaPipe face landmarker | faces in scenes | Apache-2.0 (`ops/scene/face/bootstrap.sh`) |
 | CMU Graphics Lab Motion Capture Database (BVH by Bruce Hahne) | `ops/scene/motions.npz` | free for research and commercial use, credit required (`ops/scene/MOTIONS.md`) |
 | Blender 4.5.16 | scenes | pinned in `ops/scene/blender.lock`; licence not recorded here |
-| Gemma 4 26B-A4B (HauhauCS build), gpt-oss 120B (heretic v2 build) | Lena, Noah | not recorded here; URLs in `ops/models/models.json` |
+| Gemma 4 26B-A4B (HauhauCS build) | Lena, Noah | not recorded here; URLs in `ops/models/models.json` |
 | SAM 2.1 hiera small, Depth Anything V2 metric indoor small | object selection, room depth | not recorded here; revisions pinned in `ops/idol/install.sh` |
 | Idol | splat sampling on the MI50 | not recorded here; installed outside this repository |
 | xterm.js 5.5.0, fit addon 0.10.0 | VM terminal | MIT (`mag-room/web/static/xterm-LICENSE.txt`) |

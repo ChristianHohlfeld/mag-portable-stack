@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build ONE drafter that is published only as Hugging Face weights, not as a
-# GGUF (today: Noah's EAGLE-3 head, nvidia/gpt-oss-120b-Eagle3-v3):
+# GGUF (an EAGLE-3 head, e.g. nvidia/gpt-oss-120b-Eagle3-v3; none is configured today):
 #   build-draft.sh <bot> <kind>
 # Called by fetch.sh (mag-model-fetch@<bot>-draft.service, user chris, cores
 # 28-55) while it holds the file's lock, so there is one writer per file.

@@ -2,6 +2,7 @@
 // Everything in the timeline is a message (text, bot work, files, 3D results);
 // each one is a JSON file under STATE/messages, attachments under STATE/files.
 #pragma once
+#include "group_dispatcher.hpp"
 #include "util.hpp"
 
 #include <condition_variable>
@@ -115,6 +116,43 @@ inline std::string attachment_kind(const std::string &mime, const std::string &n
   return "file";
 }
 
+
+// What a bot writes for the room alone never stands in the chat: its control
+// markers ([[MAG:WEITER]], [[MAG:ENDE]]) and a PASS that is a text of its own
+// (also after a step, where the dispatcher does not look).
+inline std::string without_markers(std::string text) {
+  for (size_t at; (at = text.find("[[MAG:")) != std::string::npos;) {
+    const size_t end = text.find("]]", at);
+    text.erase(at, end == std::string::npos ? std::string::npos : end + 2 - at);
+  }
+  return text;
+}
+// Tidies a bot's message in place, its text joined again from its parts;
+// true when something was taken out.
+inline bool tidy_bot_message(Val &m) {
+  if (jstr(m, "role") != "bot") return false;
+  auto tidy = [](const std::string &raw) {
+    const std::string text = without_markers(raw);
+    return !trim(text).empty() && group_chat::is_pass(text) ? std::string() : text;
+  };
+  bool changed = false;
+  Val *parts = m.find("parts");
+  if (parts && parts->isArr() && !parts->asArr().empty()) {
+    std::string joined;
+    for (auto &p : *parts->arr) {
+      if (jstr(p, "k") != "text") continue;
+      const std::string was = jstr(p, "text"), now = tidy(was);
+      if (now != was) { p["text"] = now; changed = true; }
+      if (!trim(now).empty()) joined += (joined.empty() ? "" : "\n\n") + trim(now);
+    }
+    if (changed) m["text"] = joined;
+  } else if (const std::string was = jstr(m, "text"), now = tidy(was); now != was) {
+    m["text"] = now;
+    changed = true;
+  }
+  return changed;
+}
+
 class Room {
 public:
   Config cfg;
@@ -217,7 +255,7 @@ public:
         parts.push(part);
       }
       Val &last = parts.arr->back();
-      last["text"] = mj::utf8_cut(jstr(last, "text"), keep) + text;
+      last["text"] = mj::utf8_cut(jstr(last, "text"), keep) + without_markers(text);
     }, false);
   }
 
@@ -598,6 +636,17 @@ private:
         if (Val *parts = m.find("parts"); parts && parts->isArr())
           for (auto &p : *parts->arr)
             if (jstr(p, "k") == "step" && jstr(p, "state") == "running") p["state"] = "cancelled";
+        write_json(entry.path().string(), m);
+      }
+      // A marker or a PASS an answer kept from before (cut off by a restart, or
+      // written after a step) leaves it now.
+      // An answer with nothing else in it is no message any more.
+      if (tidy_bot_message(m)) {
+        bool shown = !trim(jstr(m, "text")).empty() || m.find("model3d");
+        for (const char *key : {"parts", "attachments"})
+          if (const Val *list = m.find(key); list && list->isArr())
+            for (auto &x : list->asArr()) shown = shown || key[0] == 'a' || jstr(x, "k") == "step";
+        if (!shown) { fs::remove(entry.path(), ec); continue; }
         write_json(entry.path().string(), m);
       }
       messages_[id] = m;

@@ -2256,6 +2256,7 @@ private:
     bool yielded = false;    // another bot carries the task out: this turn ends and is not shown
     std::string tool_sig;
     int steps = 0;
+    bool more = false;       // the bot wrote [[MAG:WEITER]] (taken out of the text as it streamed)
     size_t asked_at = 0;     // parts of the message that were there when Chris last wrote into this turn
     llm::ChatResult last;
     int64_t started = now_ms();
@@ -2355,7 +2356,15 @@ private:
         text.erase(mark);
       }
     }
+    // A marker is for the room, never for the chat: it is noted, not shown.
+    if (text.find(kContinue) != std::string::npos) t.more = true;
+    text = without_markers(text);
     text = plain_names(text, names());
+    // A fresh text after a step may still turn out to be a PASS: it waits until it cannot.
+    if (t.visible && t.steps > 0 && !t.id.empty() && room_.text_len(t.id) == 0) {
+      if (!flush && group_chat::maybe_pass(text)) { t.tail = text + t.tail; return; }
+      if (flush && group_chat::is_pass(text)) return;
+    }
     if (!t.visible) {
       t.held += text;
       if (!flush && t.steps == 0 &&
@@ -2901,7 +2910,8 @@ private:
           if (jstr(p, "k") != "text") continue;
           bool more = false;
           p["text"] = strip_markers(jstr(p, "text"), &more);
-          wants_more = wants_more || more;
+          wants_more = wants_more || more || t.more;
+          if (group_chat::is_pass(jstr(p, "text"))) p["text"] = ""; // also a PASS after a step
           const std::string piece = trim(jstr(p, "text"));
           if (!piece.empty()) text += (text.empty() ? "" : "\n\n") + piece;
         }

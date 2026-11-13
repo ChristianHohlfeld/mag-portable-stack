@@ -743,9 +743,17 @@ does not do, Idol samples a splat and the mesh is made from splat and shape.
 The mesh stage (`mesh.py`, CPU) produces closed solids: marching cubes over
 an opacity field, smoothed, decimated to a printable STL and a lighter GLB,
 unwrapped (`unwrap.py`: xatlas with a time limit, else a simple chart
-layout), textured. The side the photo shows wears the photo itself (up to
-4096 px); what the photo did not see takes its colours carried over the
-surface from the nearest seen part. The shape is TripoSG's as its own
+layout), textured. Before it, the paint stage (`paint.py`, MV-Adapter's
+image-and-geometry pipeline on SDXL, in TripoSG's environment, on the MI50)
+draws the shape's position and normal maps from MV-Adapter's six orthographic
+views on the CPU (nvdiffrast is CUDA's alone) and paints the six views from
+the photo with MV-Adapter's own settings (50 steps, guidance 3, ShiftSNR 8,
+768 px, seed 42); `mesh.py` lays them onto the model, each texel taking the
+views that see it straight. Code at a fixed commit (`~/idol-mi50/mvadapter/src`),
+weights by `ops/idol/paint/fetch.sh` (SDXL base 1.0, its fp16 VAE, the ig2mv
+adapter; checked against their SHA256). Without them the side the photo
+shows wears the photo itself (up to 4096 px) and what the photo did not see
+takes its colours carried over the surface from the nearest seen part. The shape is TripoSG's as its own
 scripts make it (the picture prepared as `scripts/image_process.py` does: a
 hard mask on white, 10 % margin, at most 2000 px; 50 steps, guidance 7,
 seed 42); nothing is cut off or added to it. "Netz neu" makes a model anew

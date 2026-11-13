@@ -226,8 +226,12 @@ A picture whose file ends in its middle is not taken as it is: the page reads
 the file again first, and photo to 3D refuses it in words.
 Photo to 3D makes one model of one object, its whole shape from TripoSG
 (MIT, on the MI50 in Idol's queue), made from the shape and the photo alone
-(Idol's splat is sampled only where that does not do); the side the
-photo shows wears the photo itself, the rest its colours carried around. A photo that is ordered is ordered as it is, one job, nothing
+(Idol's splat is sampled only where that does not do), coloured the way
+TripoSG's authors do it: MV-Adapter (Apache-2.0, on SDXL, on the MI50 in the
+same queue) paints the shape from six sides at once from the photo
+(`paint.py`, its own defaults), and the model wears those views; only where
+its weights are missing or it fails, the side the photo shows wears the
+photo and the rest its colours carried around. A photo that is ordered is ordered as it is, one job, nothing
 split or looked at unasked (Chris, 2026-11-11). In a photo with several things
 Chris can say which is meant ("Objekt wählen": he taps it or names it and sees
 the mask, or has all of them found and orders each by itself; a named thing

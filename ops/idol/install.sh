@@ -77,6 +77,16 @@ if [[ -d $TRIPO/src && ! -x $TRIPO/venv/bin/python ]]; then
   sudo -u "$MAG_OWNER" "$TRIPO/venv/bin/pip" install -q --no-deps --require-hashes -r /opt/mag-stack/current/ops/idol/env/triposg.lock \
     || echo 'TripoSG environment incomplete; the mesh is made from the splat' >&2
 fi
+# The colours of the whole shape (paint.py): MV-Adapter (Apache-2.0) at a fixed
+# commit, run in TripoSG's environment; its weights (SDXL base, its fp16 VAE,
+# the adapter; about 8 GB) come from ops/idol/paint/fetch.sh, resumable and
+# checked. Without them the model takes the photo's colours carried around.
+PAINT=$BASE/mvadapter/src
+if [[ ! -d $PAINT/.git ]]; then
+  sudo -u "$MAG_OWNER" git clone -q https://github.com/huanngzh/MV-Adapter "$PAINT" \
+    && sudo -u "$MAG_OWNER" git -C "$PAINT" checkout -q 4277e0018232bac82bb2c103caf0893cedb711be \
+    || echo 'MV-Adapter not fetched; models keep the photo carried around' >&2
+fi
 # A video with its sound (h3gen.py): HyperFlow H3 Flash, licensed to the
 # owner personally, so nothing here fetches or builds it. The owner runs
 # ops/video/h3/fetch.sh and ops/video/h3/build.sh; until both are done the
@@ -104,7 +114,7 @@ systemctl enable mag-idol.service
 # follows it again, so a deploy never costs a photo-to-3D job. The one
 # exception is a job that a worker from before this design started: it dies
 # with that worker, so then the restart waits until the job is done.
-rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh,h3gen}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
+rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh,paint,h3gen}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
 if [[ $(cat /run/mag-idol.rev 2>/dev/null) != "$rev" ]] || ! systemctl is-active --quiet mag-idol.service; then
   active() { grep -lE '"state": *"(running|queued)"' /var/lib/mag-idol/jobs/*/status.json >/dev/null 2>&1; }
   health=$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8793/api/idol/health 2>/dev/null || :)

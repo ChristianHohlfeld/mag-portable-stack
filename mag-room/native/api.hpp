@@ -322,6 +322,23 @@ public:
       assist_.decide(jstr(card, "id"), "done");
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && p == "/api/routines") {
+      // A job Chris sets up himself in a bot's sheet ({name, instruction, when, bot}): no card, he is the one who allows.
+      const Val in = jparse(r.body);
+      Val made;
+      const std::string why = assist_.add(in, jstr(in, "bot"), made);
+      if (!why.empty()) return http::send_error(fd, 422, why);
+      made["when_text"] = Assist::describe_when(made["when"]);
+      return http::send_json(fd, 200, made);
+    }
+    if (r.method == "PUT" && starts_with(p, "/api/routines/")) {
+      // A job changed by Chris: any of name, instruction, when, bot.
+      Val made;
+      const std::string why = assist_.update(url_decode(p.substr(14)), jparse(r.body), made);
+      if (!why.empty()) return http::send_error(fd, 422, why);
+      made["when_text"] = Assist::describe_when(made["when"]);
+      return http::send_json(fd, 200, made);
+    }
     if (starts_with(p, "/api/routines/") && (r.method == "DELETE" || r.method == "POST")) {
       // A routine paused, resumed, run now or removed by Chris.
       std::string rest = p.substr(14), what = "remove";

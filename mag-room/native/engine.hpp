@@ -2005,14 +2005,34 @@ private:
       const std::string why = assist->add(args, b.id, probe);
       if (!why.empty()) return tools::fail(why);
       return {"Routine »" + jstr(probe, "name") + "« eingerichtet (" + jstr(probe, "id") + ", " + Assist::describe_when(probe["when"]) +
-                  "). Chris sieht und ändert sie in den Einstellungen unter Routinen.", true};
+                  "). Chris sieht und ändert sie im Blatt des Bots unter Jobs.", true};
+    }
+    if (action == "update") {
+      // A changed job is a job set up anew: Chris's rules for routines decide, like for add.
+      Val now;
+      for (auto &r : assist->routines().asArr())
+        if (jstr(r, "id") == trim(jstr(args, "id")) || lower(jstr(r, "name")) == lower(trim(jstr(args, "id")))) now = r;
+      if (!now.isObj()) return tools::fail("Diese Routine gibt es nicht. Sieh mit action list nach.");
+      Val ask = Val::object();
+      ask["action"] = "routine";
+      ask["what"] = "Routine »" + jstr(now, "name") + "« ändern: " +
+                    (args.find("when") ? Assist::describe_when(Assist::at(args, "when")) + " " : std::string()) +
+                    clip(trim(jstr(args, "instruction", jstr(now, "instruction"))), 400, "…");
+      bool yes = false;
+      const std::string said = assist->consent(b.id, ask, cancel, card, &yes);
+      if (!yes) return {said, false};
+      Val made;
+      const std::string why = assist->update(jstr(now, "id"), args, made);
+      if (!why.empty()) return tools::fail(why);
+      return tools::told("Routine »" + jstr(made, "name") + "« geändert (" + jstr(made, "id") + ", " + Assist::describe_when(made["when"]) + ").",
+                         "Routine »" + jstr(made, "name") + "« geändert: " + Assist::describe_when(made["when"]) + ".");
     }
     if (action == "remove" || action == "pause" || action == "resume" || action == "run") {
       const std::string why = assist->act(trim(jstr(args, "id")), action);
       if (!why.empty()) return tools::fail(why);
       return {action == "remove" ? "Routine gelöscht." : action == "pause" ? "Routine pausiert." : action == "resume" ? "Routine läuft wieder." : "Routine gestartet.", true};
     }
-    return tools::fail("action ist add, list, remove, pause, resume oder run.");
+    return tools::fail("action ist add, list, update, remove, pause, resume oder run.");
   }
 
   // Runs when another bot waits for a description and this one has no turn of

@@ -275,12 +275,10 @@ public:
   // {"every_minutes": n} | {"once": "2026-11-14 18:00"} | {"event": "picture"|"job_done"} |
   // {"event": "file", "path"?: a folder below /home/bot, "pattern"?: "*.pdf"}.
   // Returns "" with `out` set, or why not in words.
-  std::string add(const Val &in, const std::string &bot_id, Val &out) {
-    const std::string name = clip(trim(jstr(in, "name")), 80, ""), text = clip(trim(jstr(in, "instruction")), 2000, "…");
-    if (name.empty() || text.empty()) return "Eine Routine braucht name und instruction.";
-    const Val *when = in.find("when");
+  // `when` as the routine keeps it; "" or why not in words.
+  std::string parse_when(const Val *when, Val &w) const {
     if (!when || !when->isObj()) return "Wann soll sie laufen? when fehlt.";
-    Val w = Val::object();
+    w = Val::object();
     if (const std::string t = jstr(*when, "daily"); !t.empty()) { if (!clock_ok(t)) return "Uhrzeit als HH:MM."; w["time"] = t; w["days"] = days({1, 2, 3, 4, 5, 6, 7}); }
     else if (const std::string t = jstr(*when, "weekdays"); !t.empty()) { if (!clock_ok(t)) return "Uhrzeit als HH:MM."; w["time"] = t; w["days"] = days({1, 2, 3, 4, 5}); }
     else if (const Val *d = when->find("days"); d && d->isArr()) {
@@ -319,6 +317,14 @@ public:
     } else {
       return "when kennt daily, weekdays, days+time, every_minutes, once oder event (picture, job_done, file).";
     }
+    return "";
+  }
+
+  std::string add(const Val &in, const std::string &bot_id, Val &out) {
+    const std::string name = clip(trim(jstr(in, "name")), 80, ""), text = clip(trim(jstr(in, "instruction")), 2000, "…");
+    if (name.empty() || text.empty()) return "Eine Routine braucht name und instruction.";
+    Val w;
+    if (const std::string why = parse_when(in.find("when"), w); !why.empty()) return why;
     std::unique_lock<std::mutex> lk(routines_mu_);
     Val all = read_json(path());
     if (!all.isArr()) all = Val::array();
@@ -342,6 +348,37 @@ public:
     write_json(path(), all);
     out = r;
     lk.unlock();
+    publish();
+    return "";
+  }
+
+  // A routine changed (by Chris in its bot's sheet, or by a bot): any of name,
+  // instruction, when and bot; the next run follows the new when. "" or why not.
+  std::string update(const std::string &id, const Val &in, Val &out) {
+    Val w;
+    if (in.find("when"))
+      if (const std::string why = parse_when(in.find("when"), w); !why.empty()) return why;
+    {
+      std::lock_guard<std::mutex> lk(routines_mu_);
+      Val all = read_json(path());
+      if (!all.isArr()) return "Diese Routine gibt es nicht.";
+      bool found = false;
+      for (auto &r : *all.arr) {
+        if (jstr(r, "id") != id && lower(jstr(r, "name")) != lower(id)) continue;
+        found = true;
+        if (const std::string name = clip(trim(jstr(in, "name")), 80, ""); !name.empty()) r["name"] = name;
+        if (const std::string text = clip(trim(jstr(in, "instruction")), 2000, "…"); !text.empty()) r["instruction"] = text;
+        if (const std::string want = lower(trim(jstr(in, "bot"))); !want.empty())
+          for (auto &b : room_.bots().asArr())
+            if (want == jstr(b, "id") || want == lower(jstr(b, "name"))) r["bot"] = jstr(b, "id");
+        if (w.isObj()) { r["when"] = w; r["next"] = (double)next_after(w, now_s()); }
+        r["changed"] = (double)now_s();
+        out = r;
+        break;
+      }
+      if (!found) return "Diese Routine gibt es nicht.";
+      write_json(path(), all);
+    }
     publish();
     return "";
   }

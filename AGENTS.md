@@ -310,7 +310,13 @@ folder or by a name pattern); one that is due is a chat message to its bot
 missed while the room was down runs once when it is late by 12 hours at
 most; an event routine runs at most every 15 minutes, and the files a file
 routine's own run writes never set it off again. A VM is only read for
-this, never started. Chris pauses, runs and removes them in the settings.
+this, never started. Chris calls them jobs: each bot's sheet lists its own
+(its VM named), the settings all of them, one list (`MAG.jobs`) with the
+same actions everywhere: set up, change, pause, run now, delete
+(`POST /api/routines`, `PUT`/`POST`/`DELETE /api/routines/<id>`). A bot
+sets up and changes its jobs with the same tool (`routine` add, update,
+pause, resume, run, remove; add and update by Chris's rules for routines).
+A job is its bot's: it runs as that bot's turn, in that bot's VM.
 Plugins are remote MCP servers Chris connects in the settings and gives to a
 bot in its sheet (`plugins` of the bot; `STATE/mcp/servers.json`, a token in
 `STATE/mcp/<id>.secret`, never in a prompt, a log or the page). The room

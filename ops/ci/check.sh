@@ -64,5 +64,10 @@ SUMS
 # Reading aloud happens in the browser with the pinned voices: the worker in
 # the repository is the one the lock names, and no speech is made on the server.
 (cd ops/tts && grep ' tts-worker.js$' assets.lock | sha256sum --quiet -c -)
-[[ $(wc -l < ops/tts/assets.lock) == 15 ]]
+# Every pinned piece is one line, its SHA256 and its name; the runtime names
+# the worker and onnxruntime-web.
+for lock in ops/tts/assets.lock ops/tts/models.lock ops/tts/source.lock; do
+  ! grep -vqE '^[0-9a-f]{64}  [^ ]+$' "$lock" || { echo "$lock: a line is not '<sha256>  <name>'" >&2; exit 1; }
+done
+grep -q '  ort.webgpu.min.js$' ops/tts/assets.lock
 echo 'static checks ok'

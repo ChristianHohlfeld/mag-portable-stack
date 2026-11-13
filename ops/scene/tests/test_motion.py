@@ -131,7 +131,8 @@ def main():
                     got = at[b][1] - at[b][0]
                     assert abs(np.linalg.norm(got) - body.length[b]) < 1e-9                    # a bone keeps its length
                     assert float(motion.unit(got) @ limbs[2 * k + j]) > 1 - 1e-9               # and points where it was told to
-            assert set(turns) == set(body.names) and all(abs(np.linalg.norm(q) - 1) < 1e-9 for q in turns.values())
+            moved = {n for n, b in zip(body.names, body.bones) if b["role"] != "hand"}     # a hand turns only when it is bent
+            assert set(turns) == moved and all(abs(np.linalg.norm(q) - 1) < 1e-9 for q in turns.values())
     # As rig poses take it: standing as the model stands is no turn at all.
     same = np.array([1.0, 0.0, 0.0, 0.0])
     rest = np.stack([stout.dir[stout.legs[0][0]], stout.dir[stout.legs[0][1]], stout.dir[stout.legs[1][0]], stout.dir[stout.legs[1][1]],

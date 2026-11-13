@@ -5,16 +5,29 @@ detailed notes (German, for the owner). Versions follow SemVer: a major
 version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
-## Unreleased
+## 5.1.0 (2026-11-13)
+
+Videos with sound by HyperFlow H3, painted 3D models, and a chat whose every
+message can be deleted; 32 pull requests since 5.0.0 (#502–#533). A 5.0.0 host
+is updated with `ops/deploy.sh`; for videos the owner runs
+`ops/video/h3/fetch.sh` and `ops/video/h3/build.sh` once (licence).
 
 - The MI50's power cap is 78 W instead of 72 W (Chris, 2026-11-13);
-  `ops/idol/power-cap.sh` still only lowers it and never writes more than 78 W.
+  `ops/idol/power-cap.sh` still only lowers it and never writes more than 78 W
+  (#532).
 - Videos with their sound: HyperFlow H3 Flash (MiniMax H3, licensed to the
   owner personally; never fetched by the installer) replaces Wan 2.2, natively
   on ROCm/HIP on the MI50, 4 steps at 480p, 5 s by default (#518, #521, #522).
+  gfx906 kernels of its own: attention with int8 Q·Kᵀ (v_dot4) and one Q scale
+  per row, RMSNorm with the AdaLN modulation in one pass, the VAE's Conv3d as
+  an implicit fp16 GEMM (#524, #526, #528, #529); `h3d` keeps H3 loaded between
+  clips and lets go of it for 3D and pictures, and finds its weights through
+  hard links (#530, #531).
 - Photo to 3D: TripoSG's shape as its own scripts make it (no bust cut, hard
-  mask, full picture), painted from six sides by MV-Adapter on SDXL; the
-  installer fetches the paint weights (#519, #520).
+  mask, full picture), painted from six sides by MV-Adapter on SDXL, the views
+  made twice as large by Real-ESRGAN as MV-Adapter's texture script does; a
+  fresh host fetches the paint weights in its installer (#519, #520, #523,
+  #525).
 - Browser: the room finds the login form itself, logins are kept sealed and
   offered again, a two-step login gets a code card, and the header says when
   a bot waits at a login or a checkout (#514, #515, #516).
@@ -31,6 +44,11 @@ hand, a minor version for new features, a patch for fixes.
 - Chat: English twin lines, written-out tool calls and text approvals are not
   shown, also in old messages; a camera photo that does not arrive is said in
   words (#502, #513).
+- Chat: every message (Chris's, a bot's, picture, video, 3D, file) has the
+  same row with ⋯ and „Nachricht löschen“, always in sight; a running job can
+  be deleted too (#527). Code longer than 12 lines folds like a step, and a
+  tool call or a scene a bot writes into its text as JSON is taken out and the
+  bot is sent to make the call for real (#533).
 - CI on GitHub green again (#517).
 
 ## 5.0.0 (2026-11-12)

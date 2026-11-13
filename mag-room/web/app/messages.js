@@ -755,14 +755,16 @@
   }
 
   // ---- one message --------------------------------------------------------
-  // Actions come after the text, like everywhere else: copy, read aloud, and
-  // a menu for what must not happen by accident.
+  // Actions come after every message, the same for all (Chris's, a bot's, a
+  // picture, a video, a 3D model, a file): copy, read aloud, and a menu with
+  // what must not happen by accident. A job that is still under way can be
+  // deleted already; an answer that is still being written cannot.
   function actions(m) {
-    if (m.state === 'streaming') return null;
+    if (m.state === 'streaming' && !m.model3d) return null;
     const user = m.role === 'user', row = el('div', { class: 'acts' });
     const button = (icon, label, run) => el('button', { class: 'act', 'aria-label': label, title: label, html: MAG.icons[icon], onclick: run });
     if (user) row.append(el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) }));
-    const words = m.model3d ? '' : m.text; // a 3D result has nothing to copy or read aloud
+    const words = m.model3d || m.state === 'streaming' ? '' : m.text; // a 3D result has nothing to copy or read aloud
     if (words) row.append(button('copy', 'Kopieren', async (e) => {
       const b = e.currentTarget;
       try {
@@ -797,15 +799,11 @@
     const files = m.model3d && !picture ? [] : m.attachments || [];
     const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
     if (user) {
-      // The bubble, what was attached, and (on tap or hover) the actions.
+      // The bubble, what was attached, and below them the actions.
       // A routine that came due speaks like a request, marked as the routine's.
       const bubble = m.text ? el('div', { class: 'bubble' + (m.routine ? ' routine' : '') }, m.routine ? el('small', { class: 'tag', text: '⏰ Routine' }) : null, markdown(m.text)) : null;
       const col = el('div', { class: 'col' }, aboutChip(m), bubble, atts);
-      col.addEventListener('click', (e) => {
-        if (e.target.closest('a, button, video, audio') || String(window.getSelection() || '')) return;
-        node.classList.toggle('show-acts');
-      });
-      node.append(el('div', { class: 'line' }, actions(m), col));
+      node.append(el('div', { class: 'line' }, col, actions(m)));
       return node;
     }
     node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: picture ? (m.model3d.kind === 'video' ? 'Video' : 'Bild') : MAG.name(m.from) }),
@@ -915,7 +913,6 @@
     let node = build(m);
     if (old) {
       // Keep what the reader opened.
-      if (old.classList.contains('show-acts')) node.classList.add('show-acts');
       old.querySelectorAll('details[open]').forEach((d) => {
         const twin = d.classList.contains('think') ? node.querySelector('.think') : node.querySelector('details[data-part="' + d.dataset.part + '"]');
         if (twin) twin.open = true;

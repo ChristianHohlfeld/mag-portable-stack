@@ -791,6 +791,32 @@ so a video interrupted by a reboot goes on after its last step. It runs in `~/id
 `ops/video/fetch.sh`, and until they are complete the worker refuses a
 video in words. A bot orders one with `video_generate`.
 
+### Videos with their sound (`ops/idol/h3gen.py`, HyperFlow H3 Flash)
+
+The second maker of a video, chosen where it is ordered ("H3 · mit Ton";
+`model: h3`, `seconds` 5 or 10, `use` first or ref; a bot's `video_generate`
+with `model: h3`): HyperFlow H3 Flash by Video Rebirth, a 14B few-step
+MiniMax H3 that makes the video and its stereo sound together, from words
+alone, from a picture as its first frame (fl2va) or with the picture as who
+or what is in it (ref2va, "<Picture 1>"). Its setup is Video Rebirth's own
+workflow (six steps of its HyperFlow sigmas, Euler, CFG 1, about one
+megapixel, 16:9 without a picture, 24 fps, 124 or 243 frames). Its NVIDIA
+parts (INT8 convrot, NVFP4, SageAttention) do not exist on gfx906, so the
+same model runs as GGUF Q8_0 with the MiniMax H3 Qwen3-VL-32B encoder as
+GGUF Q4_K_M and H3's video (fp16) and audio (fp32) VAEs, in
+stable-diffusion.cpp with Video Rebirth's patch on ggml's Vulkan backend
+(RADV): parts that wait stay in memory (`--offload-to-cpu`), attention is
+ggml's flash shader, the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
+The model's result (`h3.webm`) is kept, so a lost stage only writes the
+file again. Its licence (MiniMax H3 Community License) leaves out the EU;
+MiniMax authorised Chris personally on 2026-11-13 (private, non-commercial,
+nothing passed on, output marked as made by AI, no training of other
+models, only him). So an installer never fetches it: the owner runs
+`ops/video/h3/fetch.sh` (about 54 GB, pinned, checked) and
+`ops/video/h3/build.sh` on his host, the worker offers it only when both are
+there (`h3` in its health), and every H3 video says in the chat and in the
+file's metadata that it is made by AI with MiniMax H3.
+
 ## Scenes (`ops/scene`)
 
 The bots' tools `models_3d` and `scene_3d` turn 3D models from the chat into

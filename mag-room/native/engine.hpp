@@ -36,7 +36,7 @@ public:
   // Set by main: how a bot's picture from words is ordered (Idol::imagine).
   std::function<std::string(const std::string &, int, int, const std::string &, std::string &, const std::string &)> imagine; // ..., then_video
   // Set by main: how a bot's video from a picture is ordered (Idol::film).
-  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &)> film;
+  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &, const std::string &, int, const std::string &)> film; // picture, prompt, by, error, model, seconds, use
   // Set by main: how a bot's 3D model from a picture is ordered (Idol::start).
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   // Set by main: approvals per action and routines.
@@ -1219,7 +1219,10 @@ private:
     if (painted && painted->isObj() && jstr(*painted, "kind") == "video") {
       // A video from a picture of the chat: what it shows and how it ended.
       const std::string st = jstr(*painted, "state"), asked = "\"" + clip(jstr(*painted, "prompt"), 600, "…") + "\"";
-      body = "Video aus dem Bild " + jstr(*painted, "source") + " mit der Bewegung " + asked + " (Wan 2.2): ";
+      if (jstr(*painted, "model") == "h3")
+        body = (jstr(*painted, "source").empty() ? std::string("Video mit Ton aus den Worten ") : "Video mit Ton aus dem Bild " + jstr(*painted, "source") + " mit ") +
+               asked + " (MiniMax H3, als KI-generiert gekennzeichnet): ";
+      else body = "Video aus dem Bild " + jstr(*painted, "source") + " mit der Bewegung " + asked + " (Wan 2.2): ";
       if (st == "done") {
         body += "fertig. Chris spielt es im Chat ab. Dateien:";
         if (atts && atts->isArr())

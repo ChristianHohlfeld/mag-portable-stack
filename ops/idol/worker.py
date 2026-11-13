@@ -60,6 +60,23 @@ VIDEO_STEP = re.compile(r"MAG-VIDEO (\d+)/(\d+)")
 VIDEO_STAGE = re.compile(r"MAG-VIDEO-STAGE (.+)")
 VIDEO_PYTHON = os.environ.get("MAG_VIDEO_PYTHON", os.path.join(IDOL_BASE, "video/venv/bin/python"))
 VIDEO_WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", os.path.join(IDOL_BASE, "weights/wan22-i2v")))
+# A video with its sound (h3gen.py, HyperFlow H3 Flash, a few-step MiniMax H3,
+# by stable-diffusion.cpp on Vulkan): the same line again. Licensed to Chris
+# personally; its weights and program are fetched and built on this host
+# (ops/video/h3), and without them the room is told so.
+H3_WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", os.path.join(IDOL_BASE, "weights/hyperflow-h3")))
+H3_CLI = Path(os.environ.get("MAG_H3_CLI", os.path.join(IDOL_BASE, "h3/sd-cli")))
+H3_STEPS = 6
+
+
+def h3_ready():
+    return (H3_WEIGHTS / ".complete").is_file() and H3_CLI.is_file()
+
+
+def wan_ready():
+    return (VIDEO_WEIGHTS / ".complete").is_file() and Path(VIDEO_PYTHON).is_file()
+
+
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
 STEP = re.compile(r"(?<!\d)(\d{1,2})\s*/\s*50(?!\d)")
 STEP_ALT = re.compile(r"\b(?:step|schritt)\s*(\d{1,2})\s*(?:of|/|von)\s*50\b", re.I)
@@ -515,8 +532,16 @@ def video_line(job_id, value):
 def process_video(job_id):
     folder = ROOT / job_id
     if not (folder / "video.mp4").is_file():
-        command = [VIDEO_PYTHON, str(Path(__file__).with_name("videogen.py")), str(folder)]
-        run_stage(job_id, "video", command, video_line, dict(phase=1, phases=2, stage="Modell laden", step=0, total_steps=160, progress=0.0, eta=None))
+        try:
+            h3 = json.loads((folder / "prompt.json").read_text()).get("model") == "h3"
+        except (OSError, ValueError):
+            h3 = False
+        if h3:
+            command = [PYTHON, str(Path(__file__).with_name("h3gen.py")), str(folder)]
+        else:
+            command = [VIDEO_PYTHON, str(Path(__file__).with_name("videogen.py")), str(folder)]
+        run_stage(job_id, "video", command, video_line, dict(phase=1, phases=2, stage="Modell laden", step=0,
+                                                              total_steps=H3_STEPS if h3 else 160, progress=0.0, eta=None))
         if not (folder / "video.mp4").is_file():
             raise RuntimeError("Das Video wurde nicht fertig")
     update(job_id, state="done", stage="Fertig", phase=2, files=list(VIDEO_RESULTS), finished=int(time.time()), pid=None)
@@ -778,30 +803,47 @@ class API(BaseHTTPRequestHandler):
             return self.reply(202, item)
         if path == "/api/idol/videos":
             # A video from a picture: the picture as the body, ?prompt= what should happen.
-            if not (VIDEO_WEIGHTS / ".complete").is_file() or not Path(VIDEO_PYTHON).is_file():
-                return self.reply(503, {"error": "Das Videomodell (Wan 2.2) ist noch nicht ganz heruntergeladen."})
+            # ?model=h3: HyperFlow H3 Flash with its sound, 5 or 10 ?seconds, the picture
+            # as the first frame or (?use=ref) a reference, or words alone (no body).
             asked = parse_qs(url.query)
+            h3 = asked.get("model", ["wan"])[0] == "h3"
+            if h3 and not h3_ready():
+                return self.reply(503, {"error": "H3 ist noch nicht ganz eingerichtet (Download oder Build läuft)."})
+            if not h3 and not wan_ready():
+                return self.reply(503, {"error": "Das Videomodell (Wan 2.2) ist noch nicht ganz heruntergeladen."})
             prompt = asked.get("prompt", [""])[0].strip()[:1500]
             try:
                 seed = int(asked.get("seed", ["0"])[0])
+                seconds = 5 if int(asked.get("seconds", ["10"])[0]) < 10 else 10
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 return self.reply(400, {"error": "Ungültiger Videoauftrag"})
-            if not 8 <= length <= MAX_UPLOAD:
-                return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
-            data = self.rfile.read(length)
-            if not is_picture(data):
-                return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
+            if h3 and not prompt:
+                return self.reply(400, {"error": "Was soll im Video geschehen?"})
+            data = b""
+            if length or not h3:
+                if not 8 <= length <= MAX_UPLOAD:
+                    return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
+                data = self.rfile.read(length)
+                if not is_picture(data):
+                    return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
+            told = {"prompt": prompt, "seed": seed}
+            if h3:
+                told.update(model="h3", seconds=seconds, use="ref" if asked.get("use", ["first"])[0] == "ref" else "first")
             with lock:
                 if pending.qsize() >= MAX_PENDING:
                     return self.reply(429, {"error": "Idol-Warteschlange voll"})
                 identity = uuid4().hex
                 folder = ROOT / identity
                 folder.mkdir(mode=0o700, parents=True)
-                (folder / "input.png").write_bytes(data)
-                (folder / "prompt.json").write_text(json.dumps({"prompt": prompt, "seed": seed}))
+                if data:
+                    (folder / "input.png").write_bytes(data)
+                (folder / "prompt.json").write_text(json.dumps(told))
                 item = {"id": identity, "kind": "video", "state": "queued", "stage": "Warteschlange", "quality": "normal",
-                        "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": 160, "phase": 0, "phases": 2}
+                        "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": H3_STEPS if h3 else 160,
+                        "phase": 0, "phases": 2}
+                if h3:
+                    item["model"] = "h3"
                 jobs[identity] = item
                 save(item)
                 pending.put_nowait(identity)
@@ -852,7 +894,8 @@ class API(BaseHTTPRequestHandler):
             with lock:
                 active = sum(1 for item in jobs.values() if item["state"] in ("queued", "running"))
             # "resumable": this worker's jobs survive its restart.
-            return self.reply(200, {"ok": True, "queued": pending.qsize(), "active": active, "resumable": True})
+            return self.reply(200, {"ok": True, "queued": pending.qsize(), "active": active, "resumable": True,
+                                    "video": wan_ready(), "h3": h3_ready()})
         if len(parts) < 4 or parts[:3] != ["api", "idol", "jobs"] or not VALID_ID.fullmatch(parts[3]):
             return self.reply(404, {"error": "Nicht gefunden"})
         with lock:

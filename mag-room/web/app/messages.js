@@ -351,17 +351,56 @@
     MAG.api('POST', '/api/image/act', { file: a.file, do: '3d', quality: localStorage.getItem('mag-3d-quality') || 'normal' })
       .then(() => MAG.scrollToEnd(), (x) => MAG.toast(x.message, true));
   }
+  // The video's maker: Wan 2.2 (silent, about five seconds) or HyperFlow
+  // H3 Flash (MiniMax H3, with its sound, 5 or 10 seconds, the picture as its
+  // first frame or as who is in it). One choice, kept on the device.
+  MAG.videoChoice = (onChange) => {
+    const pick = { model: localStorage.getItem('mag-video-model') || 'wan', seconds: +(localStorage.getItem('mag-video-seconds') || 10),
+      use: localStorage.getItem('mag-video-use') || 'first' };
+    const box = el('div', { class: 'video-choice' });
+    const seg = (label, key, options) => {
+      const s = el('div', { class: 'seg', role: 'group', 'aria-label': label });
+      for (const [value, text] of options)
+        s.append(el('button', { type: 'button', class: pick[key] === value ? 'on' : '', text, onclick: () => {
+          pick[key] = value; localStorage.setItem('mag-video-' + key, value); paint(); onChange?.(pick); } }));
+      return s;
+    };
+    // H3 is offered once its weights and program are on the host (the worker says so).
+    MAG.h3 ??= MAG.api('GET', '/api/system').then((info) => (MAG.h3Ready = !!info.h3), () => (MAG.h3Ready = false));
+    let ready = MAG.h3Ready === true;
+    const paint = () => {
+      if (!ready) pick.model = 'wan';
+      box.replaceChildren(ready ? seg('Modell', 'model', [['wan', 'Wan 2.2'], ['h3', 'H3 · mit Ton']]) : '');
+      if (pick.model === 'h3') box.append(seg('Dauer', 'seconds', [[5, '5 s'], [10, '10 s']]));
+    };
+    paint();
+    if (MAG.h3Ready === undefined) MAG.h3.then((yes) => {   // asked once; later choices know it at once
+      if (!yes) return;
+      ready = true;
+      pick.model = localStorage.getItem('mag-video-model') || 'wan';
+      paint();
+      onChange?.(pick);
+    });
+    return { box, pick, uses: (picture) => pick.model === 'h3' && picture ? seg('Bild als', 'use', [['first', 'Anfang'], ['ref', 'Figur']]) : null };
+  };
+  MAG.videoHint = (pick) => pick.model === 'h3'
+    ? 'HyperFlow H3 Flash (MiniMax H3): mit Ton, ' + pick.seconds + ' s, 768p, als KI-generiert gekennzeichnet. Dauert auf der Grafikkarte lange, bis etwa eine Stunde.'
+    : 'Wan 2.2: etwa fünf Sekunden, 480p, ohne Ton. Läuft auf der Grafikkarte, wenn sie frei ist.';
   function makeVideo(a) {
     MAG.sheet('Video aus dem Bild', (content, _, close) => {
       const words = el('textarea', { rows: 3, placeholder: 'Was soll passieren? z. B. „dreht sich lächelnd zur Kamera und winkt“' });
       const go = el('button', { class: 'pill on', type: 'submit' }, MAG.icon('play'), el('b', { text: 'Video erzeugen' }));
+      const hint = el('p', { class: 'hint' }), uses = el('div');
+      const choice = MAG.videoChoice((pick) => { hint.textContent = MAG.videoHint(pick); uses.replaceChildren(choice.uses(true) || ''); });
+      hint.textContent = MAG.videoHint(choice.pick);
+      uses.replaceChildren(choice.uses(true) || '');
       const form = el('form', { class: 'video-ask', onsubmit: (e) => {
         e.preventDefault();
         go.disabled = true;
-        MAG.api('POST', '/api/image/act', { file: a.file, do: 'video', prompt: words.value.trim() })
+        const { model, seconds, use } = choice.pick;
+        MAG.api('POST', '/api/image/act', { file: a.file, do: 'video', prompt: words.value.trim(), model, seconds, use })
           .then(() => { close(); MAG.scrollToEnd(); }, (x) => { go.disabled = false; MAG.toast(x.message, true); });
-      } }, el('img', { src: fileUrl(a), alt: '' }), words,
-        el('p', { class: 'hint', text: 'Etwa fünf Sekunden, 480p. Läuft auf der Grafikkarte, wenn sie frei ist.' }), go);
+      } }, el('img', { src: fileUrl(a), alt: '' }), words, choice.box, uses, hint, go);
       content.append(form);
       setTimeout(() => words.focus(), 50);
     });
@@ -520,7 +559,8 @@
   function buildPicture(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 image ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
-    const video = m3.kind === 'video', model = video ? 'Wan 2.2' : 'FLUX.2 klein';
+    const video = m3.kind === 'video', h3 = video && m3.model === 'h3';
+    const model = h3 ? 'KI-generiert · MiniMax H3 · mit Ton' : video ? 'Wan 2.2' : 'FLUX.2 klein';
     const sub = m3.state === 'done' ? (m3.took ? model + ' · ' + MAG.dur(m3.took * 1000) : model)
       : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : m3.state === 'queued' ? waiting(m3) : m3.stage || 'Malt';
     // Text to video: the picture comes first, the video follows by itself.

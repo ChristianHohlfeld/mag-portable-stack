@@ -10,7 +10,8 @@
   let uploading = 0, sending = false;
   let mode3d = false;
   let modeImage = false;      // a picture from words (FLUX.2 klein on the MI50)
-  let modeVideo = false;      // a video (Wan 2.2): from a picture, or from words with the picture painted first
+  let modeVideo = false;      // a video: Wan 2.2 from a picture (words alone: the picture painted first), or H3 with its sound
+  let videoPick = { model: 'wan', seconds: 10, use: 'first' };   // the video's maker, set where the order is painted
   let shape = localStorage.getItem('mag-image-shape') || 'square';
   let quality = localStorage.getItem('mag-3d-quality') || 'normal';
 
@@ -59,13 +60,15 @@
       // From a picture (gallery, camera) or from words alone: then the
       // picture is painted first and the video follows by itself.
       const picture = staged.some((s) => s.att.kind === 'image');
-      stagedBox.append(el('div', { class: 'staged' }, MAG.icon('play'), el('span', { text: 'Video erzeugen' }),
+      const choice = MAG.videoChoice(() => paintStaged());
+      videoPick = choice.pick;
+      stagedBox.append(el('div', { class: 'staged' }, MAG.icon('play'), el('span', { text: 'Video erzeugen' }), choice.box, choice.uses(picture) || '',
         el('button', { class: 'x', 'aria-label': 'Video abbrechen', html: MAG.icons.x, onclick: () => { modeVideo = false; paintStaged(); } })));
       if (!picture && !uploading)
         stagedBox.append(el('div', { class: 'staged source' },
           el('button', { class: 'pill', onclick: () => pick('image/png,image/jpeg,image/webp', false, paintStaged) }, MAG.icon('image'), el('b', { text: 'Galerie' })),
           el('button', { class: 'pill', onclick: () => shoot(paintStaged) }, MAG.icon('camera'), el('b', { text: 'Kamera' })),
-          el('span', { class: 'nm', text: 'oder nur Worte: erst ein Bild, dann das Video' })));
+          el('span', { class: 'nm', text: videoPick.model === 'h3' ? 'oder nur Worte: H3 macht das Video mit Ton direkt' : 'oder nur Worte: erst ein Bild, dann das Video' })));
     }
     if (mode3d) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Qualität' });
@@ -324,7 +327,8 @@
     const text = input.value.trim(), body = { text, attachments: staged.map((s) => s.att.file), client_id: crypto.randomUUID?.() || String(Math.random()) };
     if (mode3d) Object.assign(body, { mode: '3d', quality, text: '' });
     else if (modeImage) Object.assign(body, { mode: 'image', shape, attachments: [] });
-    else if (modeVideo) Object.assign(body, { mode: 'video', attachments: staged.filter((s) => s.att.kind === 'image').slice(0, 1).map((s) => s.att.file) });
+    else if (modeVideo) Object.assign(body, { mode: 'video', attachments: staged.filter((s) => s.att.kind === 'image').slice(0, 1).map((s) => s.att.file),
+      model: videoPick.model, seconds: videoPick.seconds, use: videoPick.use });
     sending = true;
     refresh();
     try {

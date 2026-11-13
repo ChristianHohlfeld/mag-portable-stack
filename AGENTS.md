@@ -256,8 +256,15 @@ with their place shown (Chris moves them forwards or backwards, or cancels
 them, at their message; the line survives restarts and reboots) and run
 after it by themselves; the bots order 3D and videos from a picture too
 (`photo_to_3d`, `video_generate`); a lock file that
-cannot be taken never fails a job. MiniMax H3/HyperFlow and Hunyuan models
-are not to be fetched (licence).
+cannot be taken never fails a job. A video can also be made with its sound
+by HyperFlow H3 Flash (MiniMax H3; "H3 · mit Ton", `video_generate` with
+`model: h3`; stable-diffusion.cpp on Vulkan, `ops/idol/h3gen.py`). MiniMax
+licensed it to Chris personally (2026-11-13: private, non-commercial,
+nothing passed on, marked as made by AI, no training of other models, only
+him): its weights stay on his host, never in this repository, a shared place
+or an installer that runs by itself, and every H3 video is marked
+"KI-generiert · MiniMax H3" in the chat and in its file. Hunyuan models are
+not to be fetched (licence).
 The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants

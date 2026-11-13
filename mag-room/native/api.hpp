@@ -202,7 +202,7 @@ public:
       if (!image.isObj()) return http::send_error(fd, 404, "Bild nicht gefunden");
       std::string error, id;
       if (what == "3d") id = idol_.start(image, jstr(in, "quality", "normal"), error);
-      else if (what == "video") id = idol_.film(image, jstr(in, "prompt"), "chris", error);
+      else if (what == "video") id = idol_.film(image, jstr(in, "prompt"), "chris", error, jstr(in, "model", "wan"), (int)jnum(in, "seconds", 10), jstr(in, "use", "first"));
       else return http::send_error(fd, 400, "3d oder video");
       if (id.empty()) return http::send_error(fd, 409, error.empty() ? "Der Auftrag wurde abgelehnt." : error);
       Val out = Val::object();
@@ -694,8 +694,10 @@ private:
       for (auto &a : atts.asArr())
         if (jstr(a, "kind") == "image") { image = &a; break; }
       std::string error;
-      if (image) out["model3d"] = idol_.film(*image, jstr(in, "text"), "chris", error);
+      const std::string model = jstr(in, "model", "wan");
+      if (image) out["model3d"] = idol_.film(*image, jstr(in, "text"), "chris", error, model, (int)jnum(in, "seconds", 10), jstr(in, "use", "first"));
       else if (trim(jstr(in, "text")).empty()) error = "Was soll im Video zu sehen sein?";
+      else if (model == "h3") out["model3d"] = idol_.film(Val(), jstr(in, "text"), "chris", error, model, (int)jnum(in, "seconds", 10));
       else out["model3d"] = idol_.imagine(jstr(in, "text"), 1344, 768, "chris", error, jstr(in, "text"));
       if (!error.empty()) {
         Val note = Val::object(), m3 = Val::object();
@@ -1500,6 +1502,7 @@ private:
     Val v = Val::object();
     v["version"] = version_;
     v["idol"] = idol_.available();
+    v["h3"] = idol_.h3_ready();
     v["scene"] = scenes_.available();
     Val backup = read_json(env("MAG_BACKUP_STATUS", "/var/lib/mag-backup/status.json"));
     if (backup.isObj()) {

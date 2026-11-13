@@ -75,17 +75,27 @@ public:
   // moving as `prompt` says. The message is there at once with its place in
   // the line and its progress, and becomes the video. Returns the message
   // id, or "" with `error`.
-  std::string film(const Val &image, const std::string &prompt, const std::string &by, std::string &error) {
-    const std::string path = room_.file_path(jstr(image, "file"));
+  // model "h3": HyperFlow H3 Flash (MiniMax H3, licensed to Chris
+  // personally) makes the video with its sound, 5 or 10 `seconds`; the
+  // picture is its first frame or (use "ref") who or what is in it, and
+  // without a picture (`image` not an object) the words alone make it.
+  std::string film(const Val &image, const std::string &prompt, const std::string &by, std::string &error,
+                   const std::string &model = "wan", int seconds = 10, const std::string &use = "first") {
+    const bool h3 = model == "h3";
     std::string bytes;
-    if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
+    if (image.isObj() || !h3) {
+      const std::string path = room_.file_path(jstr(image, "file"));
+      if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
+    }
     const std::string said = clip(trim(prompt), 1500, "");
+    if (h3 && said.empty()) { error = "Was soll im Video geschehen?"; return ""; }
     http::ClientOptions opt = options("POST");
     opt.body = bytes;
     opt.headers.push_back({"Content-Type", "application/octet-stream"});
     opt.timeout_s = 60;
-    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/videos?prompt=" + url_encode(said) + "&seed=" +
-                                     std::to_string(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1), opt);
+    std::string ask = "/api/idol/videos?prompt=" + url_encode(said) + "&seed=" + std::to_string(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1);
+    if (h3) ask += "&model=h3&seconds=" + std::string(seconds < 10 ? "5" : "10") + "&use=" + (use == "ref" ? "ref" : "first");
+    const auto res = http::fetch(room_.cfg.idol_url + ask, opt);
     const Val job = jparse(res.body);
     if (res.status != 202 || jstr(job, "id").empty()) {
       error = res.error.empty() ? jstr(job, "error", "Der Videodienst hat den Auftrag abgelehnt.") : "3D-Dienst nicht erreichbar.";
@@ -103,8 +113,15 @@ public:
     m3["stage"] = "Warteschlange";
     m3["progress"] = 0;
     m3["prompt"] = said;
-    m3["source"] = jstr(image, "name");
-    m3["image"] = jstr(image, "file"); // the picture it is made from (a room file)
+    if (image.isObj()) {
+      m3["source"] = jstr(image, "name");
+      m3["image"] = jstr(image, "file"); // the picture it is made from (a room file)
+    }
+    if (h3) {
+      m3["model"] = "h3";               // shown as made by AI with MiniMax H3 (its licence)
+      m3["seconds"] = (double)(seconds < 10 ? 5 : 10);
+      if (image.isObj() && use == "ref") m3["use"] = "ref";
+    }
     m3["by"] = by;
     m["model3d"] = m3;
     const std::string id = jstr(room_.add(m), "id");
@@ -309,6 +326,14 @@ public:
       const bool written_off = state == "error" && jstr(*m3, "error") == "Dienst neu gestartet";
       if (under_way || written_off) watch(jstr(m, "id"), jstr(*m3, "job"), true);
     }
+  }
+
+  // HyperFlow H3 is fetched and built (the worker says so).
+  bool h3_ready() {
+    http::ClientOptions opt;
+    opt.timeout_s = 3;
+    opt.connect_timeout_s = 2;
+    return jbool(jparse(http::fetch(room_.cfg.idol_url + "/api/idol/health", opt).body), "h3");
   }
 
   bool available() {

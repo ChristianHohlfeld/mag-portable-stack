@@ -116,13 +116,14 @@
       asking,
       step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null,
       // The browser as this step left it: small in the line, large when the step is open.
-      shot && latestShot(m) === index ? el('span', { class: 'shot-row' }, el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' })) : null));
+      shot && latestShot(m) === index && !ask ? el('span', { class: 'shot-row' }, el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' })) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
     // A card's step (approval, login, payment) is the card and nothing more: no raw input, no output.
     if (['consent', 'browser_login', 'browser_pay'].includes(step.tool)) {
       node.classList.add('card-step');
-      if (shot) node.append(el('div', { class: 'body' }, el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' })));
+      // While it waits, the card shows the browser live; a picture only once it is done.
+      if (shot && !ask) node.append(el('div', { class: 'body' }, el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' })));
       return node;
     }
     node.append(el('div', { class: 'body' },
@@ -134,64 +135,45 @@
     node.addEventListener('toggle', () => { if (node.open) out.scrollTop = out.scrollHeight; });
     return node;
   }
-  // A page in a bot's browser wants a login. The room has already gone to
-  // the login form; the card asks for what the form asks for now (Amazon: the
-  // e-mail first, then the password; the room types both). A login kept for
-  // the site is offered first. What Chris types is kept sealed for next time;
-  // the bot never sees it. Or he takes the browser over (passkey, code).
-  // A field or a menu of a card lives in the step's summary line: typing or choosing there does not fold the step.
-  const keepOpen = (e) => { if (e.target.closest('input, select, textarea')) e.preventDefault(); };
+  // A page in a bot's browser wants a login: the card is that browser, live
+  // (WebRTC over the VM's UDP link) and his to use right here: tap, type,
+  // the keyboard, also on the phone. Chris logs in himself (password, code,
+  // passkey, captcha); nothing of it goes through a form of the room, is kept
+  // or reaches a model. "Angemeldet, weiter" hands the page back to the bot.
+  // Typing, tapping or choosing inside a card lives in the step's summary line: it does not fold the step.
+  const keepOpen = (e) => { if (e.target.closest('input, select, textarea, .live')) e.preventDefault(); };
+  // One live view per waiting card, kept while the card is drawn anew and let go when it is gone.
+  const liveCards = new Map();          // card id -> live view
+  let sweeping = 0;
+  function sweep() {
+    sweeping = 0;
+    for (const [id, v] of liveCards) {
+      if (v.node.isConnected) { v.away = 0; continue; }
+      if (++v.away >= 2) { v.stop(); liveCards.delete(id); }
+    }
+    if (liveCards.size) sweeping = setTimeout(sweep, 1500);
+  }
+  function liveIn(bot, id) {
+    let v = liveCards.get(id);
+    if (!v) { v = MAG.liveView(bot); v.away = 0; liveCards.set(id, v); }
+    if (!sweeping) sweeping = setTimeout(sweep, 1500);
+    return v.node;
+  }
   function loginCard(m, ask) {
     const name = MAG.name(m.from), owner = S.you.role === 'owner';
-    const note = el('small', { class: 'note' });
-    const decide = (decision) => MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
-    const send = (body, button) => {
-      button.disabled = true;
-      note.textContent = 'Wird in den Browser von ' + name + ' eingetragen …';
-      return MAG.api('POST', '/api/login/' + ask.id, body)
-        .then(() => { note.textContent = 'Angemeldet; ' + name + ' macht weiter.'; },
-          (x) => { button.disabled = false; note.textContent = x.message; });
+    const decide = (decision) => (e) => {
+      e.preventDefault();
+      e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
     };
-    const fields = ask.fields || [], wantsUser = !fields.length || fields.includes('user'), wantsPass = !fields.length || fields.includes('password') || fields.includes('user');
-    // A two-step page: the code from SMS, WhatsApp or the app goes into the page; it is not kept.
-    if (fields.includes('code')) {
-      const code = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Code', 'aria-label': 'Code' });
-      const go = el('button', { class: 'yes', type: 'submit', text: 'Code eintragen' });
-      return el('span', { class: 'ask', onclick: keepOpen },
-        el('b', { text: name + ' braucht den Bestätigungscode für ' + (ask.site || 'die Anmeldung') }),
-        el('small', { class: 'note', text: 'Die Seite hat einen Code geschickt (SMS, WhatsApp oder App). Trag ihn hier ein.' }),
-        owner ? el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ code: code.value }, go).then(() => { code.value = ''; }); } }, code, go) : null,
-        owner ? el('span', { class: 'btns' },
-          el('button', { text: 'Code (erneut) senden lassen', onclick: (e) => {
-            e.preventDefault();
-            const b = e.currentTarget;
-            b.disabled = true;
-            MAG.api('POST', '/api/login/' + ask.id, { resend: true }).then(() => { note.textContent = 'Die Seite schickt den Code; trag ihn oben ein.'; }, (x) => { note.textContent = x.message; }).finally(() => { setTimeout(() => { b.disabled = false; }, 20000); });
-          } }),
-          el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Gib den Code hier selbst ein. Danach macht ' + name + ' weiter.', () => decide('done')); } }),
-          el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
-        note);
-    }
-    const user = el('input', { type: 'text', name: 'username', autocomplete: 'username', placeholder: 'E-Mail oder Benutzer', autocapitalize: 'off', spellcheck: false, hidden: !wantsUser });
-    const pass = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', placeholder: 'Passwort', hidden: !wantsPass });
-    const go = el('button', { class: 'yes', type: 'submit', text: 'Anmelden' });
-    const form = el('form', { class: 'login', onsubmit: (e) => { e.preventDefault(); send({ user: user.value, password: pass.value }, go).then(() => { pass.value = ''; }); } }, user, pass, go);
-    const saved = (ask.saved || []).map((l) => el('button', { class: 'yes', text: 'Gespeicherten Login verwenden: ' + (l.user || ask.site),
-      onclick: (e) => { e.preventDefault(); send({ saved: l.id }, e.currentTarget); } }));
-    // Where the page shows no login field (a passkey, a captcha, a page of its own), the browser is the way; the form waits folded.
-    const other = saved.length || !fields.length ? el('details', { class: 'other' }, el('summary', { text: saved.length ? 'Anderen Login eingeben' : 'Login hier eintragen' }), form) : form;
-    const stage = !fields.length ? 'Die Seite zeigt gerade kein Anmeldefeld: übernimm den Browser.' : fields.includes('user') ? '' : 'Die Seite fragt jetzt nach dem Passwort.';
     return el('span', { class: 'ask', onclick: keepOpen },
       el('b', { text: name + ' braucht eine Anmeldung bei ' + (ask.site || 'einer Seite') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,
-      stage ? el('small', { class: 'note', text: stage }) : null,
-      owner && saved.length ? el('span', { class: 'btns' }, ...saved) : null,
-      owner ? other : null,
-      owner ? el('small', { class: 'fine', text: 'Wird verschlüsselt im Tresor gespeichert (Einstellungen › Logins); der Bot sieht es nie.' }) : null,
+      owner ? liveIn(m.from, ask.id) : null,
+      owner ? el('small', { class: 'fine', text: 'Das ist der Browser von ' + name + ', live. Melde dich direkt darin an; ' + name + ' sieht nicht, was du tippst.' }) : null,
       owner ? el('span', { class: 'btns' },
-        el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Melde dich hier selbst an (Passkey, Code per SMS oder WhatsApp, Captcha). Danach macht ' + name + ' weiter.', () => decide('done')); } }),
-        el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
-      note);
+        el('button', { class: 'yes', text: 'Angemeldet, weiter', onclick: decide('done') }),
+        el('button', { class: 'no', text: 'Abbrechen', onclick: decide('cancel') })) : null);
   }
 
   // A checkout in a bot's browser: Chris picks a saved card and gives its
@@ -221,21 +203,12 @@
       el('b', { text: name + ' ist an der Kasse: ' + (ask.site || '') + (euro ? ' · ' + euro : '') }),
       ask.what ? el('span', { class: 'what', text: ask.what }) : null,
       owner ? form : null,
+      owner ? liveIn(m.from, ask.id) : null,
+      owner ? el('small', { class: 'fine', text: 'Oder bezahle selbst, direkt im Browser von ' + name + ' oben.' }) : null,
       owner ? el('span', { class: 'btns' },
-        el('button', { text: 'Selbst im Browser', onclick: (e) => { e.preventDefault(); browserSheet(m.from, 'Bezahle hier selbst. Danach macht ' + name + ' weiter.', () => decide('done')); } }),
+        el('button', { text: 'Bezahlt, weiter', onclick: (e) => { e.preventDefault(); decide('done'); } }),
         el('button', { class: 'no', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); decide('cancel'); } })) : null,
       note);
-  }
-  // The bot's browser in a sheet, with one button that lets the bot go on.
-  function browserSheet(bot, hint, done) {
-    let live = null;
-    const sheet = MAG.sheet('Browser von ' + MAG.name(bot), (content, _, close) => {
-      live?.stop();
-      live = MAG.liveView(bot);
-      content.append(el('p', { class: 'fine', text: hint }), live.node,
-        el('div', { class: 'btns' }, el('button', { class: 'btn', text: 'Fertig, weiter', onclick: () => { done(); close(); } })));
-    });
-    sheet.addEventListener('closed', () => live?.stop());
   }
 
   // Only the newest browser picture of an answer stands in its line; the others open with their step.

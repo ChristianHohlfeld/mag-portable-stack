@@ -288,6 +288,7 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .step .ask form.login { display: flex; flex-wrap: wrap; gap: 6px; }
 .step .ask form.login input { flex: 1 1 180px; font-size: 16px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 .step .ask .note { opacity: .8; }
+.step .ask .live { margin: 2px 0; cursor: auto; }
 .step .ask .what { font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user .bubble.routine .tag { display: block; font-size: 12px; opacity: .75; margin-bottom: 2px; }
 

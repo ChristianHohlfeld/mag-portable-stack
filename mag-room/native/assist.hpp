@@ -214,7 +214,7 @@ public:
 
   // The owner's answer to a pending card. False: no such card waits.
   // allow/deny for an action, done/cancel for a login. Only the owner's
-  // request (/api/approval, /api/login) gets here, never a model.
+  // request (/api/approval) gets here, never a model.
   bool decide(const std::string &id, const std::string &decision) {
     if (decision != "allow" && decision != "deny" && decision != "done" && decision != "cancel") return false;
     {
@@ -256,7 +256,7 @@ public:
     return decision;
   }
 
-  // A card that still waits (for /api/login: whose browser to fill), or null.
+  // A card that still waits (for /api/pay/fill: whose browser to fill), or null.
   Val waiting_card(const std::string &id) {
     std::lock_guard<std::mutex> lk(mu_);
     const auto it = cards_.find(id);

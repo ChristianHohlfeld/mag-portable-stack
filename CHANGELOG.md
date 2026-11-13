@@ -6,6 +6,14 @@ version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
 
+## Unreleased
+
+- A login card is the bot's browser itself, live in the chat over its UDP
+  link (WebRTC) and usable right there (tap, type, keyboard, also on the
+  phone): Chris logs in himself and taps "Angemeldet, weiter". The login and
+  code forms, the room filling them in and the static picture are gone
+  (`/api/login`, `tools::login_form`); a pay card shows the live browser too.
+
 ## 5.3.0 (2026-11-13)
 
 - Reading aloud in the client alone, on the phone and the desktop: Piper

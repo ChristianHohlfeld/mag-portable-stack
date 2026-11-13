@@ -94,9 +94,9 @@ inline Val schemas(bool has_vm, bool phone = false) {
     list.push(fn("browser_key", "Press a key in the browser: Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown, Backspace.",
                  R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"));
     list.push(fn("browser_login",
-                 "A page wants a login (or a captcha, a passkey, a code by SMS): call this instead of typing anything. Chris gets a card: he "
-                 "types his login into a safe form that the room fills into your browser (you never see it), or he takes over your browser "
-                 "himself. You wait; then you see the page and go on. The login stays in your browser for next time. No consent is needed for it.",
+                 "A page wants a login (or a captcha, a passkey, a code by SMS): call this instead of typing anything. Chris gets your browser "
+                 "live in the chat and logs in there himself (you never see what he types). You wait; then you see the page and go on. "
+                 "The login stays in your browser for next time. No consent is needed for it.",
                  R"({"type":"object","properties":{"site":{"type":"string","description":"the site, e.g. amazon.de"},"reason":{"type":"string","description":"why, in German, one sentence"}},"required":["site"]})"));
     list.push(fn("browser_pay",
                  "At a checkout, when the page asks for a payment card: never type card data yourself. Call this with the shop, the price and "
@@ -332,7 +332,7 @@ inline Result look(Ctx &ctx, const std::string &vm) {
   }
   const Val v = jparse(r.body);
   std::string out = "Seite: " + jstr(v, "title") + "\nURL: " + jstr(v, "url") + "\n";
-  if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; bitte Chris mit browser_login (Übernehmen) um Hilfe.\n";
+  if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; bitte Chris mit browser_login um Hilfe.\n";
   const double height = jnum(v, "height"), vh = jnum(v, "vh", 900), scroll = jnum(v, "scroll");
   if (height > vh) out += "Gescrollt " + std::to_string((long)scroll) + " von " + std::to_string((long)(height - vh)) + " px\n";
   out += "Elemente (Nummer, Art, Beschriftung, Punkt):\n";
@@ -346,54 +346,6 @@ inline Result look(Ctx &ctx, const std::string &vm) {
     }
   out += "Text (Anfang):\n" + jstr(v, "text");
   return {clip(out, 9000, "\n…[gekürzt]"), true};
-}
-
-// Before a login card: the room itself goes to the login form, as a person
-// would (a page with no field yet gets its sign-in link or button clicked, at
-// most three times), and says which fields the form asks for now: "user",
-// "password" (Amazon asks for the e-mail first, then the password), or none.
-inline Val login_form(Ctx &ctx, const std::string &vm) {
-  static const std::regex user_field("mail|user|benutzer|login|konto|account|telefon|phone|handy|kunden|ap_email", std::regex::icase),
-      sign_in("^(hallo, anmelden|anmelden|einloggen|login|log in|sign in|sign-in|konto und listen|mein konto|zur anmeldung)\\b", std::regex::icase),
-      code_field("code|otp|einmal|verifizierung|verification|bestätigung|pin|tan", std::regex::icase),
-      send_code("code (an|per|via) |code senden|send (the )?code|otp senden|code anfordern|textnachricht|sms senden", std::regex::icase);
-  Val out = Val::object();
-  for (int hop = 0; hop < 4; ++hop) {
-    const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
-    if (r.status != 200) break;
-    const Val v = jparse(r.body);
-    out["url"] = jstr(v, "url");
-    bool user = false, pass = false, code = false;
-    int link = 0, sender = 0;
-    if (const Val *els = v.find("elements"); els && els->isArr())
-      for (auto &e : els->asArr()) {
-        const std::string kind = jstr(e, "kind"), label = trim(jstr(e, "label"));
-        if (jbool(e, "password")) pass = true;
-        else if ((kind == "text" || kind == "tel" || kind == "number") && std::regex_search(label, code_field) && !std::regex_search(label, user_field)) code = true;
-        else if (kind == "email" || ((kind == "text" || kind == "tel") && std::regex_search(label, user_field))) user = true;
-        else if (!sender && (kind == "button" || kind == "submit" || kind == "link") && std::regex_search(label, send_code)) sender = (int)jnum(e, "n");
-        else if (!link && (kind == "link" || kind == "button" || kind == "a") && std::regex_search(label, sign_in)) link = (int)jnum(e, "n");
-      }
-    Val fields = Val::array();
-    if (user) fields.push("user");
-    if (pass) fields.push("password");
-    if (code) fields.push("code");
-    out["fields"] = fields;
-    if (sender) out["resend"] = true; // the page can send the code (again)
-    // A two-step page that first wants the way the code comes: the first way it offers is asked for.
-    if (user || pass || code || (!link && !sender) || hop == 3) break;
-    Val click = Val::object();
-    click["n"] = (double)(sender ? sender : link);
-    if (ctx.guests.browser(vm, "POST", "/click", mj::dump(click), 45, ctx.cancel).status != 200) break;
-    Val wait = Val::object();
-    wait["ms"] = 4000.0;
-    ctx.guests.browser(vm, "POST", "/wait", mj::dump(wait), 30, ctx.cancel);
-  }
-  if (ctx.shot) {
-    const auto pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
-    if (pic.status == 200 && pic.body.size() > 100) ctx.shot(pic.body);
-  }
-  return out;
 }
 
 inline Result browser_result(const http::ClientResult &r, size_t budget) {

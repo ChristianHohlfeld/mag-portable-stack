@@ -195,15 +195,18 @@ A bot works its browser like a person at the screen: `browser_look` gives
 every element it can act on, numbered with label and point (and a picture
 for the step in the chat), and it clicks or types by number, by point or by
 visible text, presses keys and waits. A login, captcha or code is never
-typed by a model: `browser_login` puts a card at its step, where Chris types
-his login into a form that the room fills into the VM's page (kept sealed
-in the vault per site and account and offered again on that site's next
-card, never logged or shown to a model) or takes the bot's browser over himself; then
-the bot sees the page and goes on. Sessions and cookies stay in the VM's
+typed by a model: `browser_login` puts a card at its step that is the bot's
+browser itself, live over its realtime link (no picture, no form, no menu;
+Chris, 2026-11-13): he taps, types and uses the keyboard there, also on the
+phone, logs in himself and taps "Angemeldet, weiter"; then the bot sees the
+page and goes on. The room never finds, types or keeps a login, and what he
+types reaches no model and no log. Never bring back a login form or a
+fallback for it. Sessions and cookies stay in the VM's
 Chrome profile. A model's thoughts are never shown in the chat.
 At a checkout a bot calls `browser_pay`: the purchase goes through
 `consent` (kind buy, Chris's rules and limits), then a card where Chris
-picks a saved card and gives its security code; the room types it into the
+picks a saved card and gives its security code (or pays himself in the
+live browser the card shows); the room types it into the
 page (fields of the page by their names, a provider's frame by the field
 the bot named and Tab). Cards are sealed in `STATE/pay/cards.enc`
 (AES-256-GCM, key `STATE/pay/vault.key`, 0600); the security code is never

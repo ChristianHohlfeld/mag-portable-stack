@@ -358,10 +358,10 @@
         }).catch(() => {});
         loadCards();
 
-        // Logins Chris typed into a login card, kept sealed per site and account; offered again on that site's next card.
+        // Logins Chris typed into earlier login cards, kept sealed per site and account: shown, changed or removed here.
         const loginsCard = el('div', { class: 'card' });
         content.append(el('h3', { text: 'Logins' }), loginsCard,
-          el('p', { class: 'fine', text: 'Jeder Login aus einer Anmeldekarte wird verschlüsselt im Tresor gespeichert (AES-256-GCM) und beim nächsten Mal für dieselbe Seite angeboten; der Raum trägt ihn ein, die Bots sehen ihn nie. Passkeys und Codes laufen weiter über „Selbst im Browser“.' }));
+          el('p', { class: 'fine', text: 'Logins aus früheren Anmeldekarten, verschlüsselt im Tresor (AES-256-GCM). Neue kommen nicht mehr dazu: Du meldest dich jetzt direkt im Live-Browser der Karte an, und der Raum speichert nichts davon.' }));
         const loadLogins = () => MAG.api('GET', '/api/vault/logins').then((out) => {
           loginsCard.replaceChildren();
           if (!out.logins.length) loginsCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keiner. Er kommt mit der ersten Anmeldekarte, die du ausfüllst.' }))));

@@ -6,17 +6,20 @@ version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
 
-## Unreleased
+## 5.4.0 (2026-11-13)
 
 - Reading aloud is Supertonic 3 again, now in the client alone: the browser
   fetches the model from Hugging Face and the runtime from jsDelivr (pinned,
   SHA256), once into Cache Storage; the room serves nothing for it. Piper
-  (5.3.0) sounded robotic and is gone.
+  (5.3.0) sounded robotic and is gone (#560).
 - A login card is the bot's browser itself, live in the chat over its UDP
   link (WebRTC) and usable right there (tap, type, keyboard, also on the
   phone): Chris logs in himself and taps "Angemeldet, weiter". The login and
   code forms, the room filling them in and the static picture are gone
-  (`/api/login`, `tools::login_form`); a pay card shows the live browser too.
+  (`/api/login`, `tools::login_form`); a pay card shows the live browser too
+  (#559).
+- H3 does what Chris asked: the rewriter formats and translates, invents
+  nothing and drops no line (#558).
 
 ## 5.3.0 (2026-11-13)
 

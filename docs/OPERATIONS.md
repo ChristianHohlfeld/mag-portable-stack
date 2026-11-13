@@ -299,7 +299,8 @@ secret ever reaches it, `ops/security/secrets-scan.sh` finds where and
 | `/opt/mag-stack/releases`, `/opt/mag-stack/current` | releases | release id only |
 | `/var/backups/mag-stack/<id>` | rollback copy per release | no |
 | `/var/backups/mag-full` | backup archives | n/a |
-| `/opt/mag-tts`, `/opt/mag-scene`, `/opt/mag-stt`, `/opt/mag-audit` | installed layers | no |
+| `/opt/mag-scene`, `/opt/mag-stt`, `/opt/mag-audit` | installed layers | no |
+| `/opt/mag-tts` | retired voices (Supertonic 3), no longer served; kept on disk | no |
 | `/etc/mag-acme`, `/etc/mag-nginx`, `/etc/nginx`, `/etc/magbot`, `/etc/mag-audit` | configuration | yes |
 
 ## Never

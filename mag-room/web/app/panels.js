@@ -441,7 +441,7 @@
       if (MAG.voices) {
         const voices = el('div', { class: 'card' });
         content.append(el('h3', { text: 'Vorlesen' }), voices);
-        if (!MAG.voices.possible()) voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, 'Stimme des Geräts', el('small', { text: 'Die lokalen Stimmen sind auf diesem Server nicht eingerichtet.' }))));
+        if (!MAG.voices.possible()) voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, 'Stimme des Geräts', el('small', { text: 'Dieser Browser kann die lokalen Stimmen nicht laden.' }))));
         else MAG.voices.options().then((options) => {
           // Chris's own messages are read too, with a voice of his choice.
           for (const b of [{ id: 'chris', name: 'Chris' }, ...S.bots]) {
@@ -451,7 +451,7 @@
               select(String(now.rate), MAG.voices.rates.map((r) => [String(r), String(r).replace('.', ',') + '×']), (v) => MAG.voices.set(b.id, { rate: +v })))));
           }
           voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('span', { class: 'voice-state', text: MAG.voices.state() }),
-            el('small', { text: 'Die Stimmen laufen in diesem Browser. Das Sprachmodell wird einmal im Hintergrund geladen (rund 200 MB) und bleibt dann auf dem Gerät.' }))));
+            el('small', { text: 'Die Stimmen laufen nur in diesem Browser, Deutsch und Englisch je nach Text. Jede wird einmal im Hintergrund geladen (rund 63 MB) und bleibt dann auf dem Gerät; der Server macht dafür nichts.' }))));
         });
       }
 

@@ -51,16 +51,8 @@ public:
     snprintf(out, sizeof out, "%016llx", (unsigned long long)h);
     return std::string(out, 12);
   }
-  // What an open page must reload for: its own files, or the voice the room hands out (ops/tts).
-  std::string ui_key() const {
-    const std::string tts = slurp(room_.cfg.tts_dir + "/config.json");
-    if (tts.empty()) return web_;
-    uint64_t h = 1469598103934665603ull;
-    for (unsigned char c : tts) { h ^= c; h *= 1099511628211ull; }
-    char out[9];
-    snprintf(out, sizeof out, "%08llx", (unsigned long long)(h & 0xffffffffull));
-    return web_ + "-" + out;
-  }
+  // What an open page must reload for: its own files.
+  std::string ui_key() const { return web_; }
 
   void handle(int fd, http::Request &r) {
     if (r.bridge) return bridge(fd, r);
@@ -85,7 +77,6 @@ public:
       if (p == "/favicon.ico" || p == "/favicon.svg" || p == "/apple-touch-icon.png")
         return asset(fd, r, room_.cfg.web_dir + "/static" + p, false);
       if (starts_with(p, "/static/") || starts_with(p, "/app/")) return static_file(fd, r);
-      if (starts_with(p, "/tts/")) return voice_file(fd, r);
       if (p == "/api/version") { Val v = Val::object(); v["version"] = version_; return http::send_json(fd, 200, v); }
       if (p == "/api/state") return state(fd, r, who);
       if (p == "/api/messages") return messages(fd, r);
@@ -166,18 +157,6 @@ public:
     if (r.method == "POST" && p == "/api/stop") return post_stop(fd, r);
     if (r.method == "POST" && p == "/api/upload") return upload(fd, r);
     if (r.method == "POST" && p == "/api/stt") return stt(fd, r);
-    if (r.method == "POST" && p == "/api/tts/stat") {
-      // How reading aloud goes on the device, for the journal: numbers and the
-      // name of the provider, never what was read.
-      const Val in = jparse(r.body);
-      std::string provider = jstr(in, "provider"), line = "tts:";
-      if (provider.size() > 12 || provider.find_first_not_of("abcdefghijklmnopqrstuvwxyz") != std::string::npos) provider = "?";
-      if (!provider.empty()) line += " provider=" + provider;
-      for (const char *key : {"threads", "isolated", "steps", "load_pct", "warm_ms", "make_ms", "read_ms", "widen_ms", "create_ms", "probe_ms", "warm_fail", "gpu_fail", "first_ms", "synth_ms", "audio_ms"})
-        if (in.find(key)) line += " " + std::string(key) + "=" + std::to_string((long)std::min(1e9, std::max(0.0, jnum(in, key))));
-      logf(line);
-      return http::send_ok(fd);
-    }
     if ((r.method == "POST" || r.method == "DELETE") && p == "/api/stt/live") return stt_live(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/cancel")) {
       // A 3D job or the film of a scene: each is cancelled where it runs.
@@ -500,20 +479,6 @@ private:
     asset(fd, r, room_.cfg.web_dir + rel, false);
   }
 
-  // The voices for reading aloud (ops/tts): a worker, its runtime and the
-  // voice models, run in the browser. They live in a folder named after their
-  // content, so the browser keeps them for good; only config.json says which.
-  void voice_file(int fd, const http::Request &r) {
-    const std::string rel = url_decode(r.path.substr(5));
-    if (rel.empty() || rel.find("..") != std::string::npos || rel.find('\\') != std::string::npos || rel[0] == '/' || rel.find('\0') != std::string::npos)
-      return http::send_error(fd, 404, "Nicht gefunden");
-    const std::string path = room_.cfg.tts_dir + "/" + rel;
-    if (!exists(path)) return http::send_error(fd, 404, "Nicht gefunden");
-    http::Headers h = {{"Cache-Control", rel == "config.json" ? "no-store" : "public, max-age=31536000, immutable"},
-                       {"Cross-Origin-Resource-Policy", "same-origin"}, {"X-Content-Type-Options", "nosniff"}};
-    http::send_file(fd, r, path, ends_with(rel, ".onnx") || ends_with(rel, ".data") ? "application/octet-stream" : mime_for(rel), h);
-  }
-
   void manifest(int fd) {
     const std::string v = "?v=" + web_;
     const std::string body =
@@ -561,7 +526,6 @@ private:
     Val features = Val::object();
     features["search"] = !room_.cfg.brave_key.empty();
     features["stt"] = stt_ready();
-    features["tts"] = exists(room_.cfg.tts_dir + "/config.json");
     features["push"] = push_.configured();
     v["features"] = features;
     v["zone"] = site::zone(); // the bots' sites are <name>.<zone>

@@ -13,7 +13,7 @@ namespace mag {
 
 struct Config {
   std::string state_dir, files_dir, web_dir, bind_host, bridge_ip, gateway, models_status,
-      models_control, idol_url, scene_url, rtc_url, stt_url, tts_dir, guest_run, agent_ctl, brave_key, browser_binary,
+      models_control, idol_url, scene_url, rtc_url, stt_url, guest_run, agent_ctl, brave_key, browser_binary,
       version, access_file, s23_token_file;
   bool sudo = true; // the guest wrappers run through sudo (off only for the test fixture)
   int port = 8766, bridge_port = 8767, max_steps = 48, turn_budget_s = 3600, tool_timeout_s = 900,
@@ -40,7 +40,6 @@ struct Config {
     c.sudo = env("MAG_ROOM_NO_SUDO") != "1";
     c.brave_key = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY"));
     c.stt_url = env("MAG_STT_URL", "http://127.0.0.1:8194");
-    c.tts_dir = env("MAG_TTS_DIR", "/opt/mag-tts"); // the voices the browser reads aloud with (ops/tts)
     // The control daemon of Chris's phone (devices/s23), if he runs it. Its token is read when it is needed.
     c.s23_port = (int)envl("MAG_S23_PORT", 18721);
     c.s23_token_file = env("MAG_S23_TOKEN_FILE", "/run/mag-s23/token");

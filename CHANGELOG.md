@@ -6,6 +6,19 @@ version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
 
+## 5.3.0 (2026-11-13)
+
+- Reading aloud in the client alone, on the phone and the desktop: Piper
+  voices (onnxruntime-web in WASM, espeak-ng) instead of Supertonic 3, each
+  voice German and English (Kerstin, Ramona, Thorsten, Karlsson; Alba and Joe
+  in English), picked by the language of the text. The browser fetches about
+  63 MB per voice and 33 MB of runtime once from jsDelivr and Hugging Face,
+  pinned by SHA256, and keeps them; the room serves, installs and records
+  nothing for speech any more (`/tts/`, `/api/tts/stat`, `ops/tts` removed;
+  `/opt/mag-tts` stays on disk).
+- A new message does not cancel the system prefix being evaluated, so it is
+  saved and the next trash restores it (#555).
+
 ## 5.2.1 (2026-11-13)
 
 - The MI50's power cap is 78 W (Chris, 2026-11-13, 17:52; 82 W in 5.2.0);

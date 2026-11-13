@@ -24,7 +24,8 @@ Build with CMake/Ninja. Run `python3 mag-room/tests/test_native.py` after
 changes to HTTP, scheduling, persistence or room routing, and
 `python3 ops/models/tests/test_modeld.py` after changes to the model
 supervisor. Keep frontend JavaScript plain (no build step) and serve every
-dependency locally. Builds and jobs run on CPUs 28-55 only
+dependency locally; the one exception is reading aloud, which the browser
+fetches itself (below). Builds and jobs run on CPUs 28-55 only
 (`taskset -c 28-55`); the physical cores 0-27 belong to the models.
 
 Production is `mag-120.service` -> `/opt/mag-stack/current/bin/magroom`.
@@ -100,7 +101,7 @@ brows) carry the skin, speech goes from the words to their sounds (German by
 rules, clearly English text by lighter ones, numbers as words; pure Python in
 `ops/scene/phonemes.py`) and from the sounds to mouth shapes that last as long
 as each sound, and it blinks now and then. Its film speaks what was said: when Chris asks for the
-film, the page makes the voices on the device (Supertonic, one voice per
+film, the page makes the voices on the device (Piper, one voice per
 figure) and sends them as the film's sound; nothing is spoken on the server.
 Each voice's tempo is fitted to how long that mouth moves (0.8x to 1.3x), so
 lips and voice start and end together; the same voices play in the chat with
@@ -336,13 +337,19 @@ The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,
 runtime and a cancel button. All settings live in one sheet.
-Reading aloud is local as well, and happens on the device: Supertonic 3
-runs in the browser (a Web Worker with onnxruntime-web, on WebGPU or in
-WASM; pinned in `ops/tts`, handed out by the room under `/tts/`), one voice
-and tempo per speaker. The page fetches and loads the model in the
-background once, so the first tap speaks at once. Nothing plays by itself
-and no speech is made on the server; where the model is not installed the
-device's own voice reads. The retired Piper voices stay on disk.
+Reading aloud happens in the client alone, on the phone and the desktop
+(Chris, 2026-11-13): Piper voices run in the browser (`app/tts-worker.js`, a
+Web Worker with onnxruntime-web in WASM and espeak-ng from piper-wasm), each
+voice German and English (Kerstin, Ramona, Thorsten, Karlsson; English by
+Alba and Joe), the language of the text picks which reads. The browser
+fetches runtime and voices straight from jsDelivr and Hugging Face, pinned
+by version and SHA256, once into Cache Storage; the room serves nothing for
+it, installs nothing and makes no speech, and nothing of it goes back to
+the server. One voice and tempo per speaker, kept on the device; the page
+loads the bots' voices in the background, so the first tap speaks at once,
+and until a voice is there the device's own voice reads. Nothing plays by
+itself. Never bring a server path for speech back. The retired Supertonic
+and Piper files stay on disk (`/opt/mag-tts`, the owner's cache).
 Dictation is local and live: the microphone button sends 16 kHz PCM to the
 room while Chris speaks (`/api/stt/live`), `mag-stt` recognizes it and the
 text grows in the message field; a sentence followed by a pause is final.

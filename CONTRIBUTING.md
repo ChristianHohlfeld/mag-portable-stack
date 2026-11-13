@@ -40,15 +40,15 @@ host runner) runs, in this order:
    with `KillMode=process`, no device access for scenes, a power-cap script
    that only lowers, the needrestart rule, bot sites tailnet-only, no
    external URL in the page, the VM panel on its realtime link with the
-   pinned xterm.js, and the pinned reading-aloud worker.
+   pinned xterm.js, and a reading-aloud worker that fetches only from
+   jsDelivr and Hugging Face.
 3. `python3 ops/models/tests/test_modeld.py`
 4. `python3 ops/idol/tests/test_worker.py`, `test_unwrap.py`,
    `test_surface.py`, `test_photo.py`
-5. `node ops/tts/tests/test_text.js`
-6. `python3 ops/scene/tests/test_rig.py`, `test_motion.py`,
+5. `python3 ops/scene/tests/test_rig.py`, `test_motion.py`,
    `test_animal.py`, `test_worker.py`
-7. `python3 devices/s23/tests/test_s23ctl.py`
-8. `./build/test-group-dispatcher`, `./build/test-model-text`,
+6. `python3 devices/s23/tests/test_s23ctl.py`
+7. `./build/test-group-dispatcher`, `./build/test-model-text`,
    `python3 mag-room/tests/test_native.py`
 
 A second job runs gitleaks over the whole history.

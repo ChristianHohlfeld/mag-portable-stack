@@ -95,12 +95,22 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
     def submit():
         say("Modell laden")
         control.write_text(str(state_dir) + "\n")
-        h3d("POST", "/sdcpp/v1/models/refresh", timeout=60)   # files that came after its start
-        models = {slot: name.format(kind) for slot, name in MODELS.items()}
-        status, state = h3d("POST", "/sdcpp/v1/models/load", {"recipe": "minimax-h3-" + kind, "models": models}, timeout=1800)
-        if status != 200:
-            print("h3d load: %s %s" % (status, (state or {}).get("error", "")), flush=True)
-            return None
+        recipe = "minimax-h3-" + kind
+        loaded = h3d("GET", "/sdcpp/v1/models/status", timeout=10)[1] or {}
+        # Loaded already: nothing to load (a load while h3d still holds a job is
+        # refused with 409, even for the same model). Another model: load it,
+        # waiting while h3d finishes what it holds.
+        if not (loaded.get("state") == "ready" and loaded.get("recipe") == recipe):
+            h3d("POST", "/sdcpp/v1/models/refresh", timeout=60)   # files that came after its start
+            models = {slot: name.format(kind) for slot, name in MODELS.items()}
+            for _ in range(180):
+                status, state = h3d("POST", "/sdcpp/v1/models/load", {"recipe": recipe, "models": models}, timeout=1800)
+                if status != 409:
+                    break
+                time.sleep(10)
+            if status != 200:
+                print("h3d load: %s %s" % (status, (state or {}).get("error", "")), flush=True)
+                return None
         image = base64.b64encode(picture.read_bytes()).decode() if picture else None
         body = {"prompt": prompt, "negative_prompt": "", "width": width, "height": height, "seed": seed,
                 "video_frames": frames, "fps": FPS, "init_image": image if use == "first" else None,

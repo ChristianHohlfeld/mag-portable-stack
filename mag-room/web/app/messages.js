@@ -74,8 +74,18 @@
     if (step.tool === 'write_file') return (i.path || '') + '\n\n' + (i.content || '');
     const keys = Object.keys(i);
     if (keys.length === 1 && typeof i[keys[0]] === 'string') return i[keys[0]];
-    return keys.length ? JSON.stringify(i, null, 2) : '';
+    // What the bot asked for in words, one line per field ("Beschreibung: …", "Format: quadratisch");
+    // only what has parts of its own (a scene's figures) stays in its structure.
+    return keys.map((k) => {
+      const v = i[k], label = INPUT_LABEL[k] || k;
+      if (v && typeof v === 'object') return label + ':\n' + JSON.stringify(v, null, 2);
+      return label + ': ' + (INPUT_VALUE[v] || String(v));
+    }).join('\n');
   }
+  const INPUT_LABEL = { prompt: 'Beschreibung', shape: 'Format', image: 'Bild', seconds: 'Sekunden', quality: 'Qualität', continue: 'Fortsetzen von',
+    as: 'Bild als', site: 'Seite', reason: 'Grund', url: 'Adresse', query: 'Suche', path: 'Datei', text: 'Text', n: 'Element', key: 'Taste',
+    enter: 'Enter drücken', what: 'Was', shop: 'Shop', amount_eur: 'Betrag (€)', action: 'Aktion', name: 'Name', scope: 'Umfang', fact: 'Notiz', title: 'Titel' };
+  const INPUT_VALUE = { square: 'quadratisch', wide: 'quer', tall: 'hoch', first: 'erstes Bild', reference: 'Figur', newest: 'neuestes Video', true: 'ja', false: 'nein' };
   function stepTime(step) { return MAG.stopwatch((step.t1 || Date.now()) - (step.t0 || Date.now())); }
   function buildStep(m, index) {
     const step = m.parts[index];

@@ -68,7 +68,7 @@ p_preflight() {
   (( nodes >= 2 && cpus >= 56 )) || note "WARN: $nodes NUMA nodes, $cpus CPUs; MAG is laid out for 2 nodes and 56 CPUs (0-13 Lena, 14-27 Noah, 28-55 the rest; ops/models/models.json)"
   local free; free=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
   (( free >= 700 || PROBE )) || note "WARN: ${free} GB free; the models and weights need about 600 GB"
-  if grep -qs 0x66a1 /sys/bus/pci/devices/*/device; then note 'MI50 found (Idol: photo to 3D, pictures, video; power cap 85 W)'
+  if grep -qs 0x66a1 /sys/bus/pci/devices/*/device; then note 'MI50 found (Idol: photo to 3D, pictures, video; power cap 100 W)'
   else note 'no MI50: the Idol worker stays off; everything else works'; fi
 }
 

@@ -10,7 +10,7 @@ User=chris
 Group=chris
 SupplementaryGroups=render video
 WorkingDirectory=/home/chris/idol-mi50
-# Root, lower-only: keeps the MI50 at or below its 78 W cap (never raises it).
+# Root, lower-only: keeps the MI50 at or below its 73 W cap (never raises it).
 ExecStartPre=+/usr/local/lib/mag-idol/power-cap.sh
 ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/idol/worker.py
 Environment=MAG_IDOL_JOB_ROOT=/var/lib/mag-idol/jobs

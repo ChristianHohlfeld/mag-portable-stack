@@ -107,8 +107,19 @@ fi
 mag_render /opt/mag-stack/current/ops/idol/mag-idol.service > /etc/systemd/system/mag-idol.service.next
 chmod 0644 /etc/systemd/system/mag-idol.service.next
 mv -f /etc/systemd/system/mag-idol.service.next /etc/systemd/system/mag-idol.service
+# h3d keeps H3 loaded between video clips (its binary is the owner's build).
+mag_render /opt/mag-stack/current/ops/idol/mag-h3d.service > /etc/systemd/system/mag-h3d.service.next
+chmod 0644 /etc/systemd/system/mag-h3d.service.next
+mv -f /etc/systemd/system/mag-h3d.service.next /etc/systemd/system/mag-h3d.service
 systemctl daemon-reload
 systemctl enable mag-idol.service
+systemctl enable mag-h3d.service >/dev/null 2>&1 || :
+# Restarted only when it is idle: a clip that is being made is never cut off.
+if [[ -x $BASE/h3/h3d ]]; then
+  if ! systemctl is-active --quiet mag-h3d.service; then
+    systemctl start mag-h3d.service || echo 'mag-h3d: not started' >&2
+  fi
+fi
 # Restart the worker only when its code or unit changed. Its jobs survive
 # the restart: a stage runs on its own (KillMode=process) and the new worker
 # follows it again, so a deploy never costs a photo-to-3D job. The one

@@ -64,6 +64,7 @@ H3_WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", os.path.join(IDOL_BASE, "weig
 H3_CLI = Path(os.environ.get("MAG_H3_CLI", os.path.join(IDOL_BASE, "h3/sd-cli-hip")))
 H3_ROCM = Path(os.path.join(IDOL_BASE, "rocm-6.3.4/current"))
 H3_STEPS = 4
+H3D_URL = os.environ.get("MAG_H3D_URL", "http://127.0.0.1:8796")   # mag-h3d.service
 
 
 def h3_ready():
@@ -398,9 +399,14 @@ def launch(job_id, key, command):
     if key in GPU_STAGES and GPU_LOCK:
         # A lock file that cannot be opened never costs a job: the stage runs
         # without it (this queue still runs one job at a time) and says so.
+        # A stage that is not a video, once the card is its own, has h3d let go
+        # of H3 (its buffers on the card); the next video loads it again.
+        release = "" if key == "video" else (
+            'curl -s -m 120 -X POST ' + H3D_URL + '/sdcpp/v1/models/unload >/dev/null 2>&1 || :; ')
         command = ["/bin/sh", "-c", 'if (: >>"$0") 2>/dev/null; then exec 9>>"$0"; w=; '
                    'until flock -n 9; do w=1; echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 20; done; '
-                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; else echo "MAG-NOTE no GPU lock: $0 cannot be opened"; fi; exec "$@"',
+                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; else echo "MAG-NOTE no GPU lock: $0 cannot be opened"; fi; '
+                   + release + 'exec "$@"',
                    GPU_LOCK] + command
     # The stage writes its own pid next to where its exit code will be: a
     # worker that starts while this one is still saying so finds it anyway.

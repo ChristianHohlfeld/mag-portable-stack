@@ -1,0 +1,28 @@
+[Unit]
+Description=MAG h3d: HyperFlow H3 Flash kept loaded between video clips (stable-diffusion.cpp server, HIP on the MI50)
+# Built and fetched by the owner (ops/video/h3, licensed to him personally).
+ConditionPathExists=/home/chris/idol-mi50/h3/h3d
+ConditionPathExists=/home/chris/idol-mi50/rocm-6.3.4/current
+After=network.target
+
+[Service]
+User=chris
+Group=chris
+SupplementaryGroups=render video
+WorkingDirectory=/home/chris/idol-mi50/h3
+# Never the models' cores; its own memory limit, apart from mag-idol's jobs.
+AllowedCPUs=28-55
+MemoryMax=64G
+Environment=LD_LIBRARY_PATH=/home/chris/idol-mi50/rocm-6.3.4/current/lib
+Environment=HIP_VISIBLE_DEVICES=0
+# The weights as the server's model folder (links, nothing copied).
+ExecStartPre=/bin/sh -c 'W=/home/chris/idol-mi50/weights/hyperflow-h3; M=/home/chris/idol-mi50/h3/models; mkdir -p $M/diffusion_models $M/text_encoders $M/vae && ln -sfn $W/fl2va.gguf $M/diffusion_models/fl2va.gguf && ln -sfn $W/ref2va.gguf $M/diffusion_models/ref2va.gguf && ln -sfn $W/text_encoder.gguf $M/text_encoders/text_encoder.gguf && ln -sfn $W/video_vae.safetensors $M/vae/video_vae.safetensors && ln -sfn $W/audio_vae.safetensors $M/vae/audio_vae.safetensors'
+# Weights stay in RAM between clips (--offload-to-cpu); the card is used only
+# while a clip is made inside Idol's video stage, which holds the MI50's lock,
+# and the other GPU stages unload the model before they use the card.
+ExecStart=/home/chris/idol-mi50/h3/h3d --listen-ip 127.0.0.1 --listen-port 8796 --model-dir /home/chris/idol-mi50/h3/models --offload-to-cpu --sage-attn -t 28
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

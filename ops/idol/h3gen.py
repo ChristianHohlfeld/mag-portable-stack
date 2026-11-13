@@ -27,11 +27,16 @@ on, made by AI said so): the file says in its metadata that it is made by
 AI with MiniMax H3. Prints "MAG-VIDEO k/4" per step and "MAG-VIDEO-STAGE
 <words>" between parts; MAG-ERROR in words.
 """
+import base64
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 BASE = Path(os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50")))
@@ -44,6 +49,106 @@ FRAMES = {5: 124, 10: 243}                  # 17n + 5 frames: 5.2 s and 10.1 s
 AREA = 864 * 480                            # 480p: minutes on the MI50 (the workflow's megapixel takes about an hour)
 LABEL = "KI-generiert mit MiniMax H3 (HyperFlow H3 Flash)"
 PROGRESS = re.compile(r"\|\s*(\d+)/(\d+)\s*-")
+# h3d (mag-h3d.service): stable-diffusion.cpp's server, the same build, which
+# keeps the model loaded between clips; the MI50's other stages unload it
+# before they use the card. Where it does not answer, sd-cli makes the clip.
+H3D = os.environ.get("MAG_H3D_URL", "http://127.0.0.1:8796")
+MODELS = {"diffusion_model": "diffusion_models/{}.gguf", "llm": "text_encoders/text_encoder.gguf",
+          "vae": "vae/video_vae.safetensors", "audio_vae": "vae/audio_vae.safetensors"}
+
+
+def h3d(method, path, body=None, timeout=10):
+    """One request to h3d: (status, JSON or None); (0, None) when it does not answer."""
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(H3D + path, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as res:
+            return res.status, json.loads(res.read() or b"null")
+    except urllib.error.HTTPError as err:
+        try:
+            return err.code, json.loads(err.read() or b"null")
+        except ValueError:
+            return err.code, None
+    except (OSError, ValueError):
+        return 0, None
+
+
+def by_h3d(job, prompt, width, height, frames, seed, picture, use):
+    """The clip through h3d into job/h3.part.webm. False when h3d is not there
+    (or turned the clip down before it began), so that sd-cli makes it."""
+    if h3d("GET", "/sdcpp/v1/models/status", timeout=3)[0] != 200:
+        return False
+    kind = "ref2va" if use == "ref" else "fl2va"
+    mark = job / "h3d.json"                  # the h3d job of this stage: followed again after a restart
+    known = json.loads(mark.read_text()) if mark.is_file() else {}
+    status, state = (h3d("GET", "/sdcpp/v1/jobs/" + known["id"]) if known.get("id") else (404, None))
+    if status != 200:
+        say("Modell laden")
+        models = {slot: name.format(kind) for slot, name in MODELS.items()}
+        status, state = h3d("POST", "/sdcpp/v1/models/load", {"recipe": "minimax-h3-" + kind, "models": models}, timeout=1800)
+        if status != 200:
+            print("h3d load: %s %s" % (status, (state or {}).get("error", "")), flush=True)
+            return False
+        image = base64.b64encode(picture.read_bytes()).decode() if picture else None
+        body = {"prompt": prompt, "negative_prompt": "", "width": width, "height": height, "seed": seed,
+                "video_frames": frames, "fps": FPS, "init_image": image if use == "first" else None,
+                "end_image": None, "ref_images": [image] if use == "ref" and image else [], "control_frames": [],
+                "ref_image_args": "", "lora": [],
+                "sample_params": {"sample_method": "euler", "sample_steps": STEPS,
+                                  "custom_sigmas": [float(x) for x in SIGMAS.split(",")],
+                                  "guidance": {"txt_cfg": 1.0}},
+                "vae_tiling_params": {"enabled": True}, "preview": "proj", "preview_interval": 1,
+                "output_format": "webm"}
+        status, state = h3d("POST", "/sdcpp/v1/vid_gen", body, timeout=60)
+        if status != 202 or not (state or {}).get("id"):
+            print("h3d vid_gen: %s %s" % (status, (state or {}).get("error", "")), flush=True)
+            return False
+        mark.write_text(json.dumps({"id": state["id"]}))
+    ident = json.loads(mark.read_text())["id"]
+
+    def cancel(*_):
+        h3d("POST", "/sdcpp/v1/jobs/%s/cancel" % ident)
+        sys.exit(5)
+    signal.signal(signal.SIGTERM, cancel)
+    signal.signal(signal.SIGINT, cancel)
+    told, quiet = None, 0
+    while True:
+        status, state = h3d("GET", "/sdcpp/v1/jobs/" + ident)
+        if status != 200 or not state:
+            quiet += 1
+            if quiet > 60:                   # two minutes without an answer: h3d is gone
+                mark.unlink(missing_ok=True)
+                print("MAG-ERROR Der Videodienst antwortet nicht mehr.", flush=True)
+                sys.exit(3)
+            time.sleep(2)
+            continue
+        quiet = 0
+        now = state.get("status")
+        if now == "completed":
+            data = base64.b64decode(((state.get("result") or {}).get("b64_json") or ""))
+            if not data:
+                print("MAG-ERROR H3 hat kein Video geliefert.", flush=True)
+                sys.exit(3)
+            (job / "h3.part.webm").write_bytes(data)
+            mark.unlink(missing_ok=True)
+            return True
+        if now in ("failed", "cancelled"):
+            mark.unlink(missing_ok=True)
+            error = state.get("error") or {}
+            print("h3d: %s" % (error.get("message") if isinstance(error, dict) else error), flush=True)
+            print("MAG-ERROR H3 hat kein Video erzeugt.", flush=True)
+            sys.exit(3)
+        preview = state.get("preview") or {}
+        step = (preview.get("step"), preview.get("total_steps"))
+        if now == "generating" and told is None:
+            say("Video und Ton rechnen")
+            told = (0, 0)
+        if now == "generating" and step[0] and step != told:
+            told = step
+            print("MAG-VIDEO %d/%d" % (min(step[0], STEPS), STEPS), flush=True)
+            if step[0] >= (step[1] or STEPS):
+                say("Bilder und Ton dekodieren")
+        time.sleep(2)
 
 
 def say(stage):
@@ -119,6 +224,9 @@ def main():
     if use == "ref" and "<Picture 1>" not in prompt:
         prompt = "<Picture 1> " + prompt
     sound = job / "h3.webm"                 # what the model made; done is never done twice
+    if not sound.is_file() and by_h3d(job, prompt, *shape(picture), FRAMES[seconds],
+                                       int(asked.get("seed", 0)) or 1, picture, use):
+        (job / "h3.part.webm").rename(sound)
     if not sound.is_file():
         width, height = shape(picture)
         say("Modell laden")

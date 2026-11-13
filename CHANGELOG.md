@@ -8,6 +8,8 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- H3 videos are decoded by madebyollin's tiny autoencoder `taeh3` (MIT): seconds instead
+  of about two minutes per 5 s clip.
 - The MI50's power cap is 85 W (Chris, 2026-11-13; 78 W and 73 W for a while that day);
   `ops/idol/power-cap.sh` only lowers it and never writes more than 85 W.
 ## 5.1.0 (2026-11-13)

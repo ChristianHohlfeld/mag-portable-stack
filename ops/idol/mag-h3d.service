@@ -20,7 +20,7 @@ Environment=SD_STATE_DIR_FILE=/var/lib/mag-idol/jobs/.h3d-state-dir
 # The weights as the server's model folder: hard links (same file system,
 # nothing copied); the server refuses links that lead out of its folder.
 # "-": before the weights are there, it starts with an empty folder.
-ExecStartPre=-/bin/sh -c 'W=/home/chris/idol-mi50/weights/hyperflow-h3; M=/home/chris/idol-mi50/h3/models; mkdir -p $M/diffusion_models $M/text_encoders $M/vae && ln -f $W/fl2va.gguf $M/diffusion_models/fl2va.gguf && ln -f $W/ref2va.gguf $M/diffusion_models/ref2va.gguf && ln -f $W/text_encoder.gguf $M/text_encoders/text_encoder.gguf && ln -f $W/video_vae.safetensors $M/vae/video_vae.safetensors && ln -f $W/audio_vae.safetensors $M/vae/audio_vae.safetensors'
+ExecStartPre=-/bin/sh -c 'W=/home/chris/idol-mi50/weights/hyperflow-h3; M=/home/chris/idol-mi50/h3/models; mkdir -p $M/diffusion_models $M/text_encoders $M/vae && ln -f $W/fl2va.gguf $M/diffusion_models/fl2va.gguf && ln -f $W/ref2va.gguf $M/diffusion_models/ref2va.gguf && ln -f $W/text_encoder.gguf $M/text_encoders/text_encoder.gguf && ln -f $W/video_vae.safetensors $M/vae/video_vae.safetensors && ln -f $W/audio_vae.safetensors $M/vae/audio_vae.safetensors; [ -f $W/taeh3.safetensors ] && ln -f $W/taeh3.safetensors $M/vae/taeh3.safetensors'
 # Weights stay in RAM between clips (--offload-to-cpu); the card is used only
 # while a clip is made inside Idol's video stage, which holds the MI50's lock,
 # and the other GPU stages unload the model before they use the card.

@@ -23,6 +23,7 @@ declare -A SHA=(
   [text_encoder.gguf]=11e6efe70a57ce7f4838c47bdbd1a1c4b8ce10e2b7747f1b065990b70f4b05fc
   [video_vae.safetensors]=7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522
   [audio_vae.safetensors]=8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48
+  [taeh3.safetensors]=4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13
 )
 get() {  # get LOCAL URL
   if [ ! -s "$1" ]; then
@@ -36,6 +37,8 @@ get video_vae.safetensors "$COMFY/vae/minimax_h3_video_vae_fp16.safetensors" &
 get ref2va.gguf "$FLASH/ref2va_gguf/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf" &
 get fl2va.gguf "$FLASH/fl2va_gguf/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf" &
 get text_encoder.gguf "$GGUF/qwen3vl_32b_minimax_h3-Q4_K_M.gguf" &
+# madebyollin's tiny autoencoder for H3 (MIT): decodes the video in seconds instead of minutes.
+get taeh3.safetensors "https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeh3.safetensors" &
 failed=0
 for job in $(jobs -p); do wait "$job" || failed=1; done
 (( failed == 0 )) || { echo 'not complete' >&2; exit 1; }

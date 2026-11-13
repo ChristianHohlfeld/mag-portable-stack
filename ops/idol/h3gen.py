@@ -55,6 +55,10 @@ PROGRESS = re.compile(r"\|\s*(\d+)/(\d+)\s*-")
 H3D = os.environ.get("MAG_H3D_URL", "http://127.0.0.1:8796")
 MODELS = {"diffusion_model": "diffusion_models/{}.gguf", "llm": "text_encoders/text_encoder.gguf",
           "vae": "vae/video_vae.safetensors", "audio_vae": "vae/audio_vae.safetensors"}
+# madebyollin's tiny autoencoder for H3 (taeh3, MIT, ops/video/h3/fetch.sh): the
+# finished video is decoded by it in seconds instead of the VAE's minutes (the
+# VAE still encodes a first frame). The sound keeps its own VAE.
+TAE = "vae/taeh3.safetensors"
 
 
 def h3d(method, path, body=None, timeout=10):
@@ -100,9 +104,11 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
         # Loaded already: nothing to load (a load while h3d still holds a job is
         # refused with 409, even for the same model). Another model: load it,
         # waiting while h3d finishes what it holds.
-        if not (loaded.get("state") == "ready" and loaded.get("recipe") == recipe):
+        models = {slot: name.format(kind) for slot, name in MODELS.items()}
+        if (WEIGHTS / "taeh3.safetensors").is_file():
+            models["tae"] = TAE
+        if not (loaded.get("state") == "ready" and loaded.get("recipe") == recipe and loaded.get("models") == models):
             h3d("POST", "/sdcpp/v1/models/refresh", timeout=60)   # files that came after its start
-            models = {slot: name.format(kind) for slot, name in MODELS.items()}
             for _ in range(180):
                 status, state = h3d("POST", "/sdcpp/v1/models/load", {"recipe": recipe, "models": models}, timeout=1800)
                 if status != 409:
@@ -315,6 +321,7 @@ def main():
                    "--llm", str(WEIGHTS / "text_encoder.gguf"),
                    "--vae", str(WEIGHTS / "video_vae.safetensors"),
                    "--audio-vae", str(WEIGHTS / "audio_vae.safetensors"),
+                   *(["--tae", str(WEIGHTS / "taeh3.safetensors")] if (WEIGHTS / "taeh3.safetensors").is_file() else []),
                    "--sampling-method", "euler", "--cfg-scale", "1.0", "--steps", str(STEPS), "--sigmas", SIGMAS,
                    "-W", str(width), "-H", str(height), "--video-frames", str(FRAMES[seconds]), "--fps", str(FPS),
                    "-s", str(int(asked.get("seed", 0)) or 1), "-p", prompt,

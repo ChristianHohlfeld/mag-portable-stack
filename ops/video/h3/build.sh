@@ -6,7 +6,7 @@
 # ggml's HIP backend for gfx906, against the ROCm unpacked by rocm.sh (its
 # int8 dp4a matrix kernels, the gfx906 counterpart of the workflow's INT8 path,
 # and its fused rope/modulate kernels), with our own attention for gfx906
-# (gfx906-kernels.patch) -> ~/idol-mi50/h3/sd-cli-hip.
+# (gfx906-kernels.patch) -> ~/idol-mi50/h3/sd-cli-hip and h3d (the server).
 set -e
 HERE=$(dirname "$(readlink -f "$0")")
 BASE=${MAG_IDOL_BASE:-$HOME/idol-mi50}/h3
@@ -38,6 +38,8 @@ export ROCM_PATH="$ROCM" HIP_PATH="$ROCM" HIP_PLATFORM=amd PATH="$ROCM/bin:$PATH
 cmake -S . -B build-hip -G Ninja -DCMAKE_BUILD_TYPE=Release -DSD_HIPBLAS=ON -DGPU_TARGETS=gfx906 -DAMDGPU_TARGETS=gfx906 \
   -DCMAKE_HIP_COMPILER="$ROCM/lib/llvm/bin/clang++" -DCMAKE_PREFIX_PATH="$ROCM;$ROCM/lib/cmake" -DHIP_PLATFORM=amd \
   -DCMAKE_BUILD_RPATH="$ROCM/lib" -DCMAKE_INSTALL_RPATH="$ROCM/lib" $CPU
-flock /tmp/mag-cpu-heavy.lock taskset -c 28-55 cmake --build build-hip -j 28 --target sd-cli
+flock /tmp/mag-cpu-heavy.lock taskset -c 28-55 cmake --build build-hip -j 28 --target sd-cli sd-server
 install -m 0755 build-hip/bin/sd-cli "$BASE/sd-cli-hip.part" && mv "$BASE/sd-cli-hip.part" "$BASE/sd-cli-hip"
+# h3d (mag-h3d.service): the same build as a server that keeps H3 loaded between clips.
+install -m 0755 build-hip/bin/sd-server "$BASE/h3d.part" && mv "$BASE/h3d.part" "$BASE/h3d"
 echo built "$COMMIT" + hyperflow patch for HIP gfx906

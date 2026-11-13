@@ -812,6 +812,14 @@ weight and the AdaLN modulation in one pass, and the VAE's Conv3d as gfx906's
 own implicit fp16 GEMM in ggml (`gfx906-ggml.patch`: the patches as pairs
 along k, v_dot2_f32_f16 instead of conversions and scalar FMAs); parts that wait stay in memory
 (`--offload-to-cpu`), the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
+A clip is made by `mag-h3d` (stable-diffusion.cpp's server from the same
+build, `127.0.0.1:8796`, cores 28-55, its own 64 GB limit): it keeps H3 loaded
+between clips (`models/load` with the recipe `minimax-h3-fl2va` or
+`-ref2va`; the weights in RAM, on the card only while a clip is made inside
+Idol's video stage, which holds the MI50's lock), and every other GPU stage,
+once the card is its own, has it unload the model, so 3D and pictures have
+the whole card. Where h3d does not answer, sd-cli makes the clip. The h3d job
+id is kept in the job folder, so a restarted stage follows the same clip.
 The model's result (`h3.webm`) is kept, so a lost stage only writes the
 file again. Its licence (MiniMax H3 Community License) leaves out the EU;
 MiniMax authorised Chris personally on 2026-11-13 (private, non-commercial,

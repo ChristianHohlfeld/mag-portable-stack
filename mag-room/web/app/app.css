@@ -331,6 +331,9 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .skill .form input, .skill .form textarea, .skill .form select { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 16px; /* no zoom on iOS */ }
 .skill .form textarea { resize: vertical; min-height: 62px; }
 .skill .form .btn { align-self: flex-start; }
+.skill .form .pair { justify-content: flex-start; }
+.skill .form .pair label { display: inline-flex; align-items: center; gap: 4px; }
+.skill .form .pair input[type=checkbox] { width: auto; padding: 0; }
 .plugin { border-bottom: 1px solid var(--line); }
 .plugin:last-child { border-bottom: 0; }
 .plugin .set { border-bottom: 0; min-height: 0; }

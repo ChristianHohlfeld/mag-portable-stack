@@ -5,6 +5,86 @@
   const owner = () => S.you.role === 'owner';
   const call = (method, path, body) => MAG.api(method, path, body).catch((err) => { MAG.toast(err.message, true); throw err; });
 
+  // ---- jobs: what a bot does again by itself (the room's routines) ----------
+  // One list for one bot (its sheet) or for all (the settings): see, set up,
+  // change, pause, run now, delete. The same jobs the bots keep with their
+  // tool `routine`; each runs as its bot's turn, in that bot's VM.
+  const DAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  const WHEN_KINDS = [['daily', 'Täglich'], ['weekdays', 'Werktags'], ['days', 'An Wochentagen'], ['every', 'Alle … Minuten'], ['once', 'Einmal'],
+    ['picture', 'Bei jedem Bild von dir'], ['job_done', 'Wenn ein Auftrag der Grafikkarte fertig ist'], ['file', 'Bei neuer Datei in der VM']];
+  const pad = (n) => String(n).padStart(2, '0');
+  // A job's form: new (one = null) or to change one; done(body) sends it.
+  function jobForm(one, bot, done) {
+    const w = one?.when || {};
+    const days = w.days || [];
+    const kind = w.every_minutes ? 'every' : w.once ? 'once' : w.event ? w.event : days.length === 7 ? 'daily' : days.length === 5 && days[0] === 1 && days[4] === 5 ? 'weekdays' : days.length ? 'days' : 'daily';
+    const at = w.once ? new Date(w.once * 1000) : null;
+    const name = el('input', { type: 'text', maxLength: 80, value: one?.name || '', placeholder: 'Name, z. B. Morgenbriefing', 'aria-label': 'Name' });
+    const text = el('textarea', { rows: 3, maxLength: 2000, placeholder: 'Was jedes Mal zu tun ist, als Bitte an den Bot', 'aria-label': 'Anweisung' });
+    text.value = one?.instruction || '';
+    const who = bot ? null : el('select', { 'aria-label': 'Bot' }, S.bots.map((b) => el('option', { value: b.id, text: b.name + (b.vm ? ' · VM ' + b.vm : ''), selected: b.id === one?.bot })));
+    const how = el('select', { 'aria-label': 'Wann' }, WHEN_KINDS.map(([k, label]) => el('option', { value: k, text: label, selected: k === kind })));
+    const time = el('input', { type: 'time', value: w.time || '07:00', 'aria-label': 'Uhrzeit' });
+    const picks = DAYS.map((d, i) => el('label', { class: 'pill' }, el('input', { type: 'checkbox', value: String(i + 1), checked: days.includes(i + 1) }), ' ' + d));
+    const dayRow = el('span', { class: 'pair' }, ...picks);
+    const minutes = el('input', { type: 'number', min: 15, step: 15, value: String(w.every_minutes || 60), 'aria-label': 'Minuten' });
+    const once = el('input', { type: 'datetime-local', value: at ? at.getFullYear() + '-' + pad(at.getMonth() + 1) + '-' + pad(at.getDate()) + 'T' + pad(at.getHours()) + ':' + pad(at.getMinutes()) : '', 'aria-label': 'Zeitpunkt' });
+    const folder = el('input', { type: 'text', value: w.path || '', placeholder: 'Ordner unter /home/bot (leer: alle), z. B. Downloads', 'aria-label': 'Ordner' });
+    const pattern = el('input', { type: 'text', value: w.pattern || '', placeholder: 'Dateinamen (leer: alle), z. B. *.pdf', 'aria-label': 'Dateinamen' });
+    const show = () => {
+      const k = how.value;
+      time.hidden = !['daily', 'weekdays', 'days'].includes(k);
+      dayRow.hidden = k !== 'days';
+      minutes.hidden = k !== 'every';
+      once.hidden = k !== 'once';
+      folder.hidden = pattern.hidden = k !== 'file';
+    };
+    how.addEventListener('change', show);
+    show();
+    const when = () => {
+      const k = how.value;
+      if (k === 'daily' || k === 'weekdays') return { [k]: time.value };
+      if (k === 'days') return { days: picks.map((p) => p.firstChild).filter((c) => c.checked).map((c) => +c.value), time: time.value };
+      if (k === 'every') return { every_minutes: +minutes.value };
+      if (k === 'once') return { once: once.value.replace('T', ' ') };
+      if (k === 'file') return { event: 'file', path: folder.value.trim(), pattern: pattern.value.trim() };
+      return { event: k };
+    };
+    const go = el('button', { class: 'btn', type: 'submit', text: one ? 'Speichern' : 'Job anlegen' });
+    return el('form', { class: 'form', onsubmit: (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      done({ name: name.value, instruction: text.value, when: when(), bot: bot || who.value }).finally(() => { go.disabled = false; });
+    } }, name, text, who, how, time, dayRow, minutes, once, folder, pattern, go);
+  }
+  MAG.jobs = function (bot) {
+    const card = el('div', { class: 'card' });
+    const load = () => MAG.api('GET', '/api/routines').then((out) => {
+      const mine = out.routines.filter((r) => !bot || r.bot === bot);
+      card.replaceChildren();
+      if (!mine.length) card.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keine Jobs. Leg hier einen an, oder bitte ' + (bot ? MAG.bot(bot)?.name || 'den Bot' : 'einen Bot') + ' im Chat darum („jeden Morgen um 7 …“).' }))));
+      for (const one of mine) {
+        const act = (what) => () => call(what === 'remove' ? 'DELETE' : 'POST', '/api/routines/' + one.id + (what === 'remove' ? '' : '/' + what)).then(load);
+        const b = MAG.bot(one.bot);
+        const edit = el('details', { class: 'other' }, el('summary', { text: 'Bearbeiten' }),
+          jobForm(one, bot, (body) => call('PUT', '/api/routines/' + one.id, body).then(() => { MAG.toast('Job gespeichert'); load(); })));
+        card.append(el('details', { class: 'mem skill' },
+          el('summary', {}, el('b', { text: one.name }), el('small', { text: (bot ? '' : ' · ' + (b?.name || one.bot) + (b?.vm ? ' (' + b.vm + ')' : '')) + ' · ' + one.when_text + (one.paused ? ' · pausiert' : '') })),
+          el('p', {}, one.instruction),
+          el('p', {}, el('small', { text: (one.last ? 'Zuletzt ' + MAG.day(one.last * 1000) + ' · ' : '') + (one.next && !one.paused ? 'Nächstes Mal ' + MAG.day(one.next * 1000) : one.paused ? 'pausiert' : '') + (b?.vm ? ' · läuft in der VM ' + b.vm : '') })),
+          el('span', { class: 'pair' },
+            el('button', { class: 'pill', text: 'Jetzt ausführen', onclick: act('run') }),
+            el('button', { class: 'pill', text: one.paused ? 'Fortsetzen' : 'Pausieren', onclick: act(one.paused ? 'resume' : 'pause') }),
+            el('button', { class: 'pill danger', text: 'Löschen', onclick: async () => { if (await MAG.confirm('Job „' + one.name + '“ löschen?', 'Er läuft danach nicht mehr.', 'Löschen', true)) act('remove')(); } })),
+          edit));
+      }
+      card.append(el('details', { class: 'mem skill add' }, el('summary', {}, el('b', { text: 'Neuer Job' })),
+        jobForm(null, bot, (body) => call('POST', '/api/routines', body).then(() => { MAG.toast('Job angelegt'); load(); }))));
+    }).catch(() => card.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Jobs nicht lesbar.' })))));
+    load();
+    return card;
+  };
+
   // ---- bot state in words -------------------------------------------------
   function modelText(b) {
     const m = b.model || {}, f = m.model || {};
@@ -198,6 +278,8 @@
         };
         sheet.saves();
       }
+      if (owner()) content.append(el('h3', { text: 'Jobs' }), MAG.jobs(id),
+        el('p', { class: 'fine', text: 'Was ' + b.name + ' regelmäßig oder bei einem Ereignis von selbst tut, als eigener Zug' + (b.vm ? ', in der VM ' + b.vm : '') + '. Läuft auch nach Neustarts weiter; was ausfiel, holt der Raum einmal nach (bis 12 Stunden). ' + b.name + ' kann Jobs auch selbst anlegen und ändern, mit deiner Freigabe.' }));
       sheet.refresh();
 
       if (owner()) {
@@ -306,11 +388,11 @@
 
       // Approvals per action and the auto mode; the routines the bots run by themselves.
       if (owner()) {
-        const rulesCard = el('div', { class: 'card' }), routinesCard = el('div', { class: 'card' });
+        const rulesCard = el('div', { class: 'card' });
         content.append(el('h3', { text: 'Freigaben' }), rulesCard,
-          el('p', { class: 'fine', text: 'Vor Senden, Kaufen, Löschen, Veröffentlichen und neuen Routinen fragen die Bots um Freigabe. „Fragen“ zeigt eine Karte im Chat. Der Auto-Modus erlaubt alles, was auf „Fragen“ steht, ohne Rückfrage; Käufe nur innerhalb der Grenzen, „Nie“ bleibt nie. Jede Entscheidung steht im Journal. Kartennummern und Passwörter bekommen die Bots nie.' }),
-          el('h3', { text: 'Routinen' }), routinesCard);
-        const kinds = [['send', 'Senden'], ['buy', 'Kaufen'], ['delete', 'Löschen'], ['publish', 'Veröffentlichen'], ['routine', 'Routine einrichten']];
+          el('p', { class: 'fine', text: 'Vor Senden, Kaufen, Löschen, Veröffentlichen und neuen oder geänderten Jobs fragen die Bots um Freigabe. „Fragen“ zeigt eine Karte im Chat. Der Auto-Modus erlaubt alles, was auf „Fragen“ steht, ohne Rückfrage; Käufe nur innerhalb der Grenzen, „Nie“ bleibt nie. Jede Entscheidung steht im Journal. Kartennummern und Passwörter bekommen die Bots nie.' }),
+          el('h3', { text: 'Jobs aller Bots' }), MAG.jobs(null));
+        const kinds = [['send', 'Senden'], ['buy', 'Kaufen'], ['delete', 'Löschen'], ['publish', 'Veröffentlichen'], ['routine', 'Job einrichten']];
         const euros = [[0, 'keine'], [10, '10 €'], [25, '25 €'], [50, '50 €'], [100, '100 €'], [250, '250 €'], [500, '500 €']];
         const loadAssist = () => MAG.api('GET', '/api/routines').then((out) => {
           const r = out.rules, save = (patch) => call('PUT', '/api/settings', { assist: Object.assign({ auto: r.auto, rules: r.rules, once_eur: r.once_eur, day_eur: r.day_eur }, patch) }).then(loadAssist);
@@ -324,19 +406,6 @@
             rulesCard.append(el('details', { class: 'mem skill' }, el('summary', {}, el('b', { text: 'Zuletzt entschieden' }), el('small', { text: ' · ' + out.journal.length })),
               ...out.journal.map((j) => el('p', {}, el('small', { text: MAG.day(j.ts * 1000) + ' · ' + (MAG.bot(j.bot)?.name || j.bot) + ' · ' + (j.decision === 'allow' ? 'erlaubt' : 'nicht erlaubt') + ' (' + j.why + ')' }),
                 el('br'), (j.amount_eur ? j.amount_eur.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) + ' · ' : '') + j.what))));
-          routinesCard.replaceChildren();
-          if (!out.routines.length) routinesCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keine. Bitte einen Bot im Chat, etwas regelmäßig zu tun („Lena, schick mir jeden Morgen um 7 …“) oder bei einem Ereignis (neues Bild, fertiger Auftrag, neue Datei in seiner VM).' }))));
-          for (const one of out.routines) {
-            const act = (what) => () => call(what === 'remove' ? 'DELETE' : 'POST', '/api/routines/' + one.id + (what === 'remove' ? '' : '/' + what)).then(loadAssist);
-            routinesCard.append(el('details', { class: 'mem skill' },
-              el('summary', {}, el('b', { text: one.name }), el('small', { text: ' · ' + (MAG.bot(one.bot)?.name || one.bot) + ' · ' + one.when_text + (one.paused ? ' · pausiert' : '') })),
-              el('p', {}, one.instruction),
-              el('p', {}, el('small', { text: (one.last ? 'Zuletzt ' + MAG.day(one.last * 1000) + ' · ' : '') + (one.next && !one.paused ? 'Nächstes Mal ' + MAG.day(one.next * 1000) : '') })),
-              el('span', { class: 'pair' },
-                el('button', { class: 'pill', text: 'Jetzt ausführen', onclick: act('run') }),
-                el('button', { class: 'pill', text: one.paused ? 'Fortsetzen' : 'Pausieren', onclick: act(one.paused ? 'resume' : 'pause') }),
-                el('button', { class: 'pill danger', text: 'Löschen', onclick: act('remove') }))));
-          }
         }).catch(() => {});
         loadAssist();
 

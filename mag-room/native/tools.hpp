@@ -141,14 +141,15 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("required":["action","what"]})j"));
   list.push(fn("routine",
                "Routines: work you do again by yourself, at a time or on an event, without Chris asking each time (a morning briefing, a "
-               "daily check, something to do with every new picture). action add sets one up (Chris approves it), list shows them, "
-               "remove, pause and resume change one, run starts one now. When a routine is due you get its instruction as a message "
-               "and answer it like a request of Chris.",
-               R"j({"type":"object","properties":{"action":{"type":"string","enum":["add","list","remove","pause","resume","run"]},)j"
-               R"j("id":{"type":"string","description":"remove/pause/resume/run: the routine's id or name"},"name":{"type":"string"},)j"
-               R"j("instruction":{"type":"string","description":"add: what to do each time, as a request to yourself, in German"},)j"
-               R"j("bot":{"type":"string","description":"add: which bot does it (id), default you"},)j"
-               R"j("when":{"type":"object","description":"add: one of {"daily":"07:30"}, {"weekdays":"08:00"}, {"days":[1,3],"time":"18:00"} (1 = Monday), {"every_minutes":120}, {"once":"2026-11-14 18:00"}, {"event":"picture"} (Chris posts a picture), {"event":"job_done"} (a 3D model, picture or video he ordered is done), {"event":"file"} (a new file appears in your VM below /home/bot; optional "path":"Downloads" for one folder and "pattern":"*.pdf" for names; the message names the files; what your own run of it writes does not set it off)"}},)j"
+               "daily check, something to do with every new picture); Chris calls them jobs and sees each bot's in its sheet. action add "
+               "sets one up (Chris approves it), list shows them, update changes one (name, instruction, when or bot; approved like add), "
+               "remove, pause and resume change one, run starts one now. A job runs as yours, in your VM. When it is due you get its "
+               "instruction as a message and answer it like a request of Chris.",
+               R"j({"type":"object","properties":{"action":{"type":"string","enum":["add","list","update","remove","pause","resume","run"]},)j"
+               R"j("id":{"type":"string","description":"update/remove/pause/resume/run: the routine's id or name"},"name":{"type":"string"},)j"
+               R"j("instruction":{"type":"string","description":"add/update: what to do each time, as a request to yourself, in German"},)j"
+               R"j("bot":{"type":"string","description":"add/update: which bot does it (id), default you"},)j"
+               R"j("when":{"type":"object","description":"add/update: one of {"daily":"07:30"}, {"weekdays":"08:00"}, {"days":[1,3],"time":"18:00"} (1 = Monday), {"every_minutes":120}, {"once":"2026-11-14 18:00"}, {"event":"picture"} (Chris posts a picture), {"event":"job_done"} (a 3D model, picture or video he ordered is done), {"event":"file"} (a new file appears in your VM below /home/bot; optional "path":"Downloads" for one folder and "pattern":"*.pdf" for names; the message names the files; what your own run of it writes does not set it off)"}},)j"
                R"j("required":["action"]})j"));
   list.push(fn("skill",
                "The how-tos you and the other bot share: list them, read one, save one. A skill says when it applies, its steps, how to check "
@@ -297,8 +298,9 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "consent") return "Fragt um Freigabe: " + one(jstr(args, "what"), 80);
   if (name == "routine") {
     const std::string action = jstr(args, "action");
-    return action == "add" ? "Richtet die Routine " + one(jstr(args, "name"), 60) + " ein" : action == "list" ? "Sieht die Routinen durch"
-         : "Routine " + one(jstr(args, "id"), 40) + ": " + action;
+    return action == "add" ? "Richtet den Job " + one(jstr(args, "name"), 60) + " ein" : action == "list" ? "Sieht die Jobs durch"
+         : action == "update" ? "Ändert den Job " + one(jstr(args, "id"), 40)
+         : "Job " + one(jstr(args, "id"), 40) + ": " + (action == "remove" ? "löschen" : action == "pause" ? "pausieren" : action == "resume" ? "fortsetzen" : action == "run" ? "jetzt ausführen" : action);
   }
   if (name == "models_3d") return "Sieht die 3D-Modelle durch";
   if (name == "backup") return jstr(args, "action") == "start" ? "Startet eine Sicherung von allem" : "Sieht nach den Sicherungen";

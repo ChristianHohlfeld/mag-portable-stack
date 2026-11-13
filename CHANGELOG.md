@@ -6,6 +6,17 @@ version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
 
+## Unreleased
+
+- Jobs again, per bot: each bot's sheet lists its recurring jobs (and the
+  VM they run in), the settings all of them; set up, change (name, what,
+  when, bot), pause, run now and delete right there. The bots use the same
+  jobs through their `routine` tool, now also with `update`.
+- Reading aloud: never fewer than five steps (#562), parts by sentences and
+  a start with enough made ahead (#563).
+- A step card says in words what the bot asked for and what happened, not
+  the hint meant for the bot (#564).
+
 ## 5.4.0 (2026-11-13)
 
 - Reading aloud is Supertonic 3 again, now in the client alone: the browser

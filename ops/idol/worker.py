@@ -80,11 +80,16 @@ REMAINING = re.compile(r"<(\d+(?::\d+){1,2})[,\]]")
 # 3-5 are the sections of mesh.py, which announces them ("MAG-STEP ...").
 PHASES = ("Modell laden", "3D-Form berechnen", "Mesh rekonstruieren", "Textur backen", "Dateien exportieren")
 MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
-LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log", "image": "image.log", "video": "video.log"}
+LOGS = {"sample": "idol.log", "shape": "shape.log", "paint": "paint.log", "mesh": "mesh.log", "image": "image.log", "video": "video.log"}
 # The whole shape (shape.py, TripoSG on the MI50) in an environment of its own;
 # where it is not installed, the mesh is made from the splat alone.
 SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", os.path.join(IDOL_BASE, "triposg/venv/bin/python"))
 SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", os.path.join(IDOL_BASE, "weights/triposg"))
+# Its colours from every side (paint.py, MV-Adapter on SDXL, in TripoSG's
+# environment), where ops/idol/paint/fetch.sh fetched them all.
+PAINT_SOURCE = os.environ.get("MAG_MVADAPTER_SOURCE", os.path.join(IDOL_BASE, "mvadapter/src"))
+PAINT_WEIGHTS = os.environ.get("MAG_PAINT_WEIGHTS", os.path.join(IDOL_BASE, "weights/paint"))
+PAINT_STEP = re.compile(r"MAG-PAINT (\d+)/(\d+)")
 # The MI50 does one thing at a time. Jobs of this queue already run one after
 # the other; a stage that uses the card also holds this lock for as long as it
 # runs (it is the stage's process that holds it, so it holds across a restart
@@ -92,7 +97,7 @@ SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", os.path.join(IDOL_BASE, "w
 # that finds the card taken waits and says so ("MAG-WAIT"), which counts as
 # getting on: waiting is no standstill.
 GPU_LOCK = os.environ.get("MAG_GPU_LOCK", str(ROOT.parent / "gpu.lock"))
-GPU_STAGES = ("sample", "shape", "image", "video")
+GPU_STAGES = ("sample", "shape", "paint", "image", "video")
 GPU_WAIT = "MAG-WAIT"
 jobs = {}
 lock = threading.Lock()
@@ -309,6 +314,8 @@ def again(job_id, remesh=False):
         # it the model is only the splat's relief.
         if not (ROOT / job_id / "shape.ply").is_file() and read_exit(ROOT / job_id / "shape.exit") not in (None, 0):
             (ROOT / job_id / "shape.exit").unlink(missing_ok=True)
+        if not (ROOT / job_id / "outputs" / "views.png").is_file() and read_exit(ROOT / job_id / "paint.exit") not in (None, 0):
+            (ROOT / job_id / "paint.exit").unlink(missing_ok=True)
         item.pop("error", None)
         item.pop("started", None)                         # its time counts from now
         item["order"] = time.time()                       # at the end of the line
@@ -351,6 +358,13 @@ def sampling_line(job_id, value):
             seconds = seconds * 60 + int(part)
     update(job_id, phase=2, stage=PHASES[1], step=step, total_steps=50,
            progress=step / 50, eta=seconds)
+
+def paint_line(job_id, value):
+    """One line of paint.py: the step MV-Adapter is at."""
+    found = PAINT_STEP.search(value)
+    if found:
+        k, n = int(found.group(1)), max(1, int(found.group(2)))
+        update(job_id, phase=3, stage="Farben rundum malen", step=k, total_steps=n, progress=k / n)
 
 def mesh_line(job_id, value):
     """One line of mesh.py: it says when texture baking and export begin."""
@@ -596,6 +610,21 @@ def process(job_id):
             raise                                         # cancelled: nothing more is done
         except Exception as exc:
             print(f"shape of {job_id[:8]} not made: {type(exc).__name__}", flush=True)
+    # The shape painted from six sides (MV-Adapter, the MI50 again, about ten
+    # minutes): the colours of every side, not the photo's carried around.
+    # It never costs a job either: without its views the model is coloured
+    # as before.
+    views = folder / "outputs" / "views.png"
+    if (shape.is_file() and not views.is_file() and not (folder / "paint.exit").is_file() and not meshed()
+            and Path(PAINT_SOURCE).is_dir() and (Path(PAINT_WEIGHTS) / ".complete").is_file()):
+        command = [SHAPE_PYTHON, str(here.with_name("paint.py")), str(folder)]
+        try:
+            run_stage(job_id, "paint", command, paint_line,
+                      dict(phase=3, stage="Farben rundum malen", step=0, total_steps=50, progress=0.0, eta=None))
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            print(f"views of {job_id[:8]} not painted: {type(exc).__name__}", flush=True)
     # With the shape, the model is made from it and the photo alone: the splat
     # would only say where it stands, and sampling it takes a quarter of an
     # hour. Where that does not do (alone.failed), the splat is sampled.

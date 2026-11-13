@@ -28,10 +28,12 @@ The model is made from them the way they are:
 Where the shape stage made the whole shape (shape.py), it takes the place
 of the splat's shell, and the side the photo shows takes the photo's own
 colours, as fine as it was taken: the shape was made from that picture and
-lies exactly under it (front_of), so nothing has to be guessed there. The
-sides it did not see take its colours carried over the surface (carried):
-the back of a head the hair's, the back of a shirt the shirt's. The splat
-only says where the model stands and from where the photo saw it.
+lies exactly under it (front_of), so nothing has to be guessed there.
+Where MV-Adapter painted the shape from six sides (paint.py, the texturing
+TripoSG's authors use), the whole model takes those views instead
+(painted). Without them the sides the photo did not see take its colours
+carried over the surface (carried). The splat only says where the model
+stands and from where the photo saw it.
 
 The original splat.ply is never modified.
 """
@@ -240,12 +242,14 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
     outward /= np.maximum(np.linalg.norm(outward, axis=1, keepdims=True), 1e-12)
     del corners
     tree = cKDTree(xyz) if xyz is not None else None                 # (no splat: the shape alone)
-    if front is not None:
+    if front is not None and not front.get("views"):
         spread = carried(verts, faces, camera, front["fine"], front["outline"])
         if spread is None and xyz is None:
             raise RuntimeError("Das Foto zeigt zu wenig von der Form")
         spread = spread[vmapping] if spread is not None else None
         beyond = np.zeros((len(all_pixels), 3), np.float32)            # the photo carried there
+    else:
+        spread = None
     verts = np.asarray(verts, np.float32)[vmapping]
     total = len(all_pixels)
     for start in range(0, total, 32768):
@@ -278,9 +282,30 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
         if camera is not None:
             where[start:start+len(samples)] = positions
             facing[start:start+len(samples)] = outward[fi]
-        if front is not None and spread is not None:
+        if spread is not None:
             beyond[start:start+len(samples)] = w[:, None]*spread[tri[:, 0]] + u[:, None]*spread[tri[:, 1]] + v[:, None]*spread[tri[:, 2]]
-    if camera is not None and front is not None:
+    if camera is not None and front is not None and front.get("views"):
+        # MV-Adapter painted the shape from six sides (paint.py), each view
+        # fitting the shape: every texel takes what the views that see it
+        # straight show there; one no view sees, its nearest painted one's.
+        total = np.zeros(len(all_pixels), np.float32)
+        paint = np.zeros((len(all_pixels), 3), np.float32)
+        for view in front["views"]:
+            rgb, trust = photo_of.colours(view["camera"], where, facing, view["image"], view["outline"])
+            weight = trust * trust
+            paint += weight[:, None] * rgb[:, :3]
+            total += weight
+        seen = total > 1e-3
+        if not seen.any():
+            raise RuntimeError("Die Ansichten zeigen nichts von der Form")
+        paint[seen] /= total[seen, None]
+        if not seen.all():
+            _, near = cKDTree(where[seen]).query(where[~seen], workers=8)
+            paint[~seen] = paint[seen][near]
+        tex_flat[all_pixels] = np.rint(np.clip(paint, 0, 1) * 255).astype(np.uint8)
+        print(f"Views: {100.0 * float(seen.mean()):.0f} % of the surface painted from MV-Adapter's six views", flush=True)
+        del where, facing, paint, total
+    elif camera is not None and front is not None:
         # The shape lies where the photo saw it, so what the photo saw takes the
         # photo's own colours (glasses, eyes, letters as sharp as they were
         # taken). What it did not see takes the photo's colours carried over
@@ -451,15 +476,16 @@ def front_of(shape, outline):
                                   np.array([0.0, 0.0, -1.0]), (far * s / 2, far * s / 2), (0.5 + dx, 0.5 + dy))
 
 
-def facing(shape, outline):
+def facing(shape, outline, quarters=range(4)):
     """The shape turned so that it looks at the camera of its picture, and
     that camera (front_of); (None, shape): its outline does not cover the
     picture's. TripoSG mostly sees its picture from +z, but it turns some
     things its own way (a car or an animal seen from the side lies along
     another axis), so the four turns about the upright axis are tried; +z
-    wins a tie."""
+    wins a tie. The turn is in the shape's metadata ("quarter"); `quarters`
+    gives the one paint.py took."""
     best = None
-    for quarter in range(4):
+    for quarter in quarters:
         turned = shape.copy()
         if quarter:
             turned.apply_transform(trimesh.transformations.rotation_matrix(quarter * np.pi / 2, [0.0, 1.0, 0.0]))
@@ -467,6 +493,7 @@ def facing(shape, outline):
         if best is None or found + (0.02 if quarter == 0 else 0.0) > best[0]:
             best = (found + (0.02 if quarter == 0 else 0.0), found, camera, turned, quarter)
     _, found, camera, turned, quarter = best
+    turned.metadata["quarter"] = quarter
     print(f"Shape: its picture's outline covered at {100 * found:.0f} %" + (f", turned by {90 * quarter}°" if quarter else ""), flush=True)
     if found < float(os.environ.get("MAG_SHAPE_COVER", "0.65")) or camera is None:
         return None, shape
@@ -523,6 +550,28 @@ def shape_picture(job):
     except (OSError, ValueError):
         pass
     return None
+
+
+def painted(job):
+    """MV-Adapter's six views of the shape (paint.py), each with its camera
+    in the shape's frame (after its quarter turn) and where the shape is in
+    it; and that quarter. (None, None): the job has none."""
+    import json
+    try:
+        note = json.loads((job / "outputs" / "views.json").read_text())
+        row = np.asarray(Image.open(job / "outputs" / "views.png").convert("RGB"), np.float32) / 255.0
+        masks = np.asarray(Image.open(job / "outputs" / "views_mask.png").convert("L")) > 127
+    except (OSError, ValueError):
+        return None, None
+    side, far = row.shape[0], 1000.0
+    grow = far * float(note["scale"]) / (2 * float(note["half"]))
+    views = []
+    for i, v in enumerate(note["views"]):
+        look = np.asarray(v["look"], np.float64)
+        camera = photo_of.Camera(-look * far, np.asarray(v["right"], np.float64), np.asarray(v["up"], np.float64), look,
+                                 (grow, grow), (0.5, 0.5))
+        views.append({"camera": camera, "image": row[:, i * side:(i + 1) * side], "outline": masks[:, i * side:(i + 1) * side]})
+    return views, int(note.get("quarter", 0))
 
 
 def solid(mesh):
@@ -699,7 +748,8 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
             whole = trimesh.load(output_dir / "shape.ply", force="mesh", process=True)
             # The camera of the picture it was made from, in its own frame: the photo is laid on with it.
             picture = shape_picture(output_dir)
-            own, whole = facing(whole, picture[1]) if picture is not None else (None, whole)
+            views, quarter = painted(output_dir)
+            own, whole = facing(whole, picture[1], range(4) if views is None else (quarter,)) if picture is not None else (None, whole)
             strong = alpha > 0.3
             fitted = fit_shape(whole, xyz[strong])
             source = the_photo(input_path.parent) if fitted is None else None
@@ -709,7 +759,9 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
                 if start is not None:
                     fitted = fit_shape(whole, xyz[strong], start=start)
             if fitted is not None and own is not None:
-                front = {"camera": moved(own, *fitted.metadata["placed"]), "fine": picture[0], "outline": picture[1]}
+                placed = fitted.metadata["placed"]
+                front = {"camera": moved(own, *placed), "fine": picture[0], "outline": picture[1],
+                         "views": [dict(v, camera=moved(v["camera"], *placed)) for v in views] if views else None}
         except Exception as exc:
             print(f"Shape: not used ({type(exc).__name__})", flush=True)
             fitted, front = None, None
@@ -797,7 +849,8 @@ def reconstruct_shape(output_dir: Path, quality="normal"):
     picture = shape_picture(output_dir)
     if picture is None:
         raise RuntimeError("Das Bild der Form fehlt")
-    own, whole = facing(whole, picture[1])
+    views, quarter = painted(output_dir)
+    own, whole = facing(whole, picture[1], range(4) if views is None else (quarter,))
     if own is None:
         raise RuntimeError("Die Form deckt ihr Bild nicht")
     own.cover, own.colour = 1.0, 0.0
@@ -817,7 +870,7 @@ def reconstruct_shape(output_dir: Path, quality="normal"):
     vmapping, uv_faces, uvs, texture = bake_texture(
         shown.vertices, shown.faces, None, None, None, None, 1.0, settings["texture"], settings["neighbors"],
         float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), None,
-        {"camera": own, "fine": picture[0], "outline": picture[1]})
+        {"camera": own, "fine": picture[0], "outline": picture[1], "views": views})
     # As large as Idol's models are (about one unit at its largest), so it stands among them in a scene.
     grow = 1.0 / max(float(np.max(geometry.extents)), 1e-9)
     shown = trimesh.Trimesh(np.asarray(shown.vertices) * grow, shown.faces, process=False)

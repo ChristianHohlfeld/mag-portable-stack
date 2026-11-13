@@ -732,3 +732,6 @@ article.flash { animation: flash 1.6s ease-out; }
 .step.card-step:not(:has(img.shot)) .chev { visibility: hidden; }
 .step .ask details.other summary { cursor: pointer; font-size: 14px; color: var(--muted); padding: 2px 0; }
 .step .ask details.other form { margin-top: 6px; }
+/* The video's maker (Wan 2.2 or H3 with its sound) and its length, side by side; on a phone they wrap. */
+.video-choice { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.staged .video-choice { flex: 1 1 auto; }

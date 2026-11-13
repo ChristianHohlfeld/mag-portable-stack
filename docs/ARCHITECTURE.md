@@ -770,26 +770,35 @@ picture: FLUX.2 klein 4B (four steps, fp16 on the MI50). It is a job of the
 same queue (`kind: image`, result `image.png`); the room's message becomes
 an ordinary image of the chat. The weights come from `ops/imagegen/fetch.sh`.
 
-### Videos from pictures (`ops/idol/videogen.py`)
+### Videos with their sound (`ops/idol/h3gen.py`, HyperFlow H3 Flash)
 
 Every picture of the chat has "3D" and "Video" below it
 (`POST /api/image/act`), and "Video erzeugen" in the plus menu
 (`/api/message` with `mode: video`) takes a picture from the gallery or the
-camera, or words alone: then FLUX.2 klein paints the first frame (wide) and
-that picture's message orders the video when it is there (`then_video` in
-its `model3d`, then `video` with the video's message). A bot does the same
-with `video_generate` and `paint`. A video is Wan 2.2 I2V-A14B: its two experts as
-GGUF Q6_K with the Lightning 4-step LoRA (four Euler steps, shift 5, as it
-was distilled; two per expert), 81 frames at 16 fps, about 480p, H.264 by
-ffmpeg. The card has no bf16 and no fast attention: the experts compute in
-fp16 with each block's result kept inside fp16's range (a step that still
-goes wrong ends in words, never as a black video), attention is exact but
-computed a block of queries at a time, UMT5 reads the words in fp32 and
-leaves the card first, the experts take the card one after the other, and
-the VAE works in tiles. Every finished step is kept (`state.pt` in the job),
-so a video interrupted by a reboot goes on after its last step. It runs in `~/idol-mi50/video/venv`; the weights come from
-`ops/video/fetch.sh`, and until they are complete the worker refuses a
-video in words. A bot orders one with `video_generate`.
+camera, or words alone (`seconds` 5 or 10, `use` first or ref; a bot's
+`video_generate`). Every video is HyperFlow H3 Flash by Video Rebirth, a 14B few-step
+MiniMax H3 that makes the video and its stereo sound together, from words
+alone, from a picture as its first frame (fl2va) or with the picture as who
+or what is in it (ref2va, "<Picture 1>"). Its setup is Video Rebirth's own
+workflow (six steps of its HyperFlow sigmas, Euler, CFG 1, about one
+megapixel, 16:9 without a picture, 24 fps, 124 or 243 frames). Its NVIDIA
+parts (INT8 convrot, NVFP4, SageAttention) do not exist on gfx906, so the
+same model runs as GGUF Q8_0 with the MiniMax H3 Qwen3-VL-32B encoder as
+GGUF Q4_K_M and H3's video (fp16) and audio (fp32) VAEs, in
+stable-diffusion.cpp with Video Rebirth's patch on ggml's Vulkan backend
+(RADV): parts that wait stay in memory (`--offload-to-cpu`), attention is
+ggml's flash shader, the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
+The model's result (`h3.webm`) is kept, so a lost stage only writes the
+file again. Its licence (MiniMax H3 Community License) leaves out the EU;
+MiniMax authorised Chris personally on 2026-11-13 (private, non-commercial,
+nothing passed on, output marked as made by AI, no training of other
+models, only him). So an installer never fetches it: the owner runs
+`ops/video/h3/fetch.sh` (about 54 GB, pinned, checked) and
+`ops/video/h3/build.sh` on his host; the worker runs it only when both are
+there (`video` in its health) and refuses a video in words, and every video says in the chat and in the
+file's metadata that it is made by AI with MiniMax H3. Wan 2.2 made the
+videos before (its messages still say so); its weights and environment stay
+on disk, unused.
 
 ## Scenes (`ops/scene`)
 

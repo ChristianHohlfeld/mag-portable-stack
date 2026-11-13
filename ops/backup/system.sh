@@ -135,6 +135,9 @@ EOF
 if (( ! with_models )); then
   printf '%s\n' "$MAG_MODELS_HOME" "$MAG_IDOL_BASE/weights" '*.gguf' >> "$excludes"
 fi
+# HyperFlow H3 is licensed to the owner personally: never in a backup, not
+# even with --with-models (ops/video/h3/fetch.sh fetches it again).
+printf '%s\n' "$MAG_IDOL_BASE/weights/hyperflow-h3" >> "$excludes"
 trap 'rm -f "$excludes"; fail "aborted (exit $?)"' ERR
 tags=(--tag system)
 (( ! with_models )) || tags+=(--tag models)

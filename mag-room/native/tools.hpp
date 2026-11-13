@@ -26,8 +26,8 @@ struct Ctx {
   Scenes *scenes = nullptr;                              // 3D scenes from the models in the chat
   // A picture from words (the Idol worker's FLUX.2 klein): (prompt, width, height, by, error) -> message id.
   std::function<std::string(const std::string &, int, int, const std::string &, std::string &, const std::string &)> imagine; // ..., then_video
-  // A video from a picture of the chat (the Idol worker's Wan 2.2): (picture's name, prompt, by, error) -> message id.
-  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &)> film;
+  // A video with its sound (the Idol worker's HyperFlow H3 Flash): (picture's name or "", prompt, by, error, seconds, use) -> message id.
+  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &, int, const std::string &)> film; // picture, prompt, by, error, seconds, use
   // A 3D model from a picture of the chat (photo to 3D): (picture's name, quality, error) -> message id.
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
@@ -174,15 +174,17 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j({"type":"object","properties":{"image":{"type":"string","description":"the picture's file name as in the chat"},)j"
                R"j("quality":{"type":"string","enum":["fast","normal","high"],"description":"default normal"}}})j"));
   list.push(fn("video_generate",
-               "Make a short video (about five seconds) from a picture in the chat (Wan 2.2, on the server's graphics card): what the picture "
-               "shows starts to move. Use it when Chris asks for a video, a clip or for a picture to come alive. Name the picture as the chat "
-               "shows it ([Bild <name> ...]); without a name the newest picture is taken. When the video is to show something no picture of "
-               "the chat shows, give `paint` instead: the first frame is painted from it (FLUX.2 klein) and the video follows by itself. "
-               "Describe the motion in English: who moves how, the camera. It waits in the graphics card's line behind other jobs and "
-               "takes a quarter of an hour or more; the video appears in the chat as its own message.",
-               R"j({"type":"object","properties":{"image":{"type":"string","description":"the picture's file name as in the chat"},)j"
-               R"j("paint":{"type":"string","description":"instead of a picture: what the first frame shows, in English, detailed"},)j"
-               R"j("prompt":{"type":"string","description":"the motion, in English"}},"required":["prompt"]})j"));
+               "Make a video WITH its sound (HyperFlow H3 Flash, a few-step MiniMax H3, on the server's graphics card): 5 or 10 seconds "
+               "at about 768p, with voices, noises and music as the words say. From words alone (no image), or from a picture in the chat "
+               "as its first frame, or with as: reference the picture shows who or what is in the video (name it <Picture 1> in the "
+               "words). Use it when Chris asks for a video, a clip or for a picture to come alive. Name the picture as the chat shows it "
+               "([Bild <name> ...]). Describe in English what happens, how the camera moves and what is heard. It waits in the graphics "
+               "card's line behind other jobs and takes long (up to about an hour for 10 seconds); the video appears in the chat as its "
+               "own message, marked as made by AI with MiniMax H3.",
+               R"j({"type":"object","properties":{"image":{"type":"string","description":"the picture's file name as in the chat; leave out for words alone"},)j"
+               R"j("seconds":{"type":"integer","enum":[5,10],"description":"default 10"},)j"
+               R"j("as":{"type":"string","enum":["first","reference"],"description":"with a picture: its first frame (default) or a reference"},)j"
+               R"j("prompt":{"type":"string","description":"what happens and is heard, in English"}},"required":["prompt"]})j"));
   list.push(fn("scene_3d",
                "Build an animated 3D scene from 3D models in the chat (Blender). Every figure gets a skeleton by itself: an animal walks on its "
                "four legs and moves head and tail, somebody on two legs walks, nods and waves, a bird walks, pecks and flies, an insect or spider "
@@ -723,17 +725,12 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (name == "video_generate") {
     if (!ctx.film) return fail("Videos sind hier nicht eingerichtet.");
     std::string error;
-    if (const std::string paint = trim(jstr(args, "paint")); !paint.empty() && trim(jstr(args, "image")).empty()) {
-      if (!ctx.imagine) return fail("Bilder malen ist hier nicht eingerichtet.");
-      const std::string id = ctx.imagine(paint, 1344, 768, jstr(ctx.bot, "id"), error, jstr(args, "prompt"));
-      if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);
-      return {"Erst wird das erste Bild gemalt (FLUX.2 klein), dann folgt das Video von selbst (Wan 2.2 auf der MI50, eine "
-              "Viertelstunde oder länger, hinter anderen Aufträgen der Grafikkarte). Beides erscheint im Chat; warte nicht darauf.", true};
-    }
-    const std::string id = ctx.film(jstr(args, "image"), jstr(args, "prompt"), jstr(ctx.bot, "id"), error);
+    const std::string id = ctx.film(trim(jstr(args, "image")), jstr(args, "prompt"), jstr(ctx.bot, "id"), error,
+                                    jnum(args, "seconds", 10) < 10 ? 5 : 10, jstr(args, "as") == "reference" ? "ref" : "first");
     if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);
-    return {"Das Video wird gemacht (Wan 2.2 auf der MI50, eine Viertelstunde oder länger, hinter anderen Aufträgen der Grafikkarte). "
-            "Es erscheint im Chat als eigene Nachricht; warte nicht darauf und beschreibe es nicht, bevor es da ist.", true};
+    return {"Das Video mit Ton wird gemacht (HyperFlow H3 Flash auf der MI50, bis zu etwa einer Stunde, hinter anderen Aufträgen der "
+            "Grafikkarte); es ist als KI-generiert gekennzeichnet. Es erscheint im Chat als eigene Nachricht; warte nicht darauf und "
+            "beschreibe es nicht, bevor es da ist.", true};
   }
   if (name == "models_3d" || name == "scene_3d") {
     if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");

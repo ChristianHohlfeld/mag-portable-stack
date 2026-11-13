@@ -79,7 +79,9 @@ for f in transformer/diffusion_pytorch_model.safetensors vae/diffusion_pytorch_m
          scheduler/scheduler_config.json model_index.json; do
   get "$R/$f" "$W/triposg/$f"
 done
-# Pictures (FLUX.2 klein) and videos (Wan 2.2) have fetch scripts of their own.
+# Pictures (FLUX.2 klein) have a fetch script of their own. Videos (HyperFlow
+# H3 Flash) are licensed to the owner personally: he runs ops/video/h3/fetch.sh
+# and ops/video/h3/build.sh himself.
 as bash "$here/../../imagegen/fetch.sh" || echo 'idol: picture weights incomplete; run ops/imagegen/fetch.sh again' >&2
-as bash "$here/../../video/fetch.sh" || echo 'idol: video weights incomplete; run ops/video/fetch.sh again' >&2
+echo 'idol: videos need ops/video/h3/fetch.sh and build.sh, run by the owner (licence)' >&2
 echo "idol: environment in $BASE"

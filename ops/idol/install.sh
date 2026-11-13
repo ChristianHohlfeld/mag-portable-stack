@@ -77,20 +77,11 @@ if [[ -d $TRIPO/src && ! -x $TRIPO/venv/bin/python ]]; then
   sudo -u "$MAG_OWNER" "$TRIPO/venv/bin/pip" install -q --no-deps --require-hashes -r /opt/mag-stack/current/ops/idol/env/triposg.lock \
     || echo 'TripoSG environment incomplete; the mesh is made from the splat' >&2
 fi
-# A video from a picture (videogen.py): Wan 2.2 I2V-A14B in an environment of
-# its own that reuses Idol's ROCm torch and diffusers through a .pth file.
-# Its weights come from ops/video/fetch.sh (about 37 GB, resumable, checked);
-# until they are complete the room says so instead of queueing a video.
-VIDEO=$BASE/video
-if [[ ! -x $VIDEO/venv/bin/python ]]; then
-  install -d -o "$MAG_OWNER" -g "$MAG_OWNER" "$VIDEO"
-  sudo -u "$MAG_OWNER" python3 -m venv "$VIDEO/venv"
-  site=$("$PY" -c 'import site; print(site.getsitepackages()[0])')
-  mine=$("$VIDEO/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
-  echo "$site" > "$mine/zz-idol-venv.pth"
-  sudo -u "$MAG_OWNER" "$VIDEO/venv/bin/pip" install -q --no-deps --require-hashes -r /opt/mag-stack/current/ops/idol/env/video.lock \
-    || echo 'Video environment incomplete; videos stay off' >&2
-fi
+# A video with its sound (h3gen.py): HyperFlow H3 Flash, licensed to the
+# owner personally, so nothing here fetches or builds it. The owner runs
+# ops/video/h3/fetch.sh and ops/video/h3/build.sh; until both are done the
+# worker refuses a video in words. (Wan 2.2 made the videos before; its
+# environment and weights stay where they are, unused.)
 install -d -o "$MAG_OWNER" -g "$MAG_OWNER" -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
 mag_render /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf > /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf
@@ -113,7 +104,7 @@ systemctl enable mag-idol.service
 # follows it again, so a deploy never costs a photo-to-3D job. The one
 # exception is a job that a worker from before this design started: it dies
 # with that worker, so then the restart waits until the job is done.
-rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh,videogen}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
+rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh,h3gen}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
 if [[ $(cat /run/mag-idol.rev 2>/dev/null) != "$rev" ]] || ! systemctl is-active --quiet mag-idol.service; then
   active() { grep -lE '"state": *"(running|queued)"' /var/lib/mag-idol/jobs/*/status.json >/dev/null 2>&1; }
   health=$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8793/api/idol/health 2>/dev/null || :)

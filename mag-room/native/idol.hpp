@@ -70,22 +70,30 @@ public:
     return m3 && !jstr(*m3, "job").empty() && (kind.empty() || kind == "image" || kind == "video") ? m3 : nullptr;
   }
 
-  // A video from a picture of the chat (Wan 2.2 I2V on the MI50, in the
-  // worker's one queue): about five seconds of what the picture shows,
-  // moving as `prompt` says. The message is there at once with its place in
-  // the line and its progress, and becomes the video. Returns the message
-  // id, or "" with `error`.
-  std::string film(const Val &image, const std::string &prompt, const std::string &by, std::string &error) {
-    const std::string path = room_.file_path(jstr(image, "file"));
+  // A video with its sound (HyperFlow H3 Flash, a few-step MiniMax H3
+  // licensed to Chris personally, on the MI50 in the worker's one queue):
+  // 5 or 10 `seconds` of what `prompt` says happens and is heard. A picture
+  // of the chat is its first frame or (use "ref") who or what is in it;
+  // without one (`image` not an object) the words alone make it. The message
+  // is there at once with its place in the line and its progress, and
+  // becomes the video, marked as made by AI with MiniMax H3. Returns the
+  // message id, or "" with `error`.
+  std::string film(const Val &image, const std::string &prompt, const std::string &by, std::string &error,
+                   int seconds = 10, const std::string &use = "first") {
     std::string bytes;
-    if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
+    if (image.isObj()) {
+      const std::string path = room_.file_path(jstr(image, "file"));
+      if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
+    }
     const std::string said = clip(trim(prompt), 1500, "");
+    if (said.empty()) { error = "Was soll im Video geschehen?"; return ""; }
     http::ClientOptions opt = options("POST");
     opt.body = bytes;
     opt.headers.push_back({"Content-Type", "application/octet-stream"});
     opt.timeout_s = 60;
-    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/videos?prompt=" + url_encode(said) + "&seed=" +
-                                     std::to_string(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1), opt);
+    std::string ask = "/api/idol/videos?prompt=" + url_encode(said) + "&seed=" + std::to_string(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1);
+    ask += "&seconds=" + std::string(seconds < 10 ? "5" : "10") + "&use=" + (use == "ref" ? "ref" : "first");
+    const auto res = http::fetch(room_.cfg.idol_url + ask, opt);
     const Val job = jparse(res.body);
     if (res.status != 202 || jstr(job, "id").empty()) {
       error = res.error.empty() ? jstr(job, "error", "Der Videodienst hat den Auftrag abgelehnt.") : "3D-Dienst nicht erreichbar.";
@@ -103,8 +111,13 @@ public:
     m3["stage"] = "Warteschlange";
     m3["progress"] = 0;
     m3["prompt"] = said;
-    m3["source"] = jstr(image, "name");
-    m3["image"] = jstr(image, "file"); // the picture it is made from (a room file)
+    if (image.isObj()) {
+      m3["source"] = jstr(image, "name");
+      m3["image"] = jstr(image, "file"); // the picture it is made from (a room file)
+    }
+    m3["model"] = "h3";                 // shown as made by AI with MiniMax H3 (its licence)
+    m3["seconds"] = (double)(seconds < 10 ? 5 : 10);
+    if (image.isObj() && use == "ref") m3["use"] = "ref";
     m3["by"] = by;
     m["model3d"] = m3;
     const std::string id = jstr(room_.add(m), "id");

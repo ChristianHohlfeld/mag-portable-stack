@@ -1,5 +1,5 @@
 diff --git a/src/core/cuda/CMakeLists.txt b/src/core/cuda/CMakeLists.txt
-index f366899..522f2d8 100644
+index f366899..673c12c 100644
 --- a/src/core/cuda/CMakeLists.txt
 +++ b/src/core/cuda/CMakeLists.txt
 @@ -2,7 +2,7 @@ cmake_policy(SET CMP0079 NEW)
@@ -7,15 +7,20 @@ index f366899..522f2d8 100644
  function(sd_cuda_sources VENDOR LANGUAGE)
      set(SOURCES)
 -    foreach(OP rope int8 convrot affine modulate registration)
-+    foreach(OP rope int8 convrot affine modulate sage_gfx906 registration)
++    foreach(OP rope int8 convrot affine modulate rms_modulate sage_gfx906 registration)
          set(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/${OP}_${VENDOR}.cu")
          string(TOUPPER "${VENDOR}" UPPER_VENDOR)
          file(GENERATE OUTPUT "${SOURCE}" CONTENT "#define SD_CUDA_VENDOR_${UPPER_VENDOR} 1\n#include \"core/cuda/${OP}.cu\"\n")
 diff --git a/src/core/cuda/registration.cu b/src/core/cuda/registration.cu
-index 291edd6..5ea9abb 100644
+index 291edd6..ebd5d51 100644
 --- a/src/core/cuda/registration.cu
 +++ b/src/core/cuda/registration.cu
-@@ -16,6 +16,9 @@ namespace SD_CUDA_NAMESPACE {
+@@ -12,16 +12,21 @@ namespace SD_CUDA_NAMESPACE {
+     void register_convrot(ggml_backend_dev_t device);
+     void register_affine(ggml_backend_dev_t device);
+     void register_modulate(ggml_backend_dev_t device);
++    void register_rms_modulate(ggml_backend_dev_t device);  // rms_modulate.cu, MAG stack
+ #if !defined(SD_CUDA_VENDOR_HIP) && !defined(SD_CUDA_VENDOR_MUSA)
      void register_sage_attention(ggml_backend_dev_t device);
      void register_sol_attention(ggml_backend_dev_t device);
  #endif
@@ -25,7 +30,14 @@ index 291edd6..5ea9abb 100644
  
      void register_extensions(ggml_backend_dev_t device) {
          if (cuda_device_info(device).device < 0)
-@@ -29,6 +32,9 @@ namespace SD_CUDA_NAMESPACE {
+             return;
+         register_affine(device);
+         register_modulate(device);
++        register_rms_modulate(device);
+         register_i8(device);
+         register_convrot(device);
+         register_rope(device);
+@@ -29,6 +34,9 @@ namespace SD_CUDA_NAMESPACE {
          register_sage_attention(device);
          register_sol_attention(device);
  #endif
@@ -35,6 +47,181 @@ index 291edd6..5ea9abb 100644
  #ifdef SD_CUDA_CUTE_ATTENTION
          sd_ggml_register_cuda_i8_projection(device);
          sd_ggml_register_cuda_i8_gated_residual(device);
+diff --git a/src/core/cuda/rms_modulate.cu b/src/core/cuda/rms_modulate.cu
+new file mode 100644
+index 0000000..bd8b95c
+--- /dev/null
++++ b/src/core/cuda/rms_modulate.cu
+@@ -0,0 +1,112 @@
++// The fusion RMS_NORM -> MUL(weight) -> sd.modulate into one kernel
++// (rms_modulate_kernels.h), matched in the graph like rope.cu's RMSNorm+RoPE.
++// MAG stack.
++#include <algorithm>
++#include <climits>
++#include <cstdlib>
++#include <cstring>
++#include "core/ggml_extensions.h"
++#include "runtime.h"
++#include "rms_modulate_kernels.h"
++
++namespace SD_CUDA_NAMESPACE {
++    namespace sd_rms_mod {
++        using namespace ::sd_rms_modulate;
++
++        static bool fits(const ggml_tensor* norm, const ggml_tensor* mul, const ggml_tensor* mod) {
++            if (!norm || !mul || !mod || norm->op != GGML_OP_RMS_NORM || mul->op != GGML_OP_MUL || mul->src[0] != norm ||
++                !sd_ggml_modulate_describe(mod) || mod->src[0] != mul)
++                return false;
++            const auto* x = norm->src[0];
++            const auto* w = mul->src[1];
++            if (!x || !w || x->type != GGML_TYPE_F32 || w->type != GGML_TYPE_F32 || norm->type != GGML_TYPE_F32 ||
++                mul->type != GGML_TYPE_F32 || !ggml_are_same_shape(x, norm) || !ggml_are_same_shape(norm, mul) ||
++                !ggml_are_same_shape(mul, mod) || ggml_nelements(w) != x->ne[0] || w->ne[0] != x->ne[0] || !ggml_is_contiguous(w))
++                return false;
++            for (int d = 0; d < 4; ++d)
++                if (x->nb[d] % sizeof(float))
++                    return false;
++            return ggml_nrows(x) <= INT_MAX;
++        }
++
++        static int match(ggml_backend_dev_t, const ggml_cgraph* graph, int first, void*) {
++            static const bool disabled = [] { const char* v = std::getenv("GGML_CUDA_DISABLE_FUSION"); return v && std::atoi(v) != 0; }();
++            auto* g = const_cast<ggml_cgraph*>(graph);
++            if (disabled || first + 2 >= ggml_graph_n_nodes(g))
++                return 0;
++            auto* norm = ggml_graph_node(g, first), * mul = ggml_graph_node(g, first + 1), * mod = ggml_graph_node(g, first + 2);
++            if (!fits(norm, mul, mod) || (mul->flags & GGML_TENSOR_FLAG_OUTPUT) || (norm->flags & GGML_TENSOR_FLAG_OUTPUT))
++                return 0;
++            // The fused kernel never writes norm's or mul's result: nobody else may read it.
++            const int total = ggml_graph_n_nodes(g);
++            for (int i = 0; i < total; ++i) {
++                const auto* node = ggml_graph_node(g, i);
++                if (node == mul || node == mod)
++                    continue;
++                for (int j = 0; j < GGML_MAX_SRC; ++j)
++                    if (node->src[j] && (node->src[j] == mul || node->src[j] == norm ||
++                                         node->src[j]->view_src == mul || node->src[j]->view_src == norm))
++                        return 0;
++                if (node->view_src == mul || node->view_src == norm)
++                    return 0;
++            }
++            return 3;
++        }
++
++        static bool overlaps(const ggml_tensor* a, const ggml_tensor* b) {
++            if (!a || !b) return false;
++            const auto x = reinterpret_cast<uintptr_t>(a->data), y = reinterpret_cast<uintptr_t>(b->data);
++            return x <= y ? y - x < ggml_nbytes(a) : x - y < ggml_nbytes(b);
++        }
++
++        static ggml_status prepare(ggml_backend_t, ggml_tensor* const* nodes, int count, void**, size_t* workspace, void*) {
++            *workspace = ggml_nbytes(nodes[count - 1]);
++            return GGML_STATUS_SUCCESS;
++        }
++
++        static void destroy(void*, void*) {}
++
++        static ggml_status execute(const ggml_ext_execution_context* e, ggml_tensor* const* nodes, int count, void*, void*) {
++            ggml_ext_gpu_context context;
++            if (count != 3 || !cuda_context(e->backend, &context))
++                return GGML_STATUS_FAILED;
++            const auto* norm = nodes[0];
++            const auto* mul  = nodes[1];
++            auto* mod        = nodes[2];
++            const auto* x = norm->src[0], * w = mul->src[1], * scale = mod->src[1], * shift = mod->src[2];
++            Parameters p = {};
++            for (int d = 0; d < 4; ++d) {
++                p.ne[d]           = x->ne[d];
++                p.x_stride[d]     = x->nb[d] / sizeof(float);
++                p.scale_ne[d]     = scale->ne[d];
++                p.scale_stride[d] = scale->nb[d] / sizeof(float);
++                p.shift_ne[d]     = shift ? shift->ne[d] : 1;
++                p.shift_stride[d] = shift ? shift->nb[d] / sizeof(float) : 0;
++            }
++            p.rows = ggml_nrows(x);
++            std::memcpy(&p.eps, norm->op_params, sizeof(float));
++            auto stream = static_cast<CUDAStream>(context.stream);
++            const bool alias = overlaps(mod, x) || overlaps(mod, w) || overlaps(mod, scale) || overlaps(mod, shift);
++            auto* out = static_cast<float*>(alias ? ggml_backend_buffer_get_base(e->workspace) : mod->data);
++            rms_mul_modulate<<<static_cast<unsigned>(p.rows), 256, 0, stream>>>(
++                static_cast<const float*>(x->data), static_cast<const float*>(w->data), static_cast<const float*>(scale->data),
++                shift ? static_cast<const float*>(shift->data) : nullptr, out, p);
++            if (cuda_last_error() != cuda_success || (alias && cuda_copy_async(mod->data, out, ggml_nbytes(mod), stream) != cuda_success))
++                return GGML_STATUS_FAILED;
++            return GGML_STATUS_SUCCESS;
++        }
++    }
++
++    void register_rms_modulate(ggml_backend_dev_t device) {
++        ggml_ext_kernel_desc desc = {};
++        desc.abi_version          = GGML_EXT_ABI_VERSION;
++        desc.name                 = "sd.rms_norm_mul_modulate." SD_CUDA_NAME ".v1";
++        desc.op                   = GGML_OP_RMS_NORM;
++        desc.priority             = 240;
++        desc.match                = sd_rms_mod::match;
++        desc.prepare              = sd_rms_mod::prepare;
++        desc.destroy              = sd_rms_mod::destroy;
++        desc.execute              = sd_rms_mod::execute;
++        GGML_ASSERT(ggml_ext_register_kernel_ex(device, &desc, GGML_EXT_KERNEL_CAPTURE_SAFE | GGML_EXT_KERNEL_REPLAY_REUSABLE));
++    }
++}
+diff --git a/src/core/cuda/rms_modulate_kernels.h b/src/core/cuda/rms_modulate_kernels.h
+new file mode 100644
+index 0000000..83a4702
+--- /dev/null
++++ b/src/core/cuda/rms_modulate_kernels.h
+@@ -0,0 +1,51 @@
++// RMSNorm, its weight and the AdaLN modulation (x * (1 + scale) + shift) in
++// one pass over each row: the graph RMS_NORM -> MUL -> sd.modulate of H3's
++// blocks read and wrote every row three times. On its own so that a small
++// program can check it against the unfused math on the CPU. MAG stack.
++#pragma once
++#include <cstdint>
++
++namespace sd_rms_modulate {
++    struct Parameters {
++        int64_t ne[4];                 // of x (and of the output)
++        int64_t x_stride[4];           // in floats
++        int64_t scale_ne[4], scale_stride[4];
++        int64_t shift_ne[4], shift_stride[4];
++        int64_t rows;
++        float eps;
++    };
++
++    // One row per block of 256 threads.
++    static __global__ void __launch_bounds__(256) rms_mul_modulate(const float* x, const float* weight, const float* scale,
++                                                                   const float* shift, float* dst, Parameters p) {
++        __shared__ float partial[256];
++        const int64_t row = blockIdx.x;
++        const int tid = threadIdx.x;
++        const int64_t i1 = row % p.ne[1], i2 = (row / p.ne[1]) % p.ne[2], i3 = row / (p.ne[1] * p.ne[2]);
++        const float* src = x + i1 * p.x_stride[1] + i2 * p.x_stride[2] + i3 * p.x_stride[3];
++        float sum = 0.f;
++        for (int64_t c = tid; c < p.ne[0]; c += 256) {
++            const float v = src[c * p.x_stride[0]];
++            sum += v * v;
++        }
++        partial[tid] = sum;
++        __syncthreads();
++        for (int s = 128; s > 0; s >>= 1) {
++            if (tid < s) partial[tid] += partial[tid + s];
++            __syncthreads();
++        }
++        const float r = rsqrtf(partial[0] / float(p.ne[0]) + p.eps);
++        const int64_t coord[4] = {0, i1, i2, i3};
++        int64_t scale_base = 0, shift_base = 0;
++        for (int d = 1; d < 4; ++d) {
++            scale_base += (coord[d] % p.scale_ne[d]) * p.scale_stride[d];
++            if (shift) shift_base += (coord[d] % p.shift_ne[d]) * p.shift_stride[d];
++        }
++        float* out = dst + row * p.ne[0];
++        for (int64_t c = tid; c < p.ne[0]; c += 256) {
++            const float y = __fmul_rn(__fmul_rn(src[c * p.x_stride[0]], r), weight[c]);
++            const float v = __fadd_rn(y, __fmul_rn(y, scale[scale_base + (c % p.scale_ne[0]) * p.scale_stride[0]]));
++            out[c] = shift ? __fadd_rn(v, shift[shift_base + (c % p.shift_ne[0]) * p.shift_stride[0]]) : v;
++        }
++    }
++}
 diff --git a/src/core/cuda/sage_gfx906.cu b/src/core/cuda/sage_gfx906.cu
 new file mode 100644
 index 0000000..6c5a1c9

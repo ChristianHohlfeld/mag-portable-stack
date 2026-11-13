@@ -52,7 +52,7 @@ the golden image, the bot VMs, Idol, Funnel and backups, downloads no model
   GiB `magbot` keeps free (`ops/vm/config.json`).
 - About 700 GB of free disk.
 - Optional: an AMD MI50 (PCI id 1002:66a1) for photo to 3D, pictures and
-  video. Its power cap stays at 82 W (`ops/idol/power-cap.sh` only lowers it).
+  video. Its power cap stays at 78 W (`ops/idol/power-cap.sh` only lowers it).
 - An owner account with the checkout in its home (`~/mag-stack`); the
   installer takes the account that runs `sudo` (see the host's identity below).
 

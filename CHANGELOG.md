@@ -6,6 +6,13 @@ version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
 
+## 5.2.1 (2026-11-13)
+
+- The MI50's power cap is 78 W (Chris, 2026-11-13, 17:52; 82 W in 5.2.0);
+  `ops/idol/power-cap.sh` only lowers it and never writes more than 78 W.
+- H3 prompts in MiniMax's own form (the model card's "Context IR"), speech as
+  its guide writes it (#552).
+
 ## 5.2.0 (2026-11-13)
 
 - Teilen in every message's ⋯ menu and in the file preview: the files through

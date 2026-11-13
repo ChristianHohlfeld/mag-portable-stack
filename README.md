@@ -45,7 +45,7 @@ Read next:
 | Bot VMs | `magbot`: spawn, reset, save, restore of one KVM guest per bot from a golden image | `mag-room/native/vm.cpp`, `ops/vm`, `ops/mag-agents.nft` |
 | VM live link | `mag-browser` in each VM, `mag-browser-webrtc` on the host: browser picture and terminal over UDP/WebRTC | `mag-room/native/browser.cpp`, `mag-room/webrtc` |
 | Bot sites | `<name>.bot.stardenburg.de` (tailnet only), uploaded through `mag-bots-publish` | `ops/bots` |
-| MI50 queue | `mag-idol`: photo to 3D (TripoSG, Idol), pictures (FLUX.2 klein 4B), videos with sound (HyperFlow H3 Flash); one job at a time, 82 W | `ops/idol`, `ops/imagegen`, `ops/video/h3` |
+| MI50 queue | `mag-idol`: photo to 3D (TripoSG, Idol), pictures (FLUX.2 klein 4B), videos with sound (HyperFlow H3 Flash); one job at a time, 78 W | `ops/idol`, `ops/imagegen`, `ops/video/h3` |
 | Scenes | `mag-scene`: pinned Blender on the CPU, rigging, recorded and worked-out motion, films | `ops/scene` |
 | Dictation | `mag-stt`: transcribe.cpp with German Parakeet TDT, CPU only | `mag-room/native/mag_stt.cpp`, `ops/stt` |
 | Reading aloud | Supertonic 3 in the browser (onnxruntime-web, WebGPU or WASM), served under `/tts/` | `ops/tts`, `mag-room/web/app/speak.js` |

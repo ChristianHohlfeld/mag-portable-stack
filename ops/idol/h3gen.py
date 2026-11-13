@@ -35,7 +35,9 @@ from pathlib import Path
 
 BASE = Path(os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50")))
 WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", str(BASE / "weights/hyperflow-h3")))
-CLI = Path(os.environ.get("MAG_H3_CLI", str(BASE / "h3/sd-cli")))
+CLI = Path(os.environ.get("MAG_H3_CLI", str(BASE / "h3/sd-cli")))              # Vulkan (RADV)
+CLI_HIP = Path(os.environ.get("MAG_H3_CLI_HIP", str(BASE / "h3/sd-cli-hip")))  # HIP for gfx906
+ROCM = BASE / "rocm-6.3.4/current"                                            # unpacked by ops/video/h3/rocm.sh
 STEPS, FPS = 4, 24
 SIGMAS = "1.0,0.962575793,0.755781889,0.312497854,0.0"   # Video Rebirth's pre-shifted 4-step schedule
 FRAMES = {5: 124, 10: 243}                  # 17n + 5 frames: 5.2 s and 10.1 s
@@ -69,6 +71,38 @@ def shape(picture):
     return width, height
 
 
+def run(job, command, env):
+    """One run of sd-cli, its progress told as MAG-VIDEO lines. Returns
+    (exit code, whether sampling had begun)."""
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=job)
+    sampling = False
+    began = False
+
+    def heard(part):
+        nonlocal sampling, began
+        text = part.decode("utf-8", "replace")
+        found = PROGRESS.search(text)
+        if found:
+            if sampling and int(found.group(2)) == STEPS:
+                print("MAG-VIDEO %s/%d" % (found.group(1), STEPS), flush=True)
+        elif "sampling using" in text:
+            sampling = began = True
+            say("Video und Ton rechnen")
+        elif "sampling completed" in text:
+            sampling = False
+            say("Bilder und Ton dekodieren")
+        elif text.strip():
+            print(text[:300], flush=True)   # the job's private log
+
+    rest = b""
+    while chunk := proc.stdout.read1(65536):
+        *lines, rest = re.split(rb"[\r\n]", rest + chunk)
+        for part in lines:
+            heard(part)
+    heard(rest)
+    return proc.wait(), began
+
+
 def main():
     job = Path(sys.argv[1])
     asked = json.loads((job / "prompt.json").read_text())
@@ -100,34 +134,24 @@ def main():
                    "-t", str(len(os.sched_getaffinity(0))), "-o", str(job / "h3.part.webm")]
         if picture:
             command += ["--ref-image" if use == "ref" else "--init-img", str(picture)]
-        env = dict(os.environ, GGML_VK_VISIBLE_DEVICES="0")
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=job)
-        sampling = False
-
-        def heard(part):
-            nonlocal sampling
-            text = part.decode("utf-8", "replace")
-            found = PROGRESS.search(text)
-            if found:
-                if sampling and int(found.group(2)) == STEPS:
-                    print("MAG-VIDEO %s/%d" % (found.group(1), STEPS), flush=True)
-            elif "sampling using" in text:
-                sampling = True
-                say("Video und Ton rechnen")
-            elif "sampling completed" in text:
-                sampling = False
-                say("Bilder und Ton dekodieren")
-            elif text.strip():
-                print(text[:300], flush=True)   # the job's private log
-
-        rest = b""
-        while chunk := proc.stdout.read1(65536):
-            *lines, rest = re.split(rb"[\r\n]", rest + chunk)
-            for part in lines:
-                heard(part)
-        heard(rest)
-        if proc.wait() != 0 or not (job / "h3.part.webm").is_file():
-            print("MAG-ERROR H3 hat kein Video erzeugt (Exit %d)." % proc.returncode, flush=True)
+        # HIP first (ggml's gfx906 kernels: int8 dp4a matrix products, fused
+        # flash attention), Vulkan where that build is not there or fails
+        # before its first step; a run that got going is never run twice.
+        runs = [("hip", CLI_HIP)] if CLI_HIP.is_file() and ROCM.is_dir() else []
+        runs.append(("vulkan", CLI))
+        for backend, cli in runs:
+            env = dict(os.environ, GGML_VK_VISIBLE_DEVICES="0", HIP_VISIBLE_DEVICES="0", ROCR_VISIBLE_DEVICES="0")
+            if backend == "hip":
+                env["LD_LIBRARY_PATH"] = str(ROCM / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
+            print("backend " + backend, flush=True)
+            code, got_going = run(job, [str(cli)] + command[1:], env)
+            if code == 0 and (job / "h3.part.webm").is_file():
+                break
+            if got_going:
+                break
+            print("backend %s ended before its first step (exit %d)" % (backend, code), flush=True)
+        if code != 0 or not (job / "h3.part.webm").is_file():
+            print("MAG-ERROR H3 hat kein Video erzeugt (Exit %d)." % code, flush=True)
             sys.exit(3)
         (job / "h3.part.webm").rename(sound)
     say("Video schreiben")

@@ -23,11 +23,14 @@ git submodule update -q --init --recursive ggml thirdparty/libwebm thirdparty/li
 curl -fsSL -o ../hyperflow-two-time.patch "$PATCH_URL"
 echo "$PATCH_SHA  ../hyperflow-two-time.patch" | sha256sum --quiet -c -
 git clean -fdq -e build-hip
+git -C ggml checkout -q -f . && git -C ggml clean -fdq
 git apply ../hyperflow-two-time.patch
 # Our own kernels: Sage-style attention for gfx906 (int8 Q*K^T by v_dot4, P*V by
 # v_dot2_f32_f16, online softmax in fp32) behind ggml_sage_attn, and RMSNorm
 # + weight + AdaLN modulation fused into one pass (rms_modulate.cu).
 git apply "$HERE/gfx906-kernels.patch"
+# ...and in ggml: Conv3d (the VAE) as gfx906's own implicit GEMM with v_dot2_f32_f16.
+git -C ggml apply "$HERE/gfx906-ggml.patch"
 CPU="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
 ROCM=$(readlink -f "${MAG_IDOL_BASE:-$HOME/idol-mi50}/rocm-6.3.4/current")
 [ -x "$ROCM/lib/llvm/bin/clang++" ] || { echo 'ROCm missing: run rocm.sh first' >&2; exit 2; }

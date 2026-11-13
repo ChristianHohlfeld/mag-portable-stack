@@ -8,11 +8,12 @@ HERE=$(dirname "$(readlink -f "$0")")
 BASE=${MAG_IDOL_BASE:-$HOME/idol-mi50}
 ROCM=$(readlink -f "$BASE/rocm-6.3.4/current")
 SRC=$BASE/h3/src/src/core/cuda
+GGML=$BASE/h3/src/ggml/src/ggml-cuda
 OUT=$BASE/h3/check; mkdir -p "$OUT"
 for test in "$HERE"/check/*.cpp; do
   name=$(basename "$test" .cpp)
   taskset -c 28-55 "$ROCM/lib/llvm/bin/clang++" -x hip --offload-arch=gfx906 --rocm-path="$ROCM" -O3 -ffast-math -std=c++17 \
-    -I "$SRC" -o "$OUT/$name" "$test" -L "$ROCM/lib" -lamdhip64 -Wl,-rpath,"$ROCM/lib"
+    -I "$SRC" -I "$GGML" -o "$OUT/$name" "$test" -L "$ROCM/lib" -lamdhip64 -Wl,-rpath,"$ROCM/lib"
 done
 curl -s -H 'X-Mag-Idol-UI: 1' http://127.0.0.1:8793/api/idol/health | grep -q '"active": *0' || { echo 'Idol is busy; try later' >&2; exit 3; }
 for test in "$OUT"/*; do

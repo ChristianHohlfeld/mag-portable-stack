@@ -562,7 +562,7 @@ function trimmed(audio, rate, sentence) {
   while (from < to && Math.abs(audio[from]) < quiet) from++;
   while (to > from && Math.abs(audio[to]) < quiet) to--;
   from = Math.max(0, from - Math.round(rate * 0.02));
-  to = Math.min(audio.length, to + 1 + Math.round(rate * (sentence ? 0.25 : 0.1)));
+  to = Math.min(audio.length, to + 1 + Math.round(rate * (sentence ? 0.25 : 0.08)));
   return from === 0 && to === audio.length ? audio : audio.slice(from, to);
 }
 // One request at a time: a stopped playback may still have a part in flight,

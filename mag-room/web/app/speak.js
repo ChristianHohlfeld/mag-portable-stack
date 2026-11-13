@@ -65,66 +65,61 @@
     return out.filter(Boolean);
   }
 
-  // One sentence per call of the model, capped so a long sentence still starts soon.
+  // What the model reads in one call (see modelParts).
   // Abbreviations (z.B., Dr.) are not treated as sentence ends.
   const ABBREV = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl)$/i;
-  // The very first part of a playback is short (`first`): a clause, not a
-  // whole sentence. The sound starts after what a few words take to make,
-  // and the rest is made while they play. How long the first parts are
-  // follows from how fast this device makes speech (see line()): each is as
-  // long as can be made while what is ready plays, and never so short that
-  // it plays for less time than it takes to make (a GPU spends about a
-  // second on every part, however short): then the reading runs on without
-  // a pause from the first word.
-  function modelParts(text, max = partMax(), first = false) {
+  // Parts follow the speech, not the clock: whole sentences, several short
+  // ones together (the model reads them as one flow, with its own pauses),
+  // up to `max` letters. A sentence longer than that is cut at a clause (a
+  // comma, a colon, a dash), only one without any at a word. A cut in the
+  // middle of a sentence would end there with the fall of a sentence's end
+  // and a pause where nobody pauses. The very first part of a playback
+  // (`first`) ends at the first comma of a long first sentence, so the
+  // sound starts sooner; a comma is a place where a speaker breathes anyway.
+  function sentences(text) {
     const out = [];
     let rest = String(text || '').trim();
-    const { a, b } = line();
-    // Letters below which a part in `steps` plays for less time than it takes to make.
-    const least = (steps) => (b * steps < 0.95 ? 14 * a / (1 - b * steps) : 14 * a * 20);
-    let planning = first, ahead = 0;     // seconds of sound that are ready ahead of what is being made
-    const advance = (piece) => {
-      if (!planning) return;
-      const sec = piece.length / 14;
-      ahead = out.length === 1 ? sec : Math.max(0, ahead + sec - (a + b * MIN_STEPS * sec));
-    };
-    if (first && rest.length > 40) {
-      const lo = Math.min(60, Math.max(8, Math.ceil(1.3 * least(MIN_STEPS))));
-      const head = rest.slice(0, Math.max(44, lo + 30));
-      let cut = -1;
-      for (const m of head.matchAll(/[,;:–—]\s|[.!?]\s|\s(?=(?:und|oder|aber|denn|weil|dass|wenn|als|wie)\s)/g))
-        if (m.index >= lo && cut < 0) cut = m.index + (/\s/.test(m[0][0]) ? 0 : 1);       // the first place a speaker would breathe
-      if (cut < 0) cut = head.lastIndexOf(' ', Math.max(30, lo + 16));
-      if (cut >= lo) { out.push(rest.slice(0, cut).trim()); advance(out[0]); rest = rest.slice(cut).trimStart(); }
-    }
     while (rest) {
       let cut = rest.length;
-      const re = /[.!?](?:\s+|$)/g;
+      const re = /[.!?…](?:["')\]]*)(?:\s+|$)|\n+/g;
       let m;
       while ((m = re.exec(rest))) {
-        const at = m.index + m[0].length;
         const token = rest.slice(0, m.index).split(/\s/).pop() || '';
-        if (m[0][0] === '.' && (token.includes('.') || ABBREV.test(token))) continue;
-        if (at >= 8) { cut = at; break; }
-      }
-      let most = max;
-      if (planning) {
-        if (!out.length) most = Math.min(max, Math.max(36, Math.ceil(1.3 * least(MIN_STEPS))));
-        else {
-          const lo = Math.ceil(1.3 * least(MIN_STEPS)), can = Math.floor(14 * (0.85 * ahead - a) / (b * MIN_STEPS));
-          most = Math.min(max, Math.max(24, can >= lo ? can : lo));
-        }
-      }
-      if (cut > most) {
-        const word = rest.lastIndexOf(' ', most);
-        cut = word >= Math.floor(most / 3) ? word + 1 : most;
+        if (m[0][0] === '.' && (token.includes('.') || ABBREV.test(token) || /^\d+$/.test(token))) continue;
+        if (m.index + m[0].length >= 2) { cut = m.index + m[0].length; break; }
       }
       const piece = rest.slice(0, cut).trim();
-      if (!piece) break;
-      out.push(piece);
-      advance(piece);
-      if (planning && most >= max) planning = false;
-      rest = rest.slice(cut).trimStart();
+      if (piece) out.push(piece);
+      rest = rest.slice(cut).trim();
+    }
+    return out;
+  }
+  function clauses(sentence, max) {
+    const out = [];
+    let rest = sentence;
+    while (rest.length > max) {
+      let cut = -1;
+      for (const m of rest.slice(0, max).matchAll(/[,;:–—]\s/g)) if (m.index >= max / 3) cut = m.index + 1;
+      if (cut < 0) { const w = rest.lastIndexOf(' ', max); cut = w >= max / 3 ? w : max; }
+      out.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) out.push(rest);
+    return out;
+  }
+  function modelParts(text, max = PART_MAX, first = false) {
+    const out = [];
+    let units = [];
+    for (const s of sentences(text)) units.push(...clauses(s, max));
+    if (first && units.length && units[0].length > 90) {
+      const m = /^(.{25,90}?[,;:–—])\s/.exec(units[0]);
+      if (m) { out.push(m[1]); units = [units[0].slice(m[0].length).trim(), ...units.slice(1)]; }
+    }
+    for (const u of units) {
+      const last = out.length - 1;
+      // Short sentences go together, never past a clause cut (that ends without a sentence's end).
+      if (last >= (first ? 1 : 0) && /[.!?…]["')\]]*$/.test(out[last]) && out[last].length + 1 + u.length <= max) out[last] += ' ' + u;
+      else out.push(u);
     }
     return out;
   }
@@ -365,7 +360,7 @@
     return { a, b };
   }
   const cost = (steps, sec) => { const { a, b } = line(); return a + b * steps * sec; };
-  const partMax = () => (line().a > 0.5 ? 200 : 120);   // where every part costs much, parts are longer
+  const PART_MAX = 220;                 // letters; the worker reads up to 280 in one go
   const MIN_STEPS = 5;
   const topSteps = () => (cost(10, 8) / 8 < 0.25 ? 10 : cost(8, 8) / 8 < 0.4 ? 8 : MIN_STEPS);
   function stepsFor(pb, text) {
@@ -418,9 +413,10 @@
   }
   function request(pb, text) {
     const rate = rateFor(pb.speaker);
-    const p = synthPart(pb, text, rate);
-    p.catch(() => {}); // awaited later; avoid an unhandled rejection
-    return {text, rate, p};
+    const part = {text, rate, res: null};
+    part.p = synthPart(pb, text, rate);
+    part.p.then((res) => { part.res = res; }, () => {}); // awaited later; avoid an unhandled rejection
+    return part;
   }
   // The parts of a reading are laid end to end on the audio clock: a part
   // that is ready while the one before it still plays starts on the very
@@ -471,7 +467,7 @@
     let more = true;
     (async () => {
       while (current === pb && more) {
-        if (ahead.length >= 3) { await new Promise((go) => { pb.room = go; }); continue; }
+        if (ahead.length >= 24) { await new Promise((go) => { pb.room = go; }); continue; }
         const text = await nextText(pb);
         if (text == null || current !== pb) break;
         ahead.push(request(pb, text));
@@ -493,10 +489,32 @@
       if (cur.rate !== rateFor(pb.speaker)) cur = request(pb, cur.text);
       const res = await cur.p;
       if (current !== pb) return;
-      if (!pb.spoken)
+      // Nothing plays (the start, or the device fell behind): the reading
+      // starts when what is made covers what is still to make, so it runs
+      // on to its end without a pause between sentences.
+      if (!pb.end || tts.ctx.currentTime >= pb.end - 0.05) await preroll(pb, res, ahead, () => more);
+      if (current !== pb) return;
       pb.spoken = true;
       // Laid behind what plays; the next part is awaited while this one begins and plays.
       if (!(await reach(pb, schedule(pb, res)))) return;
+    }
+  }
+
+  // Waits (at most 20 s) until the sound that is made ahead covers the time
+  // the parts not yet made will take to make, by what this device took so far.
+  async function preroll(pb, res, ahead, more) {
+    const t0 = performance.now();
+    for (;;) {
+      if (current !== pb) return;
+      let ready = res.audio.length / res.rate, owed = 0, gap = false;
+      for (const x of ahead) {
+        if (x.res && !gap) ready += x.res.audio.length / x.res.rate;
+        else { gap = true; owed += cost(MIN_STEPS, Math.max(0.4, x.text.length / 14)); }
+      }
+      for (const t of pb.parts.slice(pb.at)) owed += cost(MIN_STEPS, Math.max(0.4, t.length / 14));
+      if (!owed && !more()) return;
+      if (ready >= 1.15 * owed || performance.now() - t0 > 20000) return;
+      await new Promise((go) => setTimeout(go, 120));
     }
   }
 
@@ -514,7 +532,7 @@
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        pb.parts.push(...(pb.de ? modelParts(piece, partMax(), !pb.queued) : split(piece)));
+        pb.parts.push(...(pb.de ? modelParts(piece, PART_MAX, !pb.queued) : split(piece)));
         pb.queued += take;
       }
     }
@@ -667,7 +685,7 @@
     const take = growing ? completeLength(rest) : rest.length;
     if (take > 0) {
       const piece = rest.slice(0, take);
-      cut = { text: cut.text + piece, parts: [...cut.parts, ...modelParts(piece, partMax(), !cut.text)] };
+      cut = { text: cut.text + piece, parts: [...cut.parts, ...modelParts(piece, PART_MAX, !cut.text)] };
     }
     cuts.delete(id); cuts.set(id, cut);
     while (cuts.size > 10) cuts.delete(cuts.keys().next().value);

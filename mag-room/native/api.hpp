@@ -819,7 +819,8 @@ private:
     // Its figures are called what they are: a cut-out nobody has described
     // yet is looked at first (a bot that sees, when it is free); after eight
     // minutes the room stands anyway, with "Objekt N" for what is unnamed.
-    if (unnamed > 0) {
+    // Without a bot that sees, nobody would name them: it stands at once.
+    if (unnamed > 0 && engine_.anyone_sees()) {
       auto [at, fresh] = naming_.try_emplace(group, now_s() + 480);
       if (now_s() < at->second) {
         engine_.look_at_new_pictures(); // four pictures a pass; asked again on each call

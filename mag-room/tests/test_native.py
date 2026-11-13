@@ -383,11 +383,12 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.lena.chats()), 1)  # no further model call after Stop
         # A step that runs to the end reports its exit code and the model sees the output.
         script = iter([{"content": "", "tool_calls": [{"name": "shell", "arguments": {"command": "echo hallo; exit 3"}}]}, "Exit drei."])
+        r.lena.reply = lambda body: next(script, "")   # a failed step: the room sends it on, it has nothing to add
         r.say("@Lena noch ein Befehl")
         r.idle()
         last = [m for m in r.messages() if m["from"] == "lena"][-1]
         self.assertEqual((last["parts"][0]["state"], last["parts"][0]["exit"]), ("error", 3))
-        self.assertEqual(r.lena.chats()[-1]["messages"][-1]["content"], "exit=3\nhallo\n")
+        self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "tool"][-1], "exit=3\nhallo\n")
 
     def test_finished_html_becomes_a_live_page_on_the_bots_site(self):
         r = self.room
@@ -1167,7 +1168,7 @@ class RoomContract(unittest.TestCase):
 
         def ask(bot, *script, text="bitte"):
             replies = iter(script)
-            getattr(r, bot).reply = lambda body: next(replies)
+            getattr(r, bot).reply = lambda body: next(replies, "")   # sent on after a failed step, it has nothing to add
             r.say("@%s %s" % (bot.capitalize(), text))
             r.idle(40)
             return answer(bot)

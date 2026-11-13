@@ -265,6 +265,7 @@ public:
   struct Outcome {
     std::string text;
     bool ok = true;
+    bool refused = false; // Chris said no or did not answer: not a step to try another way
   };
   // Calls a plugin tool for a bot. `ask` shows a pending approval to the owner
   // (an object) and takes it away again (null).
@@ -293,8 +294,8 @@ public:
     if (!free) {
       const std::string decision = await(bot_id, hit, args, cancel, ask);
       if (decision == "stopped") return {"abgebrochen (Stop)", false};
-      if (decision == "timeout") return {"Chris hat den Aufruf von " + hit.tool + " nicht freigegeben; er wurde nicht ausgeführt. Frag ihn, ob er ihn noch möchte.", false};
-      if (decision == "deny") return {"Chris hat den Aufruf von " + hit.tool + " abgelehnt. Versuch es nicht noch einmal, außer er bittet darum.", false};
+      if (decision == "timeout") return {"Chris hat den Aufruf von " + hit.tool + " nicht freigegeben; er wurde nicht ausgeführt. Frag ihn, ob er ihn noch möchte.", false, true};
+      if (decision == "deny") return {"Chris hat den Aufruf von " + hit.tool + " abgelehnt. Versuch es nicht noch einmal, außer er bittet darum.", false, true};
       if (decision == "always")
         room_.update_bot(bot_id, [&](Val &me) {
           Val &always = me["plugins"][hit.server]["always"];

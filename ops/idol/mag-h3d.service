@@ -15,6 +15,8 @@ AllowedCPUs=28-55
 MemoryMax=64G
 Environment=LD_LIBRARY_PATH=/home/chris/idol-mi50/rocm-6.3.4/current/lib
 Environment=HIP_VISIBLE_DEVICES=0
+# Where the clip being made keeps its sampler state (resumable after a restart).
+Environment=SD_STATE_DIR_FILE=/var/lib/mag-idol/jobs/.h3d-state-dir
 # The weights as the server's model folder: hard links (same file system,
 # nothing copied); the server refuses links that lead out of its folder.
 # "-": before the weights are there, it starts with an empty folder.

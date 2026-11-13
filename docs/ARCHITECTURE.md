@@ -820,8 +820,17 @@ Idol's video stage, which holds the MI50's lock), and every other GPU stage,
 once the card is its own, has it unload the model, so 3D and pictures have
 the whole card. Where h3d does not answer, sd-cli makes the clip. The h3d job
 id is kept in the job folder, so a restarted stage follows the same clip.
-The model's result (`h3.webm`) is kept, so a lost stage only writes the
-file again. Its licence (MiniMax H3 Community License) leaves out the EU;
+A clip is resumable like every job of the line: the sampler writes its state
+after every step into the job's `h3state` (`sample-state.patch`; sd-cli is
+told by `SD_STATE_DIR`, h3d by the file `jobs/.h3d-state-dir` that the stage
+writes, one clip at a time under the MI50's lock), and a run that finds a
+state of the same shape and sigmas goes on after its last finished step, or
+only decodes when all steps are done. A restart of the worker (a deploy)
+leaves the stage and h3d running; a restart of h3d or a reboot loses h3d's
+job, so the stage gives it again and it resumes; h3d away for a quarter of an
+hour makes sd-cli go on from the same state. install.sh takes up a new h3d
+build only while no video runs or waits. The model's result (`h3.webm`) is
+kept, so a lost stage only writes the file again. Its licence (MiniMax H3 Community License) leaves out the EU;
 MiniMax authorised Chris personally on 2026-11-13 (private, non-commercial,
 nothing passed on, output marked as made by AI, no training of other
 models, only him). So an installer never fetches it: the owner runs

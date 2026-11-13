@@ -7,6 +7,9 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- A video is resumable like 3D and pictures: the sampler's state after every step
+  is on disk, and a restart (deploy, h3d, reboot) goes on after the last finished
+  step, or only decodes.
 - The MI50's power cap is 78 W instead of 72 W (Chris, 2026-11-13);
   `ops/idol/power-cap.sh` still only lowers it and never writes more than 78 W.
 - Videos with their sound: HyperFlow H3 Flash (MiniMax H3, licensed to the

@@ -42,6 +42,7 @@
   // a model that turns, a text to read; everything else opens in a tab.
   function preview(f, done) {
     if (f.kind === 'image') return MAG.lightbox(fileUrl(f), f.name, f.description, f.file);
+    MAG.shareReady([f]);
     MAG.sheet(f.name, (content, _, close) => {
       let body = null;
       if (f.kind === 'video') body = el('video', { class: 'big', controls: true, autoplay: true, playsInline: true, src: fileUrl(f) });
@@ -69,6 +70,7 @@
       content.append(body || el('p', { class: 'fine', text: 'Für diese Datei gibt es hier keine Vorschau.' }),
         el('p', { class: 'fine', text: [f.title, MAG.name(f.from), when(f.ts), MAG.bytes(f.size)].filter(Boolean).join(' · ') }),
         el('div', { class: 'btns files-acts' },
+          el('button', { class: 'pill', onclick: () => MAG.share([f]) }, MAG.icon('share'), 'Teilen'),
           el('a', { class: 'pill', href: fileUrl(f, '?download=1'), download: f.name }, MAG.icon('down'), 'Herunterladen'),
           el('a', { class: 'pill', href: fileUrl(f, '?view=1'), target: '_blank', rel: 'noopener' }, MAG.icon('open'), 'In neuem Tab öffnen'),
           show));

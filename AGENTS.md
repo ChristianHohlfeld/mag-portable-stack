@@ -324,8 +324,13 @@ file rendered by Blender in the scene worker, never the photo it came from;
 a picture scaled, a video's frame, a sound's waveform, a PDF's first page by
 ffmpeg/pdftoppm; a text or document its first lines, `/excerpt`), a larger
 preview (picture, video, sound, a model that turns, text), a download, and
-the way back to its message; what is shown comes as one ZIP (`/api/files.zip`, streamed, nothing
-packed on disk). The files stay where they are.
+the way back to its message, and Teilen; what is shown comes as one ZIP (`/api/files.zip`, streamed, nothing
+packed on disk). The files stay where they are. Every message's ⋯ menu has Teilen
+next to Löschen, the same for all: its files (picture, video, a joined video,
+3D model, scene film, document) go to the phone's own sharing (Web Share with
+the files, fetched when the menu opens so the tap hands them over at once);
+where a device cannot share a file it is downloaded, and a message without
+files shares its words.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

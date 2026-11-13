@@ -586,28 +586,19 @@ as `browser_look` sees it, and a half-size JPEG of the window goes to
 `STATE/shots/<message>-<step>.jpg` (`GET /api/shot/…`; the step has
 `shot`), deleted with its message. A password field's value is never read.
 
-`browser_login` first goes to the login form itself (`tools::login_form`:
-a page without a user or password field gets its sign-in link or button
-clicked, at most three times; a two-step page that first wants the way
-the code comes gets its first such button) and then waits like a consent card
-(`action: login`, the site from the page's address, reason, `fields` the
-form asks for now, `saved` logins of the site). Every login typed into the
-card is kept at once (whether the page then takes it or not; a code of a
-two-step page is typed into its field with Enter and never kept) in
-`STATE/pay/logins.enc`, sealed like the cards, per site and account; the
-next card of that site offers it ("Gespeicherten Login verwenden",
-`{"saved": id}`), and the settings ("Logins", `/api/vault/logins`) list,
-change, remove and, on a tap, show one. The card's step has no input or
-output in the chat, only the card; the activity row says what it waits
-for (login, payment, approval).
-Chris either posts his login to `POST /api/login/<card>` (owner only): the
-room finds the user and password fields by `/elements`, types them with
-`/type` (a site that asks for the user on a page of its own gets Enter and
-is looked at again), presses Enter and checks that no password field is
-left; nothing of it is logged, and the strings are wiped after.
-Or he opens the bot's live browser from the card, logs in himself (passkey,
-SMS code, captcha) and taps "Fertig, weiter" (`decision: done`). Then the
-tool returns the page to the bot. Cookies stay in the VM's Chrome profile.
+`browser_login` waits like a consent card (`action: login`, the site the
+bot named, its reason). The card is the bot's browser itself, live in the
+step (`MAG.liveView`: frames and input over the VM's realtime link, WebRTC
+data channels from `mag-browser-webrtc`, the UDP link to the VM): Chris
+taps, types and uses the keyboard right there, also on the phone, logs in
+himself (password, SMS code, passkey, captcha) and taps "Angemeldet,
+weiter" (`decision: done`); then the tool returns the page to the bot. The
+room has no login form any more: it neither finds, types nor keeps a login,
+and nothing of what Chris types passes a model or a log. While the card
+waits, the step shows no picture, only the live browser. Logins kept by
+earlier cards stay in `STATE/pay/logins.enc`; the settings ("Logins",
+`/api/vault/logins`) still list, show and remove them. Cookies stay in the
+VM's Chrome profile.
 
 `browser_pay` (shop, amount_eur, what, the card number field as n or x/y,
 the order of the further fields) first asks `consent` with kind buy; only

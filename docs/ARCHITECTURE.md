@@ -838,7 +838,14 @@ line "For the target video, at 0.00 seconds into the target video, <Picture
 and `non_diegetic_music: ...`, speech as "the speaker with a described voice
 (S1) says: <d>[German] the words</d>". `video_generate` asks the bots for
 exactly this (in English, the words verbatim, no made-up lines); h3gen.py
-puts a prompt typed in the page into it (quoted speech becomes `(S1): <d>`
+has a prompt typed in the page written in it, in English, by a small model of
+its own (Qwen3-4B-Instruct-2507, Apache-2.0, Q4_K_M from
+`ops/video/h3/fetch-rewriter.sh`), run once per job on the stage's CPU cores
+with the model servers' llama.cpp, never on Lena's or Noah's servers; it is
+kept only when the three fields are there and every `<d>` line is Chris's own
+words (`h3prompt.txt`, the final prompt `h3prompt.final.txt`, so a job taken up
+again samples with the same words). Otherwise, or without that model, h3gen.py
+puts the prompt into the form by rules (quoted speech becomes `(S1): <d>`
 lines, German unless plainly English; a prompt in the form already keeps its
 words, only a missing first-frame line is added). Prompts may be 6000
 characters long. A continued video gets the last

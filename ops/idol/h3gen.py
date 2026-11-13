@@ -252,6 +252,101 @@ def context(prompt, first_frame, continuing):
     return prompt
 
 
+# The small model that writes a prompt typed in the page in MiniMax's form, in
+# English (ops/video/h3/fetch-rewriter.sh: Qwen3-4B-Instruct-2507, Apache-2.0).
+# It runs here, on the CPU cores of this stage (28-55), with the llama.cpp
+# runtime of the model servers, for a moment and never on Lena's or Noah's
+# servers. What it writes is checked: the three fields must be there and every
+# spoken line must be the owner's own words; else the rule form of context().
+REWRITER = BASE / "weights/h3-rewriter"
+REWRITE_RULES = """You rewrite a user's video idea into the prompt format of the MiniMax H3 audio-video model. Output ONLY the final prompt, nothing else.
+
+Format, exactly three fields separated by one blank line, all in English:
+integrated_multimodal_description: [Shot 1] <style (e.g. Live-action, cinematic / 3D cartoon), shot size, camera motion with amplitude and speed, subjects with appearance and position, what they do along the timeline, synchronized sounds>
+overall_soundscape: <1-4 English sentences of ambient sound, action sounds and non-verbal human sounds; no dialogue>
+non_diegetic_music: <1-3 English sentences of background music, or N/A when the user asks for none or does not mention music>
+
+Rules:
+- Translate the user's directions into English and keep their intent; you may add concrete visual and sound details that fit it, but no new events.
+- Use one shot ([Shot 1]) unless the user asks for cuts; a cut is written "[Shot 2] At 00:04.000, the camera cuts to ...".
+- Speech: only words the user wants spoken (quoted text or clearly given lines). Never invent lines. Each speaker gets a stable ID (S1), (S2); describe the speaker and the voice first, then the ID, then the verb and a colon, then the line: the old fox with a deep, calm voice (S1) says: <d>[German] Komm her!</d>
+- Inside <d> put only the language tag ([German], [English], ...) and the spoken words exactly as the user wrote them, never translated, never changed.
+- Characters who do not speak get no ID."""
+
+
+def rewrite(job, prompt, first_frame, continuing):
+    """MiniMax's form written by the small model, once per job (h3prompt.txt);
+    None when it is not there, fails or writes something that does not hold."""
+    done = job / "h3prompt.txt"
+    if done.is_file():
+        return done.read_text()
+    model = REWRITER / "qwen3-4b-instruct-q4_k_m.gguf"
+    try:
+        rt = json.loads(Path("/usr/local/lib/mag-models/models.json").read_text())["runtime"]
+        server = Path(rt["dir"]) / rt["rev"] / "bin/llama-server"
+    except (OSError, ValueError, KeyError):
+        return None
+    if not (REWRITER / ".complete").is_file() or not server.is_file():
+        return None
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    say("Regie schreiben")
+    task = ("The video starts exactly from a given first frame <Picture 1>; begin the description from it and keep its "
+            "characters, appearance and composition.\n" if first_frame and not continuing else "")
+    if continuing:
+        task = ("The video continues seamlessly, with no cut, from a given frame <Picture 1>: the same characters, "
+                "appearance, place, light, camera and voices carry on.\n")
+    proc = subprocess.Popen([str(server), "-m", str(model), "--host", "127.0.0.1", "--port", str(port), "-c", "8192",
+                             "-t", "24", "-np", "1", "--no-webui"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        for _ in range(240):
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=2) as r:
+                    if r.status == 200:
+                        break
+            except (OSError, urllib.error.URLError):
+                pass
+            if proc.poll() is not None:
+                return None
+            time.sleep(0.5)
+        body = json.dumps({"messages": [{"role": "system", "content": REWRITE_RULES},
+                                        {"role": "user", "content": task + "User's idea:\n" + prompt}],
+                           "temperature": 0.3, "seed": 1, "max_tokens": 1500}).encode()
+        req = urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions" % port, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            text = json.loads(r.read())["choices"][0]["message"]["content"].strip()
+    except (OSError, ValueError, KeyError, IndexError, urllib.error.URLError):
+        return None
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+    if not holds(prompt, text):
+        print("MAG-NOTE Regie in der festen Form (der Übersetzer hielt sich nicht an die Form)", flush=True)
+        return None
+    done.write_text(text)
+    return text
+
+
+def holds(asked, text):
+    """The three fields are there, and each spoken line is the owner's own
+    words: inside <d> nothing that was not in what he typed."""
+    if not all(f in text for f in ("integrated_multimodal_description:", "overall_soundscape:", "non_diegetic_music:")):
+        return False
+    plain = re.sub(r"\s+", " ", asked)
+    for line in re.findall(r"<d>\s*(?:\[[^\]]*\])?\s*(.*?)</d>", text, re.S):
+        if re.sub(r"\s+", " ", line).strip() not in plain:
+            return False
+    quoted = [next(g for g in m.groups() if g is not None).strip() for m in QUOTES.finditer(asked)]
+    return all(q in text for q in quoted)
+
+
 def say(stage):
     print("MAG-VIDEO-STAGE " + stage, flush=True)
 
@@ -339,7 +434,16 @@ def main():
             prompt = "<Picture 1> " + prompt
     else:
         # MiniMax's form (a first frame: also a continued video's last frame)
-        prompt = context(prompt, picture is not None, previous is not None)
+        # written once: a job taken up again samples on with the very same words
+        final = job / "h3prompt.final.txt"
+        if final.is_file():
+            prompt = final.read_text()
+        else:
+            written = None
+            if "integrated_multimodal_description" not in prompt:
+                written = rewrite(job, prompt, picture is not None, previous is not None)
+            prompt = context(written or prompt, picture is not None, previous is not None)
+            final.write_text(prompt)
     sound = job / "h3.webm"                 # what the model made; done is never done twice
     if not sound.is_file() and by_h3d(job, prompt, *shape(picture), FRAMES[seconds],
                                        int(asked.get("seed", 0)) or 1, picture, use):

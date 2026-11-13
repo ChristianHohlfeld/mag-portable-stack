@@ -11,6 +11,7 @@
 # only (a lock), every file checked against its SHA256. Never deletes anything.
 set -e
 OUT=${MAG_IDOL_BASE:-$HOME/idol-mi50}/weights/hyperflow-h3
+HERE=$(dirname "$(readlink -f "$0")")
 mkdir -p "$OUT"; cd "$OUT"
 exec 9>"$OUT/.fetch.lock"
 flock -n 9 || { echo 'another fetch is running' >&2; exit 1; }
@@ -44,3 +45,5 @@ for job in $(jobs -p); do wait "$job" || failed=1; done
 (( failed == 0 )) || { echo 'not complete' >&2; exit 1; }
 touch .complete
 echo done
+# the small model that writes typed prompts in H3's form (Apache-2.0)
+"$HERE/fetch-rewriter.sh" || echo "rewriter not fetched; h3gen uses its rules" >&2

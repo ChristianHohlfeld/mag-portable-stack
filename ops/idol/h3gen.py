@@ -20,7 +20,8 @@ of one megapixel (a third of the tokens, a ninth of the attention). On gfx906
 there is no INT8 convrot, NVFP4 or SageAttention (all NVIDIA), so it is the
 same model as GGUF Q8_0, run by stable-diffusion.cpp (with Video Rebirth's
 patch) natively on ggml's HIP backend for gfx906 (ROCm 6.3.4): its int8 dp4a
-matrix kernels and fused flash attention; parts that wait are kept in memory
+matrix kernels, and our own attention for gfx906 (--sage-attn: int8 Q*K^T by
+v_dot4, P*V by v_dot2, ops/video/h3/gfx906-attention.patch); parts that wait are kept in memory
 (--offload-to-cpu), the VAE decodes in tiles. The licence was granted to Chris personally (private, nothing passed
 on, made by AI said so): the file says in its metadata that it is made by
 AI with MiniMax H3. Prints "MAG-VIDEO k/4" per step and "MAG-VIDEO-STAGE
@@ -129,7 +130,7 @@ def main():
                    "--sampling-method", "euler", "--cfg-scale", "1.0", "--steps", str(STEPS), "--sigmas", SIGMAS,
                    "-W", str(width), "-H", str(height), "--video-frames", str(FRAMES[seconds]), "--fps", str(FPS),
                    "-s", str(int(asked.get("seed", 0)) or 1), "-p", prompt,
-                   "--offload-to-cpu", "--diffusion-fa", "--vae-tiling",
+                   "--offload-to-cpu", "--diffusion-fa", "--sage-attn", "--vae-tiling",
                    "-t", str(len(os.sched_getaffinity(0))), "-o", str(job / "h3.part.webm")]
         if picture:
             command += ["--ref-image" if use == "ref" else "--init-img", str(picture)]

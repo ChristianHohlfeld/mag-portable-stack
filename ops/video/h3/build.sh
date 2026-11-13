@@ -5,8 +5,10 @@
 # no ComfyUI. Builds on cores 28-55 only, under the CPU lock. One path:
 # ggml's HIP backend for gfx906, against the ROCm unpacked by rocm.sh (its
 # int8 dp4a matrix kernels, the gfx906 counterpart of the workflow's INT8 path,
-# and its fused flash attention) -> ~/idol-mi50/h3/sd-cli-hip.
+# and its fused rope/modulate kernels), with our own attention for gfx906
+# (gfx906-attention.patch) -> ~/idol-mi50/h3/sd-cli-hip.
 set -e
+HERE=$(dirname "$(readlink -f "$0")")
 BASE=${MAG_IDOL_BASE:-$HOME/idol-mi50}/h3
 COMMIT=3be23788fc0c9f35a2c24b1211caae11d4a54dbc
 PATCH_URL=https://raw.githubusercontent.com/Video-Rebirth/hyperflow-h3-flash/0767e9cd7c72bf7aa832b07ebe1cdbd5daa80295/integrations/stable-diffusion.cpp/hyperflow-two-time.patch
@@ -22,6 +24,9 @@ curl -fsSL -o ../hyperflow-two-time.patch "$PATCH_URL"
 echo "$PATCH_SHA  ../hyperflow-two-time.patch" | sha256sum --quiet -c -
 git clean -fdq -e build-hip
 git apply ../hyperflow-two-time.patch
+# Our own: Sage-style attention for gfx906 (int8 Q*K^T by v_dot4, P*V by
+# v_dot2_f32_f16, online softmax in fp32) behind ggml_sage_attn.
+git apply "$HERE/gfx906-attention.patch"
 CPU="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
 ROCM=$(readlink -f "${MAG_IDOL_BASE:-$HOME/idol-mi50}/rocm-6.3.4/current")
 [ -x "$ROCM/lib/llvm/bin/clang++" ] || { echo 'ROCm missing: run rocm.sh first' >&2; exit 2; }

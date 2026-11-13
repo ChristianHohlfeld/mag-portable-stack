@@ -12,9 +12,6 @@ message can be deleted; 36 pull requests since 5.0.0 (#502–#537). A 5.0.0 host
 is updated with `ops/deploy.sh`; for videos the owner runs
 `ops/video/h3/fetch.sh` and `ops/video/h3/build.sh` once (licence).
 
-- A video is resumable like 3D and pictures: the sampler's state after every step
-  is on disk, and a restart (deploy, h3d, reboot) goes on after the last finished
-  step, or only decodes.
 - The MI50's power cap is 78 W instead of 72 W (Chris, 2026-11-13);
   `ops/idol/power-cap.sh` still only lowers it and never writes more than 78 W
   (#532).
@@ -26,7 +23,8 @@ is updated with `ops/deploy.sh`; for videos the owner runs
   an implicit fp16 GEMM (#524, #526, #528, #529); `h3d` keeps H3 loaded between
   clips and lets go of it for 3D and pictures, finds its weights through hard
   links and is asked to load only another model (#530, #531, #536); an H3 clip
-  survives restarts and goes on after its last finished step (#535).
+  is resumable like 3D and pictures: a restart (deploy, h3d, reboot) goes on
+  after its last finished step, or only decodes (#535).
 - Photo to 3D: TripoSG's shape as its own scripts make it (no bust cut, hard
   mask, full picture), painted from six sides by MV-Adapter on SDXL, the views
   made twice as large by Real-ESRGAN as MV-Adapter's texture script does; a

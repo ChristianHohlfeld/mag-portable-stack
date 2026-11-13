@@ -288,6 +288,13 @@ public:
       if (sees(b->id)) b->see_pending = true;
     cv_.notify_all();
   }
+  // Whether any bot can look at a picture at all.
+  bool anyone_sees() {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto &b : bots_)
+      if (sees(b->id)) return true;
+    return false;
+  }
 
   void settings_changed() { publish_bots(true); }
 
@@ -2526,7 +2533,9 @@ private:
         // The goal driver: a bot that worked with tools for Chris and stops
         // after a failed step, without a word, or saying what it will do
         // next, is sent back to the goal (three times a turn at most). A
-        // card that ended without a yes is a real blocker and ends the work.
+        // card that ended without a yes (a plugin's too) and a refusal the
+        // room makes on purpose (one scene per request) are real blockers
+        // and end the work.
         if (reason == "human" && !t.blocked && t.drives < 3 && vm::valid_name(jstr(me, "vm")) && (t.login_wall || (!t.steps && wants_login(content)))) {
           ++t.drives;
           logf("engine: " + b.id + " stopped at a login page; the room has it call browser_login");
@@ -2710,7 +2719,7 @@ private:
                 set_phase(b, ask.isObj() ? "approval" : "tool", title);
                 if (ask.isObj() && on_approval) on_approval(name, title);
               });
-              result = {out.text, out.ok};
+              result = {out.text, out.ok, out.refused};
             } else {
               result = tools::call(c.name, args, ctx);
             }
@@ -2734,7 +2743,7 @@ private:
           static const std::regex wall("Passwortfeld|(?:^|\n)Seite: [^\n]*(Anmelden|Anmeldung|Sign[- ]?In|Login|Verifizierung|Bestätigungscode|Two-Step|2FA)", std::regex::icase);
           t.login_wall = std::regex_search(result.text, wall);
         }
-        if (!result.ok && (c.name == "consent" || c.name == "browser_login" || c.name == "browser_pay" || result.text.find(" erledigt diese Aufgabe schon") != std::string::npos))
+        if (!result.ok && (result.blocker || c.name == "consent" || c.name == "browser_login" || c.name == "browser_pay" || result.text.find(" erledigt diese Aufgabe schon") != std::string::npos))
           t.blocked = true;
         t.tool_sig += c.name + ":" + c.arguments + ";";
         ++t.steps;

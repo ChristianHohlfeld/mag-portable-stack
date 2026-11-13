@@ -37,6 +37,7 @@ struct Ctx {
 struct Result {
   std::string text; // goes back to the model
   bool ok = true;
+  bool blocker = false; // Chris said no, or the work is done as far as it may go: the goal driver does not send the bot on
 };
 
 inline Val fn(const char *name, const char *description, const char *params_json) {
@@ -747,8 +748,8 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
         for (size_t i = ctx.asked_at; i < parts->asArr().size(); ++i) {
           const Val &p = parts->asArr()[i];
           if (jstr(p, "tool") == "scene_3d" && jstr(p, "state") == "ok")
-            return fail("Auf diese Bitte hin hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
-                        "Eine neue Fassung baust du erst, wenn er sie möchte.");
+            return {"Fehler: Auf diese Bitte hin hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
+                    "Eine neue Fassung baust du erst, wenn er sie möchte.", false, true};
         }
     bool ok = false;
     const std::string text = ctx.scenes->start(args, jstr(ctx.bot, "id"), ok, ctx.cancel);

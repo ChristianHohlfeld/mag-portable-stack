@@ -131,7 +131,8 @@ def main():
                     got = at[b][1] - at[b][0]
                     assert abs(np.linalg.norm(got) - body.length[b]) < 1e-9                    # a bone keeps its length
                     assert float(motion.unit(got) @ limbs[2 * k + j]) > 1 - 1e-9               # and points where it was told to
-            assert set(turns) == set(body.names) and all(abs(np.linalg.norm(q) - 1) < 1e-9 for q in turns.values())
+            moved = {n for n, b in zip(body.names, body.bones) if b["role"] != "hand"}     # a hand turns only when it is bent
+            assert set(turns) == moved and all(abs(np.linalg.norm(q) - 1) < 1e-9 for q in turns.values())
     # As rig poses take it: standing as the model stands is no turn at all.
     same = np.array([1.0, 0.0, 0.0, 0.0])
     rest = np.stack([stout.dir[stout.legs[0][0]], stout.dir[stout.legs[0][1]], stout.dir[stout.legs[1][0]], stout.dir[stout.legs[1][1]],
@@ -181,8 +182,8 @@ def main():
                     slid = float(np.linalg.norm(feet_of(p, b)[k] - feet_of(p, a)[k])) / body.leg
                     worst, total, count = max(worst, slid), total + slid, count + 1
         assert count > 100 and worst < 0.08 and total / count < 0.006, (label, worst, total / count)
-        # Nothing jerks: no bone turns faster than a body can.
-        fastest = max(angle(out[f][3][name], out[f - 1][3][name]) * FPS for f in range(1, len(out)) for name in body.names)
+        # Nothing jerks: no bone turns faster than a body can (a hand has a turn only while it is bent).
+        fastest = max(angle(out[f][3][name], out[f - 1][3][name]) * FPS for f in range(1, len(out)) for name in out[f][3].keys() & out[f - 1][3].keys())
         assert fastest < 30.0, (label, fastest)
         steps = np.array([np.linalg.norm(out[f][0] - out[f - 1][0]) for f in range(1, len(out))]) * FPS / body.leg
         assert steps.max() < 12.0, (label, steps.max())

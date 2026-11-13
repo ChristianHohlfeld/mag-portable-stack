@@ -84,7 +84,8 @@ class Room:
         (self.tmp / "control").mkdir()
         (self.tmp / "state").mkdir()
         # Lena has a (fake) VM, Noah is chat-only.
-        (self.tmp / "state" / "agents.json").write_text(json.dumps([{"name": "Lena", "vm": "agent1"}, {"name": "Noah", "vm": ""}]))
+        bot = lambda id, name, vm: {"id": id, "name": name, "vm": vm, "enabled": True, "thinking": False, "persona": "", "memory": []}
+        (self.tmp / "state" / "bots.json").write_text(json.dumps([bot("lena", "Lena", "agent1"), bot("noah", "Noah", "")]))
         self.proc = None
         self.start()
 
@@ -382,11 +383,12 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.lena.chats()), 1)  # no further model call after Stop
         # A step that runs to the end reports its exit code and the model sees the output.
         script = iter([{"content": "", "tool_calls": [{"name": "shell", "arguments": {"command": "echo hallo; exit 3"}}]}, "Exit drei."])
+        r.lena.reply = lambda body: next(script, "")   # a failed step: the room sends it on, it has nothing to add
         r.say("@Lena noch ein Befehl")
         r.idle()
         last = [m for m in r.messages() if m["from"] == "lena"][-1]
         self.assertEqual((last["parts"][0]["state"], last["parts"][0]["exit"]), ("error", 3))
-        self.assertEqual(r.lena.chats()[-1]["messages"][-1]["content"], "exit=3\nhallo\n")
+        self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "tool"][-1], "exit=3\nhallo\n")
 
     def test_finished_html_becomes_a_live_page_on_the_bots_site(self):
         r = self.room
@@ -720,9 +722,11 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(message(second)["model3d"]["scene"]["lift"], 0.9)
         # The first is finished: no scene yet, the others are still under way.
         r.wait(lambda: message(first)["model3d"]["state"] == "running", "first running")
-        r.idol.hold = False
+        r.idol.hold = {message(i)["model3d"].get("job") for i in (second, third)}   # the others are still under way
         r.wait(lambda: message(first)["state"] == "done", "first done")
+        time.sleep(1.0)
         self.assertEqual((scenes(), r.scene.specs), ([], []))
+        r.idol.hold = False
         r.wait(lambda: message(third)["state"] == "done" and scenes(), "the room is put together", 40)
         # All are through: the room is one scene, each object where it stood, as tall as it was, turned as the photo saw it.
         spec = r.scene.specs[-1]
@@ -1166,7 +1170,7 @@ class RoomContract(unittest.TestCase):
 
         def ask(bot, *script, text="bitte"):
             replies = iter(script)
-            getattr(r, bot).reply = lambda body: next(replies)
+            getattr(r, bot).reply = lambda body: next(replies, "")   # sent on after a failed step, it has nothing to add
             r.say("@%s %s" % (bot.capitalize(), text))
             r.idle(40)
             return answer(bot)

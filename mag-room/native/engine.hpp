@@ -157,8 +157,10 @@ public:
     audience_.clear();
     if (only) audience_.insert(to.begin(), to.end());
     for (auto &b : bots_) {
-      // Bot rounds and self-continuations yield to the human at once.
-      if (b->cancel && b->running != "human") b->cancel->stop();
+      // Bot rounds and self-continuations yield to the human at once. The
+      // prefix being evaluated does not: the turn needs it anyway, and only
+      // a finished one is saved, so that the next trash restores it in seconds.
+      if (b->cancel && b->running != "human" && !b->warming) b->cancel->stop();
       b->continues = 0;
       b->said.clear();
       const bool addressed = std::find(to.begin(), to.end(), b->id) != to.end();
@@ -587,6 +589,7 @@ private:
     int cut_off = 0;             // > 0: a restart of the room cut this bot's answer off before any of it could be seen (how often)
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     std::vector<std::shared_ptr<Look>> looks; // things Chris named in a photo: where are they?
+    bool warming = false;        // evaluating the system prefix to save it (warm_prefix): a new message waits for it
     bool resetting = false;      // the owner resets this bot (reset_vm) or restores its VM (restore_vm): it gets no turn until that is done
     bool saving = false;         // a save of its VM is under way (save_vm)
     std::string save_note;       // how the last save ended, in words
@@ -907,8 +910,13 @@ private:
     {
       std::lock_guard<std::mutex> lk(mu_);
       cancel = b.cancel;
+      b.warming = true;
     }
     const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      b.warming = false;
+    }
     if (res.ok()) {
       llm::slot_save(b.backend, file, &err);
       set_kv(b, "warm");

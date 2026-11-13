@@ -8,7 +8,7 @@ hand, a minor version for new features, a patch for fixes.
 ## 5.1.0 (2026-11-13)
 
 Videos with sound by HyperFlow H3, painted 3D models, and a chat whose every
-message can be deleted; 32 pull requests since 5.0.0 (#502–#533). A 5.0.0 host
+message can be deleted; 36 pull requests since 5.0.0 (#502–#537). A 5.0.0 host
 is updated with `ops/deploy.sh`; for videos the owner runs
 `ops/video/h3/fetch.sh` and `ops/video/h3/build.sh` once (licence).
 
@@ -24,8 +24,9 @@ is updated with `ops/deploy.sh`; for videos the owner runs
   gfx906 kernels of its own: attention with int8 Q·Kᵀ (v_dot4) and one Q scale
   per row, RMSNorm with the AdaLN modulation in one pass, the VAE's Conv3d as
   an implicit fp16 GEMM (#524, #526, #528, #529); `h3d` keeps H3 loaded between
-  clips and lets go of it for 3D and pictures, and finds its weights through
-  hard links (#530, #531).
+  clips and lets go of it for 3D and pictures, finds its weights through hard
+  links and is asked to load only another model (#530, #531, #536); an H3 clip
+  survives restarts and goes on after its last finished step (#535).
 - Photo to 3D: TripoSG's shape as its own scripts make it (no bust cut, hard
   mask, full picture), painted from six sides by MV-Adapter on SDXL, the views
   made twice as large by Real-ESRGAN as MV-Adapter's texture script does; a
@@ -51,7 +52,7 @@ is updated with `ops/deploy.sh`; for videos the owner runs
   same row with ⋯ and „Nachricht löschen“, always in sight; a running job can
   be deleted too (#527). Code longer than 12 lines folds like a step, and a
   tool call or a scene a bot writes into its text as JSON is taken out and the
-  bot is sent to make the call for real (#533).
+  bot is sent to make the call for real (#533, #537).
 - CI on GitHub green again (#517).
 
 ## 5.0.0 (2026-11-12)

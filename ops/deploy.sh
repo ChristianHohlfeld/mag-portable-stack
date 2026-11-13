@@ -255,8 +255,6 @@ command -v pdftotext >/dev/null || warn 'pdftotext missing: the bots cannot read
 # Speech to text (mag-stt): built against the pinned recognizer when it is
 # there, restarted only when its binary, model or unit changed.
 soft bash "$SOURCE/ops/stt/install.sh"
-# Voices for reading aloud (they run in the browser; the room hands them out).
-soft bash "$SOURCE/ops/tts/install.sh"
 # Scenes (mag-scene): the pinned Blender, on the CPU. A film that is being
 # rendered goes on through the worker's restart.
 soft bash "$SOURCE/ops/scene/install.sh"

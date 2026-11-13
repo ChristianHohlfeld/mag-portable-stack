@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/prune-releases.sh
-  ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/tts/*.sh ops/private-access/deploy-nginx.sh
+  ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/private-access/deploy-nginx.sh
   ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
 python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py ops/scene/face.py ops/scene/phonemes.py
@@ -44,8 +44,14 @@ fi
 # The MI50 power cap may only ever be lowered.
 grep -Fq 'if (( now > LIMIT )); then' ops/idol/power-cap.sh
 # The page loads nothing from outside the release, and every script parses.
-if grep -rnE 'https?://[a-z0-9.-]+\.[a-z]{2,}' mag-room/web/index.html mag-room/web/app; then
+# The one exception is the reading-aloud worker: it runs in the client alone
+# and fetches its runtime and voices from jsDelivr and Hugging Face, every
+# file pinned by its SHA256.
+if grep -rnE --exclude=tts-worker.js 'https?://[a-z0-9.-]+\.[a-z]{2,}' mag-room/web/index.html mag-room/web/app; then
   echo 'web: external URL in the page or its scripts' >&2; exit 1
+fi
+if grep -oE 'https?://[a-z0-9.-]+' mag-room/web/app/tts-worker.js | grep -vqxE 'https://(cdn\.jsdelivr\.net|huggingface\.co)'; then
+  echo 'web: the reading-aloud worker fetches from somewhere else' >&2; exit 1
 fi
 if command -v node >/dev/null; then
   for f in mag-room/web/app/*.js mag-room/web/sw.js; do node --check "$f"; done
@@ -61,13 +67,4 @@ sha256sum --quiet -c <<'SUMS'
 ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6  mag-room/web/static/xterm.css
 bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089  mag-room/web/static/xterm-addon-fit.js
 SUMS
-# Reading aloud happens in the browser with the pinned voices: the worker in
-# the repository is the one the lock names, and no speech is made on the server.
-(cd ops/tts && grep ' tts-worker.js$' assets.lock | sha256sum --quiet -c -)
-# Every pinned piece is one line, its SHA256 and its name; the runtime names
-# the worker and onnxruntime-web.
-for lock in ops/tts/assets.lock ops/tts/models.lock ops/tts/source.lock; do
-  ! grep -vqE '^[0-9a-f]{64}  [^ ]+$' "$lock" || { echo "$lock: a line is not '<sha256>  <name>'" >&2; exit 1; }
-done
-grep -q '  ort.webgpu.min.js$' ops/tts/assets.lock
 echo 'static checks ok'

@@ -949,31 +949,29 @@ finished recording. `ops/stt/bootstrap.sh` builds the pinned recognizer and
 fetches the model once; `ops/stt/install.sh` is the deploy layer. CI builds
 `mag-stt` without the recognizer and tests its protocol on a fake engine.
 
-## Reading aloud (`ops/tts`)
+## Reading aloud (in the browser)
 
-Speech is made in the browser, never on the server. `mag-room/web/app/speak.js`
-drives a Web Worker (`ops/tts/tts-worker.js`) that runs Supertonic 3 in
-onnxruntime-web, on WebGPU where the device has one, else in WASM threads
-(the page is cross-origin isolated for that). On the GPU what one network
-hands to the next stays there (the text for the steps, the sound from step
-to step to the vocoder): only the length of the speech and the finished
-sound are read back, two waits for the GPU per part instead of one per
-step. One voice and tempo per
-speaker, kept on the device. The page fetches and prepares the model in the
-background after load, so the first "Vorlesen" speaks at once; until then
-the device's own voice reads. The newest answer is synthesised ahead while
-it arrives. The last four answers made whole are kept in Cache Storage as
-16-bit sound (`mag-tts-said`): after a reload a tap on one of them plays
-the model's voice at once, while the model is still being made ready. Before a sentence goes to the model it is written as it is
-spoken (numbers, dates, units, abbreviations).
+Speech is made in the client alone, never on the server, and the room hands
+out nothing for it. `mag-room/web/app/speak.js` drives a Web Worker
+(`mag-room/web/app/tts-worker.js`) that runs Piper voices (VITS) in
+onnxruntime-web 1.30.0 (WASM threads; the page is cross-origin isolated for
+that), with the phonemes from espeak-ng in `@diffusionstudio/piper-wasm`
+1.0.0. The worker fetches the runtime from jsDelivr and the voices from
+`rhasspy/piper-voices` on Hugging Face (one pinned commit), checks every
+file against its SHA256 and keeps it in Cache Storage (`mag-tts-piper`), so
+a browser downloads a voice (about 63 MB) and the runtime (about 33 MB)
+once and then reads without the network.
 
-`ops/tts/bootstrap.sh` fetches and packs the model once (weights moved to
-float16 by `pack.py`, about 200 MB); `source.lock`, `models.lock` and
-`assets.lock` pin every file by SHA256. `ops/tts/install.sh` puts model,
-runtime and worker under `/opt/mag-tts/` in folders named by their content
-and writes `config.json`; the room serves them under `/tts/` as immutable
-files. The worker keeps everything in Cache Storage, so a browser downloads
-the model once.
+A voice in the settings is a German and an English Piper voice of one kind:
+Kerstin and Ramona (Alba in English), Thorsten and Karlsson (Joe in
+English); the language of a message picks which reads. One voice and tempo
+per speaker, kept on the device. After load the page makes the bots'
+German voices ready and fetches their English ones, so the first
+"Vorlesen" speaks at once; until then the device's own voice reads. The
+newest answer is synthesised ahead while it arrives. The last four answers
+made whole are kept in Cache Storage as 16-bit sound (`mag-tts-said`):
+after a reload a tap on one of them plays its voice at once. espeak-ng
+reads numbers, dates and units itself.
 
 ## Backups (`ops/backup`)
 
@@ -1058,7 +1056,7 @@ no model gating:
    the previous release.
 5. Independent layers, each allowed to fail with a warning: the model layer
    (`ops/models/install.sh`, never restarts a running model), `ops/stt`,
-   `ops/tts`, `ops/scene`, `ops/idol` (when its environment exists),
+   `ops/scene`, `ops/idol` (when its environment exists),
    `ops/bots`, the health and VM-save timers, `ops/boot/ensure-boot.sh` and
    release pruning (the new release and one fallback are kept).
 

@@ -247,7 +247,6 @@ p_runtime() {
 }
 p_media() {
   as_owner bash "$REPO/ops/stt/bootstrap.sh"
-  as_owner bash "$REPO/ops/tts/bootstrap.sh"
   as_owner bash "$REPO/ops/scene/bootstrap.sh"
   as_owner bash "$REPO/ops/scene/face/bootstrap.sh"
 }

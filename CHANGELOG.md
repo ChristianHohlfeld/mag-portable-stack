@@ -7,6 +7,8 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- The MI50's power cap is 78 W instead of 72 W (Chris, 2026-11-13);
+  `ops/idol/power-cap.sh` still only lowers it and never writes more than 78 W.
 - Videos with their sound: HyperFlow H3 Flash (MiniMax H3, licensed to the
   owner personally; never fetched by the installer) replaces Wan 2.2, natively
   on ROCm/HIP on the MI50, 4 steps at 480p, 5 s by default (#518, #521, #522).

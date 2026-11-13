@@ -79,7 +79,7 @@ public:
   // becomes the video, marked as made by AI with MiniMax H3. Returns the
   // message id, or "" with `error`.
   std::string film(const Val &image, const std::string &prompt, const std::string &by, std::string &error,
-                   int seconds = 10, const std::string &use = "first") {
+                   int seconds = 5, const std::string &use = "first") {
     std::string bytes;
     if (image.isObj()) {
       const std::string path = room_.file_path(jstr(image, "file"));

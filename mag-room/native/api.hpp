@@ -202,7 +202,7 @@ public:
       if (!image.isObj()) return http::send_error(fd, 404, "Bild nicht gefunden");
       std::string error, id;
       if (what == "3d") id = idol_.start(image, jstr(in, "quality", "normal"), error);
-      else if (what == "video") id = idol_.film(image, jstr(in, "prompt"), "chris", error, (int)jnum(in, "seconds", 10), jstr(in, "use", "first"));
+      else if (what == "video") id = idol_.film(image, jstr(in, "prompt"), "chris", error, (int)jnum(in, "seconds", 5), jstr(in, "use", "first"));
       else return http::send_error(fd, 400, "3d oder video");
       if (id.empty()) return http::send_error(fd, 409, error.empty() ? "Der Auftrag wurde abgelehnt." : error);
       Val out = Val::object();
@@ -693,7 +693,7 @@ private:
       for (auto &a : atts.asArr())
         if (jstr(a, "kind") == "image") { image = &a; break; }
       std::string error;
-      const int seconds = (int)jnum(in, "seconds", 10);
+      const int seconds = (int)jnum(in, "seconds", 5);
       if (trim(jstr(in, "text")).empty()) error = "Was soll im Video geschehen?";
       else if (image) out["model3d"] = idol_.film(*image, jstr(in, "text"), "chris", error, seconds, jstr(in, "use", "first"));
       else out["model3d"] = idol_.film(Val(), jstr(in, "text"), "chris", error, seconds);

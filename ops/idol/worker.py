@@ -62,7 +62,7 @@ VIDEO_STEP = re.compile(r"MAG-VIDEO (\d+)/(\d+)")
 VIDEO_STAGE = re.compile(r"MAG-VIDEO-STAGE (.+)")
 H3_WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", os.path.join(IDOL_BASE, "weights/hyperflow-h3")))
 H3_CLI = Path(os.environ.get("MAG_H3_CLI", os.path.join(IDOL_BASE, "h3/sd-cli")))
-H3_STEPS = 6
+H3_STEPS = 4
 
 
 def h3_ready():
@@ -825,7 +825,7 @@ class API(BaseHTTPRequestHandler):
             prompt = asked.get("prompt", [""])[0].strip()[:1500]
             try:
                 seed = int(asked.get("seed", ["0"])[0])
-                seconds = 5 if int(asked.get("seconds", ["10"])[0]) < 10 else 10
+                seconds = 5 if int(asked.get("seconds", ["5"])[0]) < 10 else 10
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 return self.reply(400, {"error": "Ungültiger Videoauftrag"})

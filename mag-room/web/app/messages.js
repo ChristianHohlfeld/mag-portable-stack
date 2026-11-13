@@ -354,7 +354,7 @@
   // A video with its sound (HyperFlow H3 Flash): 5 or 10 seconds, and a
   // picture as its first frame or as who is in it. Kept on the device.
   MAG.videoChoice = (onChange) => {
-    const pick = { seconds: +(localStorage.getItem('mag-video-seconds') || 10), use: localStorage.getItem('mag-video-use') || 'first' };
+    const pick = { seconds: +(localStorage.getItem('mag-video-seconds') || 5), use: localStorage.getItem('mag-video-use') || 'first' };
     const box = el('div', { class: 'video-choice' });
     const seg = (label, key, options) => {
       const s = el('div', { class: 'seg', role: 'group', 'aria-label': label });
@@ -367,8 +367,8 @@
     paint();
     return { box, pick, uses: (picture) => picture ? seg('Bild als', 'use', [['first', 'Anfang'], ['ref', 'Figur']]) : null };
   };
-  MAG.videoHint = (pick) => 'HyperFlow H3 Flash (MiniMax H3): mit Ton, ' + pick.seconds + ' s, etwa 768p, als KI-generiert gekennzeichnet. '
-    + 'Dauert auf der Grafikkarte lange, bei 10 s bis etwa eine Stunde.';
+  MAG.videoHint = (pick) => 'HyperFlow H3 Flash (MiniMax H3): mit Ton, ' + pick.seconds + ' s, 480p, als KI-generiert gekennzeichnet. '
+    + (pick.seconds > 5 ? 'Dauert etwa dreimal so lange wie 5 s.' : 'Läuft auf der Grafikkarte, wenn sie frei ist.');
   function makeVideo(a) {
     MAG.sheet('Video aus dem Bild', (content, _, close) => {
       const words = el('textarea', { rows: 3, placeholder: 'Was passiert, was hört man? z. B. „dreht sich lächelnd zur Kamera und sagt: Hallo!“' });

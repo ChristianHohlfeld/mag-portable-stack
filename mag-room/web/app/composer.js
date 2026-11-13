@@ -11,7 +11,7 @@
   let mode3d = false;
   let modeImage = false;      // a picture from words (FLUX.2 klein on the MI50)
   let modeVideo = false;      // a video with its sound (H3): from words alone, or with a picture as its start or its figure
-  let videoPick = { seconds: 10, use: 'first' };   // its length and what the picture is, set where the order is painted
+  let videoPick = { seconds: 5, use: 'first' };   // its length and what the picture is, set where the order is painted
   let shape = localStorage.getItem('mag-image-shape') || 'square';
   let quality = localStorage.getItem('mag-3d-quality') || 'normal';
 

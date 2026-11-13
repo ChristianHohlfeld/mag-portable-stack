@@ -37,10 +37,10 @@ index 291edd6..5ea9abb 100644
          sd_ggml_register_cuda_i8_gated_residual(device);
 diff --git a/src/core/cuda/sage_gfx906.cu b/src/core/cuda/sage_gfx906.cu
 new file mode 100644
-index 0000000..d44be4e
+index 0000000..6c5a1c9
 --- /dev/null
 +++ b/src/core/cuda/sage_gfx906.cu
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,114 @@
 +// Sage-style attention for the MI50 (gfx906, wave64, 64 KB LDS), behind
 +// ggml_sage_attn: Q and K in int8 (K less its mean over the tokens, which
 +// leaves every softmax row as it is), their products by v_dot4 (four int8
@@ -53,17 +53,11 @@ index 0000000..d44be4e
 +#include <cstring>
 +#include "core/ggml_extensions.h"
 +#include "runtime.h"
++#include "sage_gfx906_kernels.h"
 +
 +namespace SD_CUDA_NAMESPACE {
 +    namespace sd_sage906 {
-+        constexpr int D  = 128;   // head size (H3)
-+        constexpr int BQ = 64;    // query rows per block
-+        constexpr int BK = 64;    // keys per step
-+        constexpr int WORDS = D / 4;  // int8 words per row
-+        constexpr float NEG = -1e30f; // "minus infinity" that -ffast-math keeps
-+
-+        typedef _Float16 half2_t __attribute__((ext_vector_type(2)));
-+
++        using namespace ::sd_sage906;
 +        struct Workspace {
 +            size_t q, k, q_scale, k_scale, k_mean, size;
 +            explicit Workspace(const ggml_tensor* dst) {
@@ -73,7 +67,7 @@ index 0000000..d44be4e
 +                size    = 0;
 +                q       = reserve(lq * D * qt->ne[2] * qt->ne[3]);
 +                k       = reserve(lk * D * kt->ne[2] * kt->ne[3]);
-+                q_scale = reserve(lq / BQ * qt->ne[2] * qt->ne[3] * sizeof(float));
++                q_scale = reserve(lq * qt->ne[2] * qt->ne[3] * sizeof(float));   // one per row
 +                k_scale = reserve(lk / BK * kt->ne[2] * kt->ne[3] * sizeof(float));
 +                k_mean  = reserve(D * kt->ne[2] * kt->ne[3] * sizeof(float));
 +            }
@@ -83,171 +77,6 @@ index 0000000..d44be4e
 +                return offset;
 +            }
 +        };
-+
-+        // Mean of K over its tokens, per channel and head: grid (heads*batch), 128 threads.
-+        static __global__ void key_mean(const float* k, float* mean, int length) {
-+            const int head = blockIdx.x, c = threadIdx.x;
-+            const float* src = k + size_t(head) * length * D;
-+            float sum = 0.f;
-+            for (int t = 0; t < length; ++t) sum += src[size_t(t) * D + c];
-+            mean[head * D + c] = sum / float(max(length, 1));
-+        }
-+
-+        // One block of 64 rows to int8 with one scale: grid (padded/64, heads*batch), 256 threads.
-+        // Rows past `length` become zeros.
-+        static __global__ void quantize(const float* x, const float* mean, int8_t* out, float* scales, int length) {
-+            __shared__ float peak[256];
-+            const int block = blockIdx.x, head = blockIdx.y, tid = threadIdx.x;
-+            const int blocks = gridDim.x;
-+            const float* src = x + size_t(head) * length * D;
-+            const float* m   = mean ? mean + head * D : nullptr;
-+            float local = 0.f;
-+            for (int i = tid; i < BQ * D; i += 256) {
-+                const int row = block * BQ + i / D, c = i % D;
-+                if (row < length) local = fmaxf(local, fabsf(src[size_t(row) * D + c] - (m ? m[c] : 0.f)));
-+            }
-+            peak[tid] = local;
-+            __syncthreads();
-+            for (int s = 128; s > 0; s >>= 1) {
-+                if (tid < s) peak[tid] = fmaxf(peak[tid], peak[tid + s]);
-+                __syncthreads();
-+            }
-+            const float scale = peak[0] > 0.f ? peak[0] / 127.f : 1.f;
-+            const float inv = 1.f / scale;
-+            int8_t* dst = out + (size_t(head) * blocks * BQ + size_t(block) * BQ) * D;
-+            for (int i = tid; i < BQ * D; i += 256) {
-+                const int row = block * BQ + i / D, c = i % D;
-+                float v = row < length ? (src[size_t(row) * D + c] - (m ? m[c] : 0.f)) * inv : 0.f;
-+                dst[i] = int8_t(__float2int_rn(fminf(fmaxf(v, -127.f), 127.f)));
-+            }
-+            if (tid == 0) scales[head * blocks + block] = scale;
-+        }
-+
-+        // The attention: grid (padded_q/64, hq*batch), 256 threads (four wave64).
-+        // Thread (ty, tx) = (tid / 16, tid % 16) owns rows ty*4..ty*4+3: in S the
-+        // columns tx*4..tx*4+3, in O the channels tx*8..tx*8+7.
-+        static __global__ void __launch_bounds__(256) attend(const int8_t* qi, const int8_t* ki, const _Float16* v,
-+                                                             const float* qs, const float* ks, float* out,
-+                                                             int lq, int lk, int hq, int group, int batch, float scale_log2) {
-+            // Q and K word-major ([word][row]): a thread reads its 4 rows or keys as one
-+            // 128-bit load, and the 16 lanes of a row group hit different banks.
-+            __shared__ __attribute__((aligned(16))) int q_tile[WORDS * BQ];           // 8 KB
-+            __shared__ __attribute__((aligned(16))) int k_tile[WORDS * BK];           // 8 KB
-+            __shared__ half2_t v_pairs[(BK / 2) * D];    // 16 KB: (V[2k][c], V[2k+1][c])
-+            __shared__ half2_t p_pairs[BQ * (BK / 2)];   // 8 KB:  (P[r][2k], P[r][2k+1])
-+
-+            const int qb = blockIdx.x, hb = blockIdx.y;
-+            const int head = hb % hq, b = hb / hq, kv_head = head / group;
-+            const int q_blocks = gridDim.x, k_blocks = (lk + BK - 1) / BK;
-+            const int tid = threadIdx.x, ty = tid / 16, tx = tid % 16;
-+
-+            {   // Q's 64 rows into LDS
-+                const int* src = reinterpret_cast<const int*>(qi + (size_t(hb) * q_blocks * BQ + size_t(qb) * BQ) * D);
-+                for (int i = tid; i < BQ * WORDS; i += 256) q_tile[(i % WORDS) * BQ + i / WORDS] = src[i];
-+            }
-+            const float q_scale = qs[hb * q_blocks + qb] * scale_log2;
-+            const int kh = b * (hq / group) + kv_head;
-+            const int8_t* k_head = ki + size_t(kh) * k_blocks * BK * D;
-+            const _Float16* v_head = v + size_t(kh) * lk * D;
-+
-+            float m[4], l[4], o[4][8];
-+#pragma unroll
-+            for (int r = 0; r < 4; ++r) {
-+                m[r] = NEG;
-+                l[r] = 0.f;
-+#pragma unroll
-+                for (int c = 0; c < 8; ++c) o[r][c] = 0.f;
-+            }
-+
-+            for (int kb = 0; kb < k_blocks; ++kb) {
-+                __syncthreads();
-+                {   // K block (int8) and V block (fp16, as pairs along the keys) into LDS
-+                    const int* src = reinterpret_cast<const int*>(k_head + size_t(kb) * BK * D);
-+                    for (int i = tid; i < BK * WORDS; i += 256) k_tile[(i % WORDS) * BK + i / WORDS] = src[i];
-+                    for (int i = tid; i < (BK / 2) * D; i += 256) {
-+                        const int pair = i / D, c = i % D, t0 = kb * BK + pair * 2;
-+                        half2_t value;
-+                        value.x = t0 < lk ? v_head[size_t(t0) * D + c] : (_Float16)0.f;
-+                        value.y = t0 + 1 < lk ? v_head[size_t(t0 + 1) * D + c] : (_Float16)0.f;
-+                        v_pairs[i] = value;
-+                    }
-+                }
-+                __syncthreads();
-+
-+                // S = Q K^T for 4 rows x 4 columns, by v_dot4
-+                int acc[4][4] = {};
-+#pragma unroll 4
-+                for (int w = 0; w < WORDS; ++w) {
-+                    const int4 q4 = *reinterpret_cast<const int4*>(&q_tile[w * BQ + ty * 4]);
-+                    const int4 k4 = *reinterpret_cast<const int4*>(&k_tile[w * BK + tx * 4]);
-+                    const int qw[4] = {q4.x, q4.y, q4.z, q4.w}, kw[4] = {k4.x, k4.y, k4.z, k4.w};
-+#pragma unroll
-+                    for (int r = 0; r < 4; ++r)
-+#pragma unroll
-+                        for (int c = 0; c < 4; ++c) acc[r][c] = __builtin_amdgcn_sdot4(qw[r], kw[c], acc[r][c], false);
-+                }
-+                const float s_scale = q_scale * ks[kh * k_blocks + kb];
-+
-+                // Online softmax in base 2; a row's 64 columns lie in 16 neighbouring lanes.
-+#pragma unroll
-+                for (int r = 0; r < 4; ++r) {
-+                    float s[4], top = NEG;
-+#pragma unroll
-+                    for (int c = 0; c < 4; ++c) {
-+                        const int key = kb * BK + tx * 4 + c;
-+                        s[c] = key < lk ? float(acc[r][c]) * s_scale : NEG;
-+                        top = fmaxf(top, s[c]);
-+                    }
-+#pragma unroll
-+                    for (int off = 8; off > 0; off >>= 1) top = fmaxf(top, __shfl_xor(top, off, 16));
-+                    const float m_new = fmaxf(m[r], top);
-+                    const float alpha = exp2f(m[r] - m_new);
-+                    float sum = 0.f, p[4];
-+#pragma unroll
-+                    for (int c = 0; c < 4; ++c) {
-+                        p[c] = exp2f(s[c] - m_new);
-+                        sum += p[c];
-+                    }
-+#pragma unroll
-+                    for (int off = 8; off > 0; off >>= 1) sum += __shfl_xor(sum, off, 16);
-+                    l[r] = l[r] * alpha + sum;
-+                    m[r] = m_new;
-+#pragma unroll
-+                    for (int c = 0; c < 8; ++c) o[r][c] *= alpha;
-+                    half2_t a, b2;
-+                    a.x = (_Float16)p[0]; a.y = (_Float16)p[1];
-+                    b2.x = (_Float16)p[2]; b2.y = (_Float16)p[3];
-+                    p_pairs[(ty * 4 + r) * (BK / 2) + tx * 2]     = a;
-+                    p_pairs[(ty * 4 + r) * (BK / 2) + tx * 2 + 1] = b2;
-+                }
-+                __syncthreads();
-+
-+                // O += P V for 4 rows x 8 channels, by v_dot2_f32_f16
-+#pragma unroll 4
-+                for (int k2 = 0; k2 < BK / 2; ++k2) {
-+                    half2_t pr[4], vc[8];
-+#pragma unroll
-+                    for (int r = 0; r < 4; ++r) pr[r] = p_pairs[(ty * 4 + r) * (BK / 2) + k2];
-+#pragma unroll
-+                    for (int c = 0; c < 8; ++c) vc[c] = v_pairs[k2 * D + tx * 8 + c];
-+#pragma unroll
-+                    for (int r = 0; r < 4; ++r)
-+#pragma unroll
-+                        for (int c = 0; c < 8; ++c) o[r][c] = __builtin_amdgcn_fdot2(pr[r], vc[c], o[r][c], false);
-+                }
-+            }
-+
-+            // Out: F32 [D, heads, tokens, batch]
-+#pragma unroll
-+            for (int r = 0; r < 4; ++r) {
-+                const int row = qb * BQ + ty * 4 + r;
-+                if (row >= lq) continue;
-+                const float inv = l[r] > 0.f ? 1.f / l[r] : 0.f;
-+                float* dst = out + ((size_t(b) * lq + row) * hq + head) * D + tx * 8;
-+#pragma unroll
-+                for (int c = 0; c < 8; ++c) dst[c] = o[r][c] * inv;
-+            }
-+        }
 +
 +        static bool is_gfx906(int device) {
 +            hipDeviceProp_t properties;
@@ -299,7 +128,7 @@ index 0000000..d44be4e
 +            auto* km     = reinterpret_cast<float*>(data + work.k_mean);
 +            const int q_blocks = GGML_PAD(lq, BQ) / BQ, k_blocks = GGML_PAD(lk, BK) / BK;
 +            key_mean<<<dim3(hk * batch), D, 0, stream>>>(static_cast<const float*>(k->data), km, lk);
-+            quantize<<<dim3(q_blocks, hq * batch), 256, 0, stream>>>(static_cast<const float*>(q->data), nullptr, qi, qs, lq);
++            quantize_rows<<<dim3(q_blocks, hq * batch), 256, 0, stream>>>(static_cast<const float*>(q->data), qi, qs, lq);
 +            quantize<<<dim3(k_blocks, hk * batch), 256, 0, stream>>>(static_cast<const float*>(k->data), km, ki, ks, lk);
 +            attend<<<dim3(q_blocks, hq * batch), 256, 0, stream>>>(qi, ki, static_cast<const _Float16*>(v->data), qs, ks,
 +                                                                   static_cast<float*>(dst->data), lq, lk, hq, hq / hk, batch,
@@ -326,3 +155,211 @@ index 0000000..d44be4e
 +    }
 +}
 +#endif
+diff --git a/src/core/cuda/sage_gfx906_kernels.h b/src/core/cuda/sage_gfx906_kernels.h
+new file mode 100644
+index 0000000..c58a541
+--- /dev/null
++++ b/src/core/cuda/sage_gfx906_kernels.h
+@@ -0,0 +1,202 @@
++// The kernels of sage_gfx906.cu, on their own so that a small program can
++// check them against exact attention on the CPU. MAG stack.
++#pragma once
++#include <hip/hip_runtime.h>
++#include <cstdint>
++
++namespace sd_sage906 {
++    constexpr int D  = 128;   // head size (H3)
++    constexpr int BQ = 64;    // query rows per block
++    constexpr int BK = 64;    // keys per step
++    constexpr int WORDS = D / 4;  // int8 words per row
++    constexpr float NEG = -1e30f; // "minus infinity" that -ffast-math keeps
++
++    typedef _Float16 half2_t __attribute__((ext_vector_type(2)));
++
++
++    // Mean of K over its tokens, per channel and head: grid (heads*batch), 128 threads.
++    static __global__ void key_mean(const float* k, float* mean, int length) {
++        const int head = blockIdx.x, c = threadIdx.x;
++        const float* src = k + size_t(head) * length * D;
++        float sum = 0.f;
++        for (int t = 0; t < length; ++t) sum += src[size_t(t) * D + c];
++        mean[head * D + c] = sum / float(max(length, 1));
++    }
++
++    // One block of 64 rows to int8 with one scale: grid (padded/64, heads*batch), 256 threads.
++    // Rows past `length` become zeros.
++    static __global__ void quantize(const float* x, const float* mean, int8_t* out, float* scales, int length) {
++        __shared__ float peak[256];
++        const int block = blockIdx.x, head = blockIdx.y, tid = threadIdx.x;
++        const int blocks = gridDim.x;
++        const float* src = x + size_t(head) * length * D;
++        const float* m   = mean ? mean + head * D : nullptr;
++        float local = 0.f;
++        for (int i = tid; i < BQ * D; i += 256) {
++            const int row = block * BQ + i / D, c = i % D;
++            if (row < length) local = fmaxf(local, fabsf(src[size_t(row) * D + c] - (m ? m[c] : 0.f)));
++        }
++        peak[tid] = local;
++        __syncthreads();
++        for (int s = 128; s > 0; s >>= 1) {
++            if (tid < s) peak[tid] = fmaxf(peak[tid], peak[tid + s]);
++            __syncthreads();
++        }
++        const float scale = peak[0] > 0.f ? peak[0] / 127.f : 1.f;
++        const float inv = 1.f / scale;
++        int8_t* dst = out + (size_t(head) * blocks * BQ + size_t(block) * BQ) * D;
++        for (int i = tid; i < BQ * D; i += 256) {
++            const int row = block * BQ + i / D, c = i % D;
++            float v = row < length ? (src[size_t(row) * D + c] - (m ? m[c] : 0.f)) * inv : 0.f;
++            dst[i] = int8_t(__float2int_rn(fminf(fmaxf(v, -127.f), 127.f)));
++        }
++        if (tid == 0) scales[head * blocks + block] = scale;
++    }
++
++    // Q to int8 with one scale per row (finer than per block): grid (padded/64,
++    // heads*batch), 256 threads, four per row. Rows past `length` become zeros.
++    static __global__ void quantize_rows(const float* x, int8_t* out, float* scales, int length) {
++        const int block = blockIdx.x, head = blockIdx.y, tid = threadIdx.x;
++        const int blocks = gridDim.x, row = block * BQ + tid / 4, part = tid % 4;
++        const float* src = x + (size_t(head) * length + row) * D + part * (D / 4);
++        float peak = 0.f;
++        if (row < length)
++            for (int c = 0; c < D / 4; ++c) peak = fmaxf(peak, fabsf(src[c]));
++        peak = fmaxf(peak, __shfl_xor(peak, 1, 4));
++        peak = fmaxf(peak, __shfl_xor(peak, 2, 4));
++        const float scale = peak > 0.f ? peak / 127.f : 1.f, inv = 1.f / scale;
++        int8_t* dst = out + ((size_t(head) * blocks + block) * BQ + tid / 4) * D + part * (D / 4);
++        for (int c = 0; c < D / 4; ++c)
++            dst[c] = row < length ? int8_t(__float2int_rn(fminf(fmaxf(src[c] * inv, -127.f), 127.f))) : int8_t(0);
++        if (part == 0) scales[(size_t(head) * blocks + block) * BQ + tid / 4] = scale;
++    }
++
++    // The attention: grid (padded_q/64, hq*batch), 256 threads (four wave64).
++    // Thread (ty, tx) = (tid / 16, tid % 16) owns rows ty*4..ty*4+3: in S the
++    // columns tx*4..tx*4+3, in O the channels tx*8..tx*8+7.
++    static __global__ void __launch_bounds__(256) attend(const int8_t* qi, const int8_t* ki, const _Float16* v,
++                                                         const float* qs, const float* ks, float* out,
++                                                         int lq, int lk, int hq, int group, int batch, float scale_log2) {
++        // Q and K word-major ([word][row]): a thread reads its 4 rows or keys as one
++        // 128-bit load, and the 16 lanes of a row group hit different banks.
++        __shared__ __attribute__((aligned(16))) int q_tile[WORDS * BQ];           // 8 KB
++        __shared__ __attribute__((aligned(16))) int k_tile[WORDS * BK];           // 8 KB
++        __shared__ half2_t v_pairs[(BK / 2) * D];    // 16 KB: (V[2k][c], V[2k+1][c])
++        __shared__ half2_t p_pairs[BQ * (BK / 2)];   // 8 KB:  (P[r][2k], P[r][2k+1])
++
++        const int qb = blockIdx.x, hb = blockIdx.y;
++        const int head = hb % hq, b = hb / hq, kv_head = head / group;
++        const int q_blocks = gridDim.x, k_blocks = (lk + BK - 1) / BK;
++        const int tid = threadIdx.x, ty = tid / 16, tx = tid % 16;
++
++        {   // Q's 64 rows into LDS
++            const int* src = reinterpret_cast<const int*>(qi + (size_t(hb) * q_blocks * BQ + size_t(qb) * BQ) * D);
++            for (int i = tid; i < BQ * WORDS; i += 256) q_tile[(i % WORDS) * BQ + i / WORDS] = src[i];
++        }
++        float q_scale[4];   // per row: its int8 scale and the softmax scale in base 2
++#pragma unroll
++        for (int r = 0; r < 4; ++r) q_scale[r] = qs[(size_t(hb) * q_blocks + qb) * BQ + ty * 4 + r] * scale_log2;
++        const int kh = b * (hq / group) + kv_head;
++        const int8_t* k_head = ki + size_t(kh) * k_blocks * BK * D;
++        const _Float16* v_head = v + size_t(kh) * lk * D;
++
++        float m[4], l[4], o[4][8];
++#pragma unroll
++        for (int r = 0; r < 4; ++r) {
++            m[r] = NEG;
++            l[r] = 0.f;
++#pragma unroll
++            for (int c = 0; c < 8; ++c) o[r][c] = 0.f;
++        }
++
++        for (int kb = 0; kb < k_blocks; ++kb) {
++            __syncthreads();
++            {   // K block (int8) and V block (fp16, as pairs along the keys) into LDS
++                const int* src = reinterpret_cast<const int*>(k_head + size_t(kb) * BK * D);
++                for (int i = tid; i < BK * WORDS; i += 256) k_tile[(i % WORDS) * BK + i / WORDS] = src[i];
++                for (int i = tid; i < (BK / 2) * D; i += 256) {
++                    const int pair = i / D, c = i % D, t0 = kb * BK + pair * 2;
++                    half2_t value;
++                    value.x = t0 < lk ? v_head[size_t(t0) * D + c] : (_Float16)0.f;
++                    value.y = t0 + 1 < lk ? v_head[size_t(t0 + 1) * D + c] : (_Float16)0.f;
++                    v_pairs[i] = value;
++                }
++            }
++            __syncthreads();
++
++            // S = Q K^T for 4 rows x 4 columns, by v_dot4
++            int acc[4][4] = {};
++#pragma unroll 4
++            for (int w = 0; w < WORDS; ++w) {
++                const int4 q4 = *reinterpret_cast<const int4*>(&q_tile[w * BQ + ty * 4]);
++                const int4 k4 = *reinterpret_cast<const int4*>(&k_tile[w * BK + tx * 4]);
++                const int qw[4] = {q4.x, q4.y, q4.z, q4.w}, kw[4] = {k4.x, k4.y, k4.z, k4.w};
++#pragma unroll
++                for (int r = 0; r < 4; ++r)
++#pragma unroll
++                    for (int c = 0; c < 4; ++c) acc[r][c] = __builtin_amdgcn_sdot4(qw[r], kw[c], acc[r][c], false);
++            }
++            const float k_scale = ks[kh * k_blocks + kb];
++
++            // Online softmax in base 2; a row's 64 columns lie in 16 neighbouring lanes.
++#pragma unroll
++            for (int r = 0; r < 4; ++r) {
++                float s[4], top = NEG;
++#pragma unroll
++                for (int c = 0; c < 4; ++c) {
++                    const int key = kb * BK + tx * 4 + c;
++                    s[c] = key < lk ? float(acc[r][c]) * (q_scale[r] * k_scale) : NEG;
++                    top = fmaxf(top, s[c]);
++                }
++#pragma unroll
++                for (int off = 8; off > 0; off >>= 1) top = fmaxf(top, __shfl_xor(top, off, 16));
++                const float m_new = fmaxf(m[r], top);
++                const float alpha = exp2f(m[r] - m_new);
++                float sum = 0.f, p[4];
++#pragma unroll
++                for (int c = 0; c < 4; ++c) {
++                    p[c] = exp2f(s[c] - m_new);
++                    sum += p[c];
++                }
++#pragma unroll
++                for (int off = 8; off > 0; off >>= 1) sum += __shfl_xor(sum, off, 16);
++                l[r] = l[r] * alpha + sum;
++                m[r] = m_new;
++#pragma unroll
++                for (int c = 0; c < 8; ++c) o[r][c] *= alpha;
++                half2_t a, b2;
++                a.x = (_Float16)p[0]; a.y = (_Float16)p[1];
++                b2.x = (_Float16)p[2]; b2.y = (_Float16)p[3];
++                p_pairs[(ty * 4 + r) * (BK / 2) + tx * 2]     = a;
++                p_pairs[(ty * 4 + r) * (BK / 2) + tx * 2 + 1] = b2;
++            }
++            __syncthreads();
++
++            // O += P V for 4 rows x 8 channels, by v_dot2_f32_f16
++#pragma unroll 4
++            for (int k2 = 0; k2 < BK / 2; ++k2) {
++                half2_t pr[4], vc[8];
++#pragma unroll
++                for (int r = 0; r < 4; ++r) pr[r] = p_pairs[(ty * 4 + r) * (BK / 2) + k2];
++#pragma unroll
++                for (int c = 0; c < 8; ++c) vc[c] = v_pairs[k2 * D + tx * 8 + c];
++#pragma unroll
++                for (int r = 0; r < 4; ++r)
++#pragma unroll
++                    for (int c = 0; c < 8; ++c) o[r][c] = __builtin_amdgcn_fdot2(pr[r], vc[c], o[r][c], false);
++            }
++        }
++
++        // Out: F32 [D, heads, tokens, batch]
++#pragma unroll
++        for (int r = 0; r < 4; ++r) {
++            const int row = qb * BQ + ty * 4 + r;
++            if (row >= lq) continue;
++            const float inv = l[r] > 0.f ? 1.f / l[r] : 0.f;
++            float* dst = out + ((size_t(b) * lq + row) * hq + head) * D + tx * 8;
++#pragma unroll
++            for (int c = 0; c < 8; ++c) dst[c] = o[r][c] * inv;
++        }
++    }
++
++}

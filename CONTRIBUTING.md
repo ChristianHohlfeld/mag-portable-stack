@@ -45,10 +45,11 @@ host runner) runs, in this order:
 3. `python3 ops/models/tests/test_modeld.py`
 4. `python3 ops/idol/tests/test_worker.py`, `test_unwrap.py`,
    `test_surface.py`, `test_photo.py`
-5. `python3 ops/scene/tests/test_rig.py`, `test_motion.py`,
+5. `node mag-room/tests/test_tts_text.js`
+6. `python3 ops/scene/tests/test_rig.py`, `test_motion.py`,
    `test_animal.py`, `test_worker.py`
-6. `python3 devices/s23/tests/test_s23ctl.py`
-7. `./build/test-group-dispatcher`, `./build/test-model-text`,
+7. `python3 devices/s23/tests/test_s23ctl.py`
+8. `./build/test-group-dispatcher`, `./build/test-model-text`,
    `python3 mag-room/tests/test_native.py`
 
 A second job runs gitleaks over the whole history.

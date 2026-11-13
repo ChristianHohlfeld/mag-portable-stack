@@ -48,7 +48,7 @@ Read next:
 | MI50 queue | `mag-idol`: photo to 3D (TripoSG, Idol), pictures (FLUX.2 klein 4B), videos with sound (HyperFlow H3 Flash); one job at a time, 78 W | `ops/idol`, `ops/imagegen`, `ops/video/h3` |
 | Scenes | `mag-scene`: pinned Blender on the CPU, rigging, recorded and worked-out motion, films | `ops/scene` |
 | Dictation | `mag-stt`: transcribe.cpp with German Parakeet TDT, CPU only | `mag-room/native/mag_stt.cpp`, `ops/stt` |
-| Reading aloud | Piper voices in the browser alone (onnxruntime-web WASM, espeak-ng), fetched by the browser from jsDelivr and Hugging Face | `mag-room/web/app/speak.js`, `mag-room/web/app/tts-worker.js` |
+| Reading aloud | Supertonic 3 in the browser alone (onnxruntime-web, WebGPU or WASM), fetched by the browser from Hugging Face and jsDelivr | `mag-room/web/app/speak.js`, `mag-room/web/app/tts-worker.js` |
 | Ingress | Tailscale, nginx with whois `auth_request`, Let's Encrypt via lego DNS-01 | `ops/private-access`, `ops/nginx`, `ops/tailscale` |
 | Gitea and CI | Gitea 28.1.0, Actions runner on the host, pull mirror of GitHub, Git access for the VMs | `ops/gitea`, `ops/gitea-ci`, `ops/runners` |
 | Backups | restic archives (daily, before each deploy, on request), nightly VM saves | `ops/backup`, `ops/vm` |
@@ -124,6 +124,7 @@ python3 ops/idol/tests/test_worker.py         # MI50 jobs survive restarts
 python3 ops/idol/tests/test_unwrap.py
 python3 ops/idol/tests/test_surface.py
 python3 ops/idol/tests/test_photo.py
+node mag-room/tests/test_tts_text.js            # text written as it is spoken
 python3 ops/scene/tests/test_rig.py           # scenes
 python3 ops/scene/tests/test_motion.py
 python3 ops/scene/tests/test_animal.py
@@ -148,8 +149,8 @@ recorded here, read the upstream model card before relying on it.
 | HyperFlow H3 Flash (Video Rebirth, from MiniMax H3), GGUF; stable-diffusion.cpp | videos with their sound | MiniMax H3 Community License, licensed to the owner personally; never fetched by the installer (`ops/video/h3`) |
 | Parakeet TDT 0.6B v3 (NVIDIA), German fine-tune by primeLine, GGUF | dictation | CC-BY-4.0 (`ops/stt/bootstrap.sh`) |
 | transcribe.cpp | dictation runtime | pinned in `ops/stt/transcribe.lock`; licence not recorded here |
-| Piper voices (rhasspy/piper-voices): Thorsten, Kerstin, Joe; Karlsson, Ramona; Alba | reading aloud, fetched by the browser | CC0; M-AILABS; CC BY 4.0 (`mag-room/web/app/tts-worker.js`) |
-| onnxruntime-web 1.30.0, piper-wasm 1.0.0 | reading aloud runtime, fetched by the browser | MIT; espeak-ng data GPL-3.0, unmodified |
+| Supertonic 3 (Supertone) | reading aloud, fetched by the browser | weights OpenRAIL-M (`mag-room/web/app/tts-worker.js`) |
+| onnxruntime-web 1.30.0 | reading aloud runtime, fetched by the browser | MIT |
 | MediaPipe face landmarker | faces in scenes | Apache-2.0 (`ops/scene/face/bootstrap.sh`) |
 | CMU Graphics Lab Motion Capture Database (BVH by Bruce Hahne) | `ops/scene/motions.npz` | free for research and commercial use, credit required (`ops/scene/MOTIONS.md`) |
 | Blender 4.5.16 | scenes | pinned in `ops/scene/blender.lock`; licence not recorded here |

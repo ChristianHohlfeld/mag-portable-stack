@@ -8,6 +8,10 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- Reading aloud is Supertonic 3 again, now in the client alone: the browser
+  fetches the model from Hugging Face and the runtime from jsDelivr (pinned,
+  SHA256), once into Cache Storage; the room serves nothing for it. Piper
+  (5.3.0) sounded robotic and is gone.
 - A login card is the bot's browser itself, live in the chat over its UDP
   link (WebRTC) and usable right there (tap, type, keyboard, also on the
   phone): Chris logs in himself and taps "Angemeldet, weiter". The login and

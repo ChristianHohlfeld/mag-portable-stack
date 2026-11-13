@@ -39,7 +39,7 @@ DINO = os.environ.get("IDOL_DINOV3", os.path.join(IDOL_BASE, "weights/dinov3-tim
 VAE = os.environ.get("IDOL_FLUX2_VAE", os.path.join(IDOL_BASE, "weights/flux2vae"))
 PORT = int(os.environ.get("MAG_IDOL_PORT", "8793"))
 CPUS = os.environ.get("MAG_IDOL_CPUS", "28-55")  # never the models' cores
-# A stage has no time limit: sampling on the MI50 at its 82 W takes as long
+# A stage has no time limit: sampling on the MI50 at its 78 W takes as long
 # as it takes. A stage is only ended when it has come to a standstill: for
 # this long it has neither written a line nor used the processor.
 STALL = max(1, int(os.environ.get("MAG_IDOL_STALL_S", "600")))

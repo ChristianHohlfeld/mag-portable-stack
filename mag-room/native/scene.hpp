@@ -227,7 +227,7 @@ public:
     }
     const std::string head = "[Chris schreibt das zur 3D-Szene \"" + jstr(*m3, "title", "Szene") + "\": Er möchte eine neue Fassung mit denselben Figuren. ";
     if (const Val *spec = m3->find("spec"); spec && spec->isObj())
-      return head + "So wurde sie mit scene_3d gebaut: " + clip(mj::dump(*spec), 6000, "…") + " Baue die neue mit scene_3d: dieselben actors, die actions nach seinem Wunsch.]";
+      return head + "So wurde sie mit scene_3d gebaut: " + clip(mj::dump(*spec), 6000, "…") + " Baue die neue mit dem Werkzeug scene_3d (nicht als JSON im Text): dieselben actors, die actions nach seinem Wunsch.]";
     std::string cast;
     if (const Val *list = m3->find("cast"); list && list->isArr())
       for (auto &name : list->asArr()) cast += (cast.empty() ? "" : ", ") + name.asStr();

@@ -24,11 +24,17 @@
       const lang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
       const known = lang && window.hljs?.getLanguage(lang);
       if (code && known && code.textContent.length < (live ? 6000 : 60000)) { try { hljs.highlightElement(code); } catch {} }
-      // Language and copy in a quiet head, the code below.
-      const block = el('div', { class: 'codeblock' });
+      // Language and copy in a quiet head, the code below. Long code is
+      // folded like a step: its first lines show, the head opens it.
+      const source = code ? code.textContent : pre.textContent;
+      const lines = source.replace(/\n$/, '').split('\n');
+      const fold = !live && lines.length > 12;
+      const block = el(fold ? 'details' : 'div', { class: 'codeblock' + (fold ? ' fold' : '') });
       pre.replaceWith(block);
-      block.append(el('div', { class: 'head' }, el('span', { text: lang || 'Code' }),
-        el('button', { class: 'copy', text: 'Kopieren', onclick: (e) => copy(code ? code.textContent : pre.textContent, e.target) })), pre);
+      const head = el('div', { class: 'head' }, el('span', { text: (lang || 'Code') + (fold ? ' · ' + lines.length + ' Zeilen' : '') }),
+        el('button', { class: 'copy', text: 'Kopieren', onclick: (e) => { e.preventDefault(); copy(source, e.target); } }),
+        fold ? el('span', { class: 'chev', html: MAG.icons.chev }) : null);
+      block.append(fold ? el('summary', {}, head, el('div', { class: 'peek', text: lines.slice(0, 5).join('\n') })) : head, pre);
     });
     return box;
   }
@@ -914,7 +920,9 @@
     if (old) {
       // Keep what the reader opened.
       old.querySelectorAll('details[open]').forEach((d) => {
-        const twin = d.classList.contains('think') ? node.querySelector('.think') : node.querySelector('details[data-part="' + d.dataset.part + '"]');
+        const twin = d.classList.contains('think') ? node.querySelector('.think')
+          : d.classList.contains('codeblock') ? node.querySelectorAll('details.codeblock')[[...old.querySelectorAll('details.codeblock')].indexOf(d)]
+          : node.querySelector('details[data-part="' + d.dataset.part + '"]');
         if (twin) twin.open = true;
       });
       grow(() => { if (keep(old, node)) node = old; else old.replaceWith(node); });

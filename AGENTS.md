@@ -384,7 +384,11 @@ away into markup and keeps such an answer once, and gives a tool only
 arguments that are a JSON object. Arguments that are not are stored as `{}`:
 they must never enter a prompt log, the server refuses every later request
 that holds them. An error in the chat is one short line, never a server's
-quote of what a model wrote.
+quote of what a model wrote. A tool call a model writes into its text as JSON (a
+scene for `scene_3d`, `{"name": …, "arguments": …}`) is no call: the room
+takes it out of the text and tells the bot once to make the call for real.
+Code in an answer longer than 12 lines is folded like a step (its first lines
+as a preview, Kopieren in its head).
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct
 progress and [[MAG:WEITER]]; otherwise remain idle.

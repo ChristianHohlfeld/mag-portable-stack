@@ -117,7 +117,7 @@ records of `MAG_DOMAIN` and `*.MAG_BOTS_ZONE` pointed at the new address.
 | `gitea` | `ops/gitea/install.sh`, `ops/runners/install.sh` |
 | `runtime` | `ops/models/build-runtime.sh` (pinned llama.cpp, CPU only) |
 | `media` | speech recognizer, voices, Blender and its face landmarker (`ops/stt`, `ops/tts`, `ops/scene`) |
-| `idol` | `ops/idol/env/setup.sh`: the ROCm venv from `requirements.lock`, idol-sdk at its commit with the MI50 patch, TripoSG, all weights (only with an MI50) |
+| `idol` | `ops/idol/env/setup.sh`: the ROCm venv from `requirements.lock`, idol-sdk at its commit with the MI50 patch, TripoSG, all weights including pictures and the paint stage (only with an MI50; H3 videos are the owner's own download) |
 | `deploy` | `ops/deploy.sh`: the release, nginx, the model supervisor (models download now), all services, timers, boot |
 | `bots` | VMs `agent1` (Lena) and `agent2` (Noah) from the golden image |
 | `funnel` | Gitea over Tailscale Funnel |

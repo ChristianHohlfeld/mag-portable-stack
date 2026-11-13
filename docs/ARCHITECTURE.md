@@ -845,8 +845,12 @@ has a prompt typed in the page written in it, in English, by a small model of
 its own (Qwen3-4B-Instruct-2507, Apache-2.0, Q4_K_M from
 `ops/video/h3/fetch-rewriter.sh`), run once per job on the stage's CPU cores
 with the model servers' llama.cpp, never on Lena's or Noah's servers; it is
-kept only when the three fields are there and every `<d>` line is Chris's own
-words (`h3prompt.txt`, the final prompt `h3prompt.final.txt`, so a job taken up
+a translator and formatter only (nothing of its own: no looks, places,
+style or events; the people of a first frame are "the man in <Picture 1>"),
+kept only when the three fields are there, every `<d>` line is Chris's own
+words, every line he asked to be said (quoted, or after sagt/ruft/says ...)
+is there word for word and the description is not many times longer than
+his request (`h3prompt.txt`, the final prompt `h3prompt.final.txt`, so a job taken up
 again samples with the same words). Otherwise, or without that model, h3gen.py
 puts the prompt into the form by rules (quoted speech becomes `(S1): <d>`
 lines, German unless plainly English; a prompt in the form already keeps its

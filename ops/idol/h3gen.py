@@ -202,6 +202,10 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
 
 QUOTES = re.compile(r'„([^“”"]+)[“”"]|“([^”"]+)[”"]|»([^«]+)«|"([^"]+)"')
 ENGLISH = re.compile(r"\b(the|you|your|i'm|i am|is|are|was|what|where|why|how|hello|hi|yes|no|please|thank|thanks|watch|look|come|go|it's|don't|let's|we|they|my|this|that)\b", re.I)
+# Speech without quotation marks: "sagt hallo Maxim ich liebe dich!", "ruft zu ihr: Komm!"
+# (the verb, at most four words and a colon, then the words up to the end of the sentence)
+SAYS = re.compile(r"\b(sagt|sage|ruft|flüstert|schreit|fragt|antwortet|says|shouts|whispers|asks|calls out)\b"
+                  r"((?:\s+[^\s:.!?„“\"»]+){0,4}\s*:)?\s+(?![„“\"»])([^.!?„“\"»<]+[.!?]?)", re.I)
 GERMAN = re.compile(r"[äöüÄÖÜß]|\b(ich|du|wir|ihr|nicht|und|der|die|das|ist|bin|bist|sind|mein|dein|hallo|ja|nein|was|wie|wo|warum|komm|geh)\b", re.I)
 
 
@@ -219,8 +223,12 @@ def dialogue(prompt):
         text = next(g for g in found.groups() if g is not None).strip()
         english = ENGLISH.search(text) and not GERMAN.search(text)   # German unless it is plainly English
         return ": <d>[%s] %s</d>" % ("English" if english else "German", text)
-    spoken = re.sub(r"\s*:?\s*(?=„|“|»|\")", "", prompt) if QUOTES.search(prompt) else prompt
-    spoken = QUOTES.sub(line, spoken)
+    if QUOTES.search(prompt):
+        spoken = re.sub(r"\s*:?\s*(?=„|“|»|\")", "", prompt)
+        spoken = QUOTES.sub(line, spoken)
+    else:
+        spoken = SAYS.sub(lambda m: m.group(1) + (m.group(2) or "")[:-1 if m.group(2) else None].rstrip()
+                          + line(type("L", (), {"groups": lambda self: (m.group(3),)})()), prompt)
     if spoken != prompt and not re.search(r"\(S\d+(,S\d+)*\)", spoken):
         spoken = spoken.replace(": <d>", " (S1): <d>")
     return spoken
@@ -247,6 +255,8 @@ def context(prompt, first_frame, continuing):
                   "overall_soundscape: The ambient sound of the place and the sounds of the actions described, "
                   "in sync with what is seen.\n\n"
                   "non_diegetic_music: N/A")
+    # the fields stand on their own lines, one blank line apart, as in the guide
+    prompt = re.sub(r"[ \t]*\n*[ \t]*(overall_soundscape:|non_diegetic_music:)", r"\n\n\1", prompt).strip()
     if first_frame and "is fully referenced" not in prompt and "aligns with the" not in prompt:
         prompt = FIRST_FRAME + "\n\n" + prompt
     return prompt
@@ -259,19 +269,27 @@ def context(prompt, first_frame, continuing):
 # servers. What it writes is checked: the three fields must be there and every
 # spoken line must be the owner's own words; else the rule form of context().
 REWRITER = BASE / "weights/h3-rewriter"
-REWRITE_RULES = """You rewrite a user's video idea into the prompt format of the MiniMax H3 audio-video model. Output ONLY the final prompt, nothing else.
+REWRITE_RULES = """You put a user's video request into the prompt format of the MiniMax H3 audio-video model. You are a translator and formatter, not a writer. Output ONLY the final prompt.
 
-Format, exactly three fields separated by one blank line, all in English:
-integrated_multimodal_description: [Shot 1] <style (e.g. Live-action, cinematic / 3D cartoon), shot size, camera motion with amplitude and speed, subjects with appearance and position, what they do along the timeline, synchronized sounds>
-overall_soundscape: <1-4 English sentences of ambient sound, action sounds and non-verbal human sounds; no dialogue>
-non_diegetic_music: <1-3 English sentences of background music, or N/A when the user asks for none or does not mention music>
+Format: exactly three fields, separated by one blank line, in English:
+integrated_multimodal_description: [Shot 1] ...
+overall_soundscape: ...
+non_diegetic_music: ...
 
-Rules:
-- Translate the user's directions into English and keep their intent; you may add concrete visual and sound details that fit it, but no new events.
-- Use one shot ([Shot 1]) unless the user asks for cuts; a cut is written "[Shot 2] At 00:04.000, the camera cuts to ...".
-- Speech: only words the user wants spoken (quoted text or clearly given lines). Never invent lines. Each speaker gets a stable ID (S1), (S2); describe the speaker and the voice first, then the ID, then the verb and a colon, then the line: the old fox with a deep, calm voice (S1) says: <d>[German] Komm her!</d>
-- Inside <d> put only the language tag ([German], [English], ...) and the spoken words exactly as the user wrote them, never translated, never changed.
-- Characters who do not speak get no ID."""
+Strict rules:
+- Use ONLY what the user wrote. Translate it to English faithfully and keep every element: every person, thing, action, wish and detail (e.g. "with many hearts" stays "with many hearts"). Keep the user's order of events.
+- Add NOTHING the user did not say: no clothes, faces, ages, rooms, places, weather, props, extra actions, emotions, style or camera moves of your own. If a first frame <Picture 1> is given, refer to its people and place as "the man in <Picture 1>", "the scene of <Picture 1>" and never describe how they look.
+- Speech: every word the user wants said (quoted or not, e.g. after says/sagt/ruft) goes into <d>, preceded by the speaker, an ID and the verb: the man in <Picture 1> (S1) says to the camera: <d>[German] hallo Maxim ich liebe dich!</d>. Inside <d> only the language tag and the user's words exactly as written (same spelling, never translated). Never drop or invent a line.
+- One shot ([Shot 1]) unless the user asks for cuts.
+- overall_soundscape: only the sounds of the described actions in one short sentence; never speech or music.
+- non_diegetic_music: what the user asked for, else N/A.
+
+Example. User (first frame given): Er winkt und ruft „Komm rein!“, dann fliegen Konfetti.
+integrated_multimodal_description: [Shot 1] The man in <Picture 1> waves and (S1) calls out: <d>[German] Komm rein!</d> Then confetti flies through the air.
+
+overall_soundscape: The rustle of falling confetti.
+
+non_diegetic_music: N/A"""
 
 
 def rewrite(job, prompt, first_frame, continuing):
@@ -293,11 +311,9 @@ def rewrite(job, prompt, first_frame, continuing):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     say("Regie schreiben")
-    task = ("The video starts exactly from a given first frame <Picture 1>; begin the description from it and keep its "
-            "characters, appearance and composition.\n" if first_frame and not continuing else "")
+    task = "A first frame <Picture 1> is given.\n" if first_frame and not continuing else ""
     if continuing:
-        task = ("The video continues seamlessly, with no cut, from a given frame <Picture 1>: the same characters, "
-                "appearance, place, light, camera and voices carry on.\n")
+        task = "A first frame <Picture 1> is given (the last frame of the video so far).\n"
     proc = subprocess.Popen([str(server), "-m", str(model), "--host", "127.0.0.1", "--port", str(port), "-c", "8192",
                              "-t", "24", "-np", "1", "--no-webui"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -314,7 +330,7 @@ def rewrite(job, prompt, first_frame, continuing):
             time.sleep(0.5)
         body = json.dumps({"messages": [{"role": "system", "content": REWRITE_RULES},
                                         {"role": "user", "content": task + "User's idea:\n" + prompt}],
-                           "temperature": 0.3, "seed": 1, "max_tokens": 1500}).encode()
+                           "temperature": 0.0, "seed": 1, "max_tokens": 1200}).encode()
         req = urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions" % port, data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=600) as r:
@@ -343,8 +359,20 @@ def holds(asked, text):
     for line in re.findall(r"<d>\s*(?:\[[^\]]*\])?\s*(.*?)</d>", text, re.S):
         if re.sub(r"\s+", " ", line).strip() not in plain:
             return False
-    quoted = [next(g for g in m.groups() if g is not None).strip() for m in QUOTES.finditer(asked)]
-    return all(q in text for q in quoted)
+    # every line he asked to be said is said, word for word
+    if not all(line in text for line in spoken_lines(asked)):
+        return False
+    # and nothing is added: the description is not many times longer than his words
+    body = text.split("overall_soundscape:")[0]
+    return len(body) <= max(600, 5 * len(asked))
+
+
+def spoken_lines(asked):
+    if "<d>" in asked:
+        return []
+    if QUOTES.search(asked):
+        return [next(g for g in m.groups() if g is not None).strip() for m in QUOTES.finditer(asked)]
+    return [m.group(3).strip() for m in SAYS.finditer(asked)]
 
 
 def say(stage):

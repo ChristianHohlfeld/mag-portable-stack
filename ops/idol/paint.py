@@ -10,7 +10,9 @@ seen from six sides (front, right, back, left, top, bottom; orthographic, as
 its position and normal maps), and SDXL with the adapter paints those six
 views at once from the photo, so that each fits the shape and they fit each
 other. This runs it as it is, with its defaults (50 steps, guidance 3,
-ShiftSNR 8, "high quality", its negative prompt, 768 px).
+ShiftSNR 8, "high quality", its negative prompt, 768 px), and makes each view
+twice as large with Real-ESRGAN x2plus as its texture script does
+(scripts/texture_i2tex.py, view_upscale) before mesh.py lays it on.
 
 The six views go to outputs/views.png (one row) with outputs/views_mask.png
 (where the shape is in each) and outputs/views.json (the six cameras in the
@@ -72,6 +74,81 @@ def attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
 
 
 F.scaled_dot_product_attention = attention
+UPSCALER = WEIGHTS / "realesrgan" / "RealESRGAN_x2plus.pth"
+
+
+class Dense(torch.nn.Module):
+    """Real-ESRGAN's residual dense block (basicsr RRDBNet)."""
+
+    def __init__(self, nf=64, gc=32):
+        super().__init__()
+        self.conv1 = torch.nn.Conv2d(nf, gc, 3, 1, 1)
+        self.conv2 = torch.nn.Conv2d(nf + gc, gc, 3, 1, 1)
+        self.conv3 = torch.nn.Conv2d(nf + 2 * gc, gc, 3, 1, 1)
+        self.conv4 = torch.nn.Conv2d(nf + 3 * gc, gc, 3, 1, 1)
+        self.conv5 = torch.nn.Conv2d(nf + 4 * gc, nf, 3, 1, 1)
+
+    def forward(self, x):
+        x1 = F.leaky_relu(self.conv1(x), 0.2)
+        x2 = F.leaky_relu(self.conv2(torch.cat((x, x1), 1)), 0.2)
+        x3 = F.leaky_relu(self.conv3(torch.cat((x, x1, x2), 1)), 0.2)
+        x4 = F.leaky_relu(self.conv4(torch.cat((x, x1, x2, x3), 1)), 0.2)
+        return self.conv5(torch.cat((x, x1, x2, x3, x4), 1)) * 0.2 + x
+
+
+class Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.rdb1, self.rdb2, self.rdb3 = Dense(), Dense(), Dense()
+
+    def forward(self, x):
+        return self.rdb3(self.rdb2(self.rdb1(x))) * 0.2 + x
+
+
+class Upscaler(torch.nn.Module):
+    """RRDBNet as Real-ESRGAN x2plus has it: 23 blocks, the picture folded into
+    four quarters first, twice as large out."""
+
+    def __init__(self):
+        super().__init__()
+        self.conv_first = torch.nn.Conv2d(12, 64, 3, 1, 1)
+        self.body = torch.nn.Sequential(*[Block() for _ in range(23)])
+        self.conv_body = torch.nn.Conv2d(64, 64, 3, 1, 1)
+        self.conv_up1 = torch.nn.Conv2d(64, 64, 3, 1, 1)
+        self.conv_up2 = torch.nn.Conv2d(64, 64, 3, 1, 1)
+        self.conv_hr = torch.nn.Conv2d(64, 64, 3, 1, 1)
+        self.conv_last = torch.nn.Conv2d(64, 3, 3, 1, 1)
+
+    def forward(self, x):
+        feat = self.conv_first(F.pixel_unshuffle(x, 2))
+        feat = feat + self.conv_body(self.body(feat))
+        feat = F.leaky_relu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode="nearest")), 0.2)
+        feat = F.leaky_relu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode="nearest")), 0.2)
+        return self.conv_last(F.leaky_relu(self.conv_hr(feat), 0.2))
+
+
+def larger(images):
+    """The views twice as large (Real-ESRGAN x2plus); as they are where its
+    weights are missing or it fails."""
+    if not UPSCALER.is_file():
+        return images
+    try:
+        net = Upscaler()
+        net.load_state_dict(torch.load(UPSCALER, map_location="cpu", weights_only=True)["params_ema"], strict=True)
+        net = net.eval().half().to("cuda")
+        out = []
+        with torch.no_grad():
+            for image in images:
+                x = torch.from_numpy(np.asarray(image.convert("RGB"), np.float32) / 255.0).permute(2, 0, 1)[None]
+                y = net(x.half().to("cuda")).float().clamp(0, 1)[0].permute(1, 2, 0).cpu().numpy()
+                out.append(Image.fromarray(np.rint(y * 255).astype(np.uint8)))
+        del net
+        torch.cuda.empty_cache()
+        print(f"Views: twice as large ({out[0].width} px)", flush=True)
+        return out
+    except Exception as exc:
+        print(f"Views: not made larger ({type(exc).__name__})", flush=True)
+        return images
 
 
 def cameras():
@@ -193,9 +270,13 @@ def main():
                       reference_conditioning_scale=1.0, negative_prompt="watermark, ugly, deformed, noisy, blurry, low contrast",
                       cross_attention_kwargs={"scale": 1.0}, generator=torch.Generator(device="cuda").manual_seed(42),
                       callback_on_step_end=said).images
-    row = Image.new("RGB", (SIDE * 6, SIDE))
+    del pipe
+    torch.cuda.empty_cache()
+    images = larger([image.convert("RGB").resize((SIDE, SIDE)) for image in images])
+    side = images[0].width
+    row = Image.new("RGB", (side * 6, side))
     for i, image in enumerate(images):
-        row.paste(image.convert("RGB").resize((SIDE, SIDE)), (i * SIDE, 0))
+        row.paste(image.resize((side, side)), (i * side, 0))
     row.save(job / "outputs" / "views.png")
     Image.fromarray(np.concatenate(masks, axis=1).astype(np.uint8) * 255).save(job / "outputs" / "views_mask.png")
     (job / "outputs" / "views.json").write_text(json.dumps({"quarter": quarter, "scale": scale, "half": HALF, "views": views}))

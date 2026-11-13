@@ -748,7 +748,8 @@ image-and-geometry pipeline on SDXL, in TripoSG's environment, on the MI50)
 draws the shape's position and normal maps from MV-Adapter's six orthographic
 views on the CPU (nvdiffrast is CUDA's alone) and paints the six views from
 the photo with MV-Adapter's own settings (50 steps, guidance 3, ShiftSNR 8,
-768 px, seed 42); `mesh.py` lays them onto the model, each texel taking the
+768 px, seed 42), each view then twice as large by Real-ESRGAN x2plus as its
+texture script does; `mesh.py` lays them onto the model, each texel taking the
 views that see it straight. Code at a fixed commit (`~/idol-mi50/mvadapter/src`),
 weights by `ops/idol/paint/fetch.sh` (SDXL base 1.0, its fp16 VAE, the ig2mv
 adapter; checked against their SHA256). Without them the side the photo

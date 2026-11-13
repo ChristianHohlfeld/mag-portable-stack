@@ -563,14 +563,14 @@ def painted(job):
         masks = np.asarray(Image.open(job / "outputs" / "views_mask.png").convert("L")) > 127
     except (OSError, ValueError):
         return None, None
-    side, far = row.shape[0], 1000.0
+    side, edge, far = row.shape[0], masks.shape[0], 1000.0           # the views may be finer than their masks
     grow = far * float(note["scale"]) / (2 * float(note["half"]))
     views = []
     for i, v in enumerate(note["views"]):
         look = np.asarray(v["look"], np.float64)
         camera = photo_of.Camera(-look * far, np.asarray(v["right"], np.float64), np.asarray(v["up"], np.float64), look,
                                  (grow, grow), (0.5, 0.5))
-        views.append({"camera": camera, "image": row[:, i * side:(i + 1) * side], "outline": masks[:, i * side:(i + 1) * side]})
+        views.append({"camera": camera, "image": row[:, i * side:(i + 1) * side], "outline": masks[:, i * edge:(i + 1) * edge]})
     return views, int(note.get("quarter", 0))
 
 

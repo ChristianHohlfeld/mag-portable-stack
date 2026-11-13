@@ -5,6 +5,11 @@ detailed notes (German, for the owner). Versions follow SemVer: a major
 version for a new architecture or anything an existing host has to do by
 hand, a minor version for new features, a patch for fixes.
 
+
+## Unreleased
+
+- The MI50's power cap is 85 W (Chris, 2026-11-13; 78 W and 73 W for a while that day);
+  `ops/idol/power-cap.sh` only lowers it and never writes more than 85 W.
 ## 5.1.0 (2026-11-13)
 
 Videos with sound by HyperFlow H3, painted 3D models, and a chat whose every

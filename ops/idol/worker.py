@@ -922,7 +922,7 @@ class API(BaseHTTPRequestHandler):
                 active = sum(1 for item in jobs.values() if item["state"] in ("queued", "running"))
             # "resumable": this worker's jobs survive its restart.
             return self.reply(200, {"ok": True, "queued": pending.qsize(), "active": active, "resumable": True,
-                                    "video": h3_ready()})
+                                    "video": h3_ready(), "continue": True})   # "continue": ?continue=1 is understood
         if len(parts) < 4 or parts[:3] != ["api", "idol", "jobs"] or not VALID_ID.fullmatch(parts[3]):
             return self.reply(404, {"error": "Nicht gefunden"})
         with lock:

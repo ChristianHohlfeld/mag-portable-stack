@@ -47,5 +47,18 @@ done
 get madebyollin/sdxl-vae-fp16-fix 207b116dae70ace3637169f1ddd2434b91b3a8cd config.json
 get madebyollin/sdxl-vae-fp16-fix 207b116dae70ace3637169f1ddd2434b91b3a8cd diffusion_pytorch_model.safetensors
 get huanngzh/mv-adapter 6de4033df6b53366f3c009d22f5ec434bb55e59f mvadapter_ig2mv_sdxl.safetensors
+# MV-Adapter's texture script makes every view twice as large with Real-ESRGAN
+# x2plus (BSD-3-Clause) before laying it on; its release lists no checksum,
+# so the one of the file it published is written here.
+ESR=$OUT/realesrgan/RealESRGAN_x2plus.pth
+if [[ ! -e $ESR.ok ]]; then
+  mkdir -p "$(dirname "$ESR")"
+  curl -fsSL --retry 10 --retry-delay 5 -C - -o "$ESR.part" https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
+  if [[ $(sha256sum "$ESR.part" | cut -d' ' -f1) == 49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb ]]; then
+    mv "$ESR.part" "$ESR" && touch "$ESR.ok" && echo "got RealESRGAN_x2plus.pth"
+  else
+    mv "$ESR.part" "$ESR.bad"; echo "SHA256 of RealESRGAN_x2plus.pth does not match; kept as .bad" >&2; exit 1
+  fi
+fi
 touch "$OUT/.complete"
 echo done

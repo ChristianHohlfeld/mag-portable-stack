@@ -164,7 +164,7 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .msg[data-from="lena"] .who { color: var(--lena); }
 .msg[data-from="noah"] .who { color: var(--noah); }
 .msg[data-from="idol"] .who { color: var(--idol); }
-.msg.user .line { display: flex; justify-content: flex-end; align-items: flex-end; gap: 4px; }
+.msg.user .line { display: flex; flex-direction: column; align-items: flex-end; }
 .msg.user .col { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; max-width: min(86%, 620px); }
 .msg.user .bubble {
   background: var(--user);
@@ -173,19 +173,13 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
   max-width: 100%;
   overflow-wrap: anywhere;
 }
-/* actions: after the text. Your own messages show theirs on hover or tap. */
+/* actions: after every message, always there; your own messages have them below on the right. */
 .acts { display: flex; align-items: center; gap: 1px; margin: 5px 0 0 -7px; color: var(--muted); }
 .act { width: 32px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: var(--faint); transition: background .12s, color .12s; }
 .act svg { width: 16.5px; height: 16.5px; }
 .act:hover, .act.on { background: var(--surface-2); color: var(--text); }
 .acts .time { font-size: 12px; padding: 0 5px; color: var(--faint); font-variant-numeric: tabular-nums; }
-.msg.user .acts { margin: 0; opacity: 0; transition: opacity .12s; }
-@media (hover: hover) { .msg.user:hover .acts, .msg.user.show-acts .acts { opacity: 1; } }
-@media (hover: none) {
-  .msg.user .line { flex-direction: column; }
-  .msg.user .acts { order: 2; display: none; opacity: 1; margin-top: 3px; }
-  .msg.user.show-acts .acts { display: flex; }
-}
+.msg.user .acts { margin: 3px -7px 0 0; }
 .msg .note { font-size: 13px; color: var(--muted); margin-top: 4px; }
 .msg .note.err { color: var(--bad); }
 .cursor::after { content: ""; display: inline-block; width: .55em; height: .55em; margin-left: .22em; border-radius: 50%; background: var(--muted); animation: pulse 1s ease-in-out infinite; vertical-align: .04em; }

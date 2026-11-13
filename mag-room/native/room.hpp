@@ -139,6 +139,18 @@ inline bool tidy_bot_message(Val &m) {
   if (parts && parts->isArr() && !parts->asArr().empty()) {
     std::string joined;
     for (auto &p : *parts->arr) {
+      // A step of a job (a picture, a model, a video) kept from before shows in words what happened, not what the bot was told.
+      if (jstr(p, "k") == "step") {
+        static const std::vector<std::pair<std::string, std::string>> told = {
+            {"Das Bild wird gemalt (", "Bild in Auftrag gegeben: FLUX.2 klein malt es auf der MI50, meist in unter einer Minute. Es erscheint als eigene Nachricht."},
+            {"Das 3D-Modell wird gemacht (", "3D-Modell in Auftrag gegeben: Es entsteht auf der MI50 in einigen Minuten und erscheint als eigene Nachricht."},
+            {"Das Video wird fortgesetzt (", "Video wird fortgesetzt: HyperFlow H3 Flash macht auf der MI50 in einigen Minuten den neuen Teil ab dem letzten Bild. Das ganze Video erscheint als neue Nachricht."},
+            {"Das Video mit Ton wird gemacht (", "Video mit Ton in Auftrag gegeben: HyperFlow H3 Flash macht es auf der MI50 in einigen Minuten. Es erscheint als eigene Nachricht, gekennzeichnet als KI-generiert."}};
+        const std::string out = jstr(p, "output");
+        for (const auto &[bot, chat] : told)
+          if (starts_with(out, bot) && out.find("arte nicht darauf") != std::string::npos) { p["output"] = chat; changed = true; break; }
+        continue;
+      }
       if (jstr(p, "k") != "text") continue;
       const std::string was = jstr(p, "text"), now = tidy(was);
       if (now != was) { p["text"] = now; changed = true; }

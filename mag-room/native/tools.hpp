@@ -40,7 +40,14 @@ struct Result {
   std::string text; // goes back to the model
   bool ok = true;
   bool blocker = false; // Chris said no, or the work is done as far as it may go: the goal driver does not send the bot on
+  std::string shown = {}; // what the step shows in the chat, where the text is meant for the bot alone (empty: the text)
 };
+// A result whose text tells the bot what to do next; Chris reads in the step what happened.
+inline Result told(std::string bot, std::string chat, bool ok = true, bool blocker = false) {
+  Result r{std::move(bot), ok, blocker};
+  r.shown = std::move(chat);
+  return r;
+}
 
 inline Val fn(const char *name, const char *description, const char *params_json) {
   Val f = Val::object();
@@ -664,8 +671,9 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     if (jstr(args, "action") == "start") {
       const std::string why = backup::start(ctx.guests);
       if (!why.empty()) return fail(why);
-      return {"Die Sicherung läuft im Hintergrund: Raum, Gitea und Konfiguration (restic, etwa eine Minute) und jede Bot-VM "
-              "(einige Minuten je VM; die VMs laufen dabei weiter). Sag Chris, dass sie läuft; mit action status siehst du später, wie sie ausging.", true};
+      return told("Die Sicherung läuft im Hintergrund: Raum, Gitea und Konfiguration (restic, etwa eine Minute) und jede Bot-VM "
+                  "(einige Minuten je VM; die VMs laufen dabei weiter). Sag Chris, dass sie läuft; mit action status siehst du später, wie sie ausging.",
+                  "Sicherung läuft im Hintergrund: Raum, Gitea, Konfiguration und jede Bot-VM.");
     }
     return {backup::report(ctx.room, ctx.guests), true};
   }
@@ -676,16 +684,18 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     std::string error;
     const std::string id = ctx.imagine(jstr(args, "prompt"), w, h, jstr(ctx.bot, "id"), error, "");
     if (id.empty()) return fail(error.empty() ? "Das Bild wurde nicht in Auftrag gegeben." : error);
-    return {"Das Bild wird gemalt (FLUX.2 klein auf der MI50, meist unter einer Minute, hinter laufenden 3D-Aufträgen). "
-            "Es erscheint im Chat als eigene Nachricht; warte nicht darauf und beschreibe es nicht, bevor du es gesehen hast.", true};
+    return told("Das Bild wird gemalt (FLUX.2 klein auf der MI50, meist unter einer Minute, hinter laufenden 3D-Aufträgen). "
+                "Es erscheint im Chat als eigene Nachricht; warte nicht darauf und beschreibe es nicht, bevor du es gesehen hast.",
+                "Bild in Auftrag gegeben: FLUX.2 klein malt es auf der MI50, meist in unter einer Minute. Es erscheint als eigene Nachricht.");
   }
   if (name == "photo_to_3d") {
     if (!ctx.model) return fail("Foto zu 3D ist hier nicht eingerichtet.");
     std::string error;
     const std::string id = ctx.model(jstr(args, "image"), jstr(args, "quality", "normal"), error);
     if (id.empty()) return fail(error.empty() ? "Das Modell wurde nicht in Auftrag gegeben." : error);
-    return {"Das 3D-Modell wird gemacht (auf der MI50, einige Minuten, hinter anderen Aufträgen der Grafikkarte). "
-            "Es erscheint im Chat als eigene Nachricht; danach kann scene_3d es animieren. Warte nicht darauf.", true};
+    return told("Das 3D-Modell wird gemacht (auf der MI50, einige Minuten, hinter anderen Aufträgen der Grafikkarte). "
+                "Es erscheint im Chat als eigene Nachricht; danach kann scene_3d es animieren. Warte nicht darauf.",
+                "3D-Modell in Auftrag gegeben: Es entsteht auf der MI50 in einigen Minuten und erscheint als eigene Nachricht.");
   }
   if (name == "video_generate") {
     if (!ctx.film) return fail("Videos sind hier nicht eingerichtet.");
@@ -695,15 +705,17 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       const std::string id = ctx.extend(from == "newest" ? "" : from, jstr(args, "prompt"), jstr(ctx.bot, "id"), error,
                                         jnum(args, "seconds", 5) < 10 ? 5 : 10);
       if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht fortgesetzt." : error);
-      return {"Das Video wird fortgesetzt (HyperFlow H3 Flash auf der MI50, einige Minuten, hinter anderen Aufträgen der Grafikkarte): "
-              "der neue Teil beginnt mit seinem letzten Bild, und das ganze Video erscheint als neue Nachricht. Warte nicht darauf.", true};
+      return told("Das Video wird fortgesetzt (HyperFlow H3 Flash auf der MI50, einige Minuten, hinter anderen Aufträgen der Grafikkarte): "
+                  "der neue Teil beginnt mit seinem letzten Bild, und das ganze Video erscheint als neue Nachricht. Warte nicht darauf.",
+                  "Video wird fortgesetzt: HyperFlow H3 Flash macht auf der MI50 in einigen Minuten den neuen Teil ab dem letzten Bild. Das ganze Video erscheint als neue Nachricht.");
     }
     const std::string id = ctx.film(trim(jstr(args, "image")), jstr(args, "prompt"), jstr(ctx.bot, "id"), error,
                                     jnum(args, "seconds", 5) < 10 ? 5 : 10, jstr(args, "as") == "reference" ? "ref" : "first");
     if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);
-    return {"Das Video mit Ton wird gemacht (HyperFlow H3 Flash auf der MI50, einige Minuten, hinter anderen Aufträgen der "
-            "Grafikkarte); es ist als KI-generiert gekennzeichnet. Es erscheint im Chat als eigene Nachricht; warte nicht darauf und "
-            "beschreibe es nicht, bevor es da ist.", true};
+    return told("Das Video mit Ton wird gemacht (HyperFlow H3 Flash auf der MI50, einige Minuten, hinter anderen Aufträgen der "
+                "Grafikkarte); es ist als KI-generiert gekennzeichnet. Es erscheint im Chat als eigene Nachricht; warte nicht darauf und "
+                "beschreibe es nicht, bevor es da ist.",
+                "Video mit Ton in Auftrag gegeben: HyperFlow H3 Flash macht es auf der MI50 in einigen Minuten. Es erscheint als eigene Nachricht, gekennzeichnet als KI-generiert.");
   }
   if (name == "models_3d" || name == "scene_3d") {
     if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");
@@ -718,8 +730,9 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
         for (size_t i = ctx.asked_at; i < parts->asArr().size(); ++i) {
           const Val &p = parts->asArr()[i];
           if (jstr(p, "tool") == "scene_3d" && jstr(p, "state") == "ok")
-            return {"Fehler: Auf diese Bitte hin hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
-                    "Eine neue Fassung baust du erst, wenn er sie möchte.", false, true};
+            return told("Fehler: Auf diese Bitte hin hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
+                        "Eine neue Fassung baust du erst, wenn er sie möchte.",
+                        "Zu dieser Bitte steht schon eine Szene im Chat; eine neue Fassung gibt es, wenn du sie möchtest.", false, true);
         }
     bool ok = false;
     const std::string text = ctx.scenes->start(args, jstr(ctx.bot, "id"), ok, ctx.cancel);

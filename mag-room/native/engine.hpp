@@ -2843,8 +2843,9 @@ private:
         room_.update_step(t.id, index, [&](Val &s) {
           s["state"] = was_cancelled ? "cancelled" : result.ok ? "ok" : "error";
           s["t1"] = (double)now_ms();
-          // Tools without live output show what the model received.
-          if (jstr(s, "output").empty()) s["output"] = clip(result.text, 16000, "\n…[gekürzt]");
+          // Tools without live output show what happened: what the model received, or
+          // in words for Chris where that text is an instruction to the bot.
+          if (jstr(s, "output").empty()) s["output"] = clip(result.shown.empty() ? result.text : result.shown, 16000, "\n…[gekürzt]");
           if (c.name == "shell" && starts_with(result.text, "exit=")) s["exit"] = atoi(result.text.c_str() + 5);
         });
         if (result.ok) t.ok_tool = true;

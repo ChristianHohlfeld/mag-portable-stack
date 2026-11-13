@@ -8,6 +8,7 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- H3's linear layers are ggml's MMQ again: the own W8A8 GEMM of #544 brought no speed.
 - The MI50's power cap is 100 W (at 85 W the card ran its cores at 1032 of 1725 MHz and
   its HBM at the lowest of three clocks); `ops/idol/power-cap.sh` never writes more than 100 W.
 - H3 videos are decoded by madebyollin's tiny autoencoder `taeh3` (MIT): seconds instead

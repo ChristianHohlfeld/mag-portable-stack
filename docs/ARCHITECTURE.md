@@ -810,13 +810,7 @@ less its token mean, Q in int8 per row and K per block of 64, Q*K^T by
 v_dot4, online softmax in fp32, P*V by v_dot2_f32_f16), RMSNorm, its
 weight and the AdaLN modulation in one pass, and the VAE's Conv3d as gfx906's
 own implicit fp16 GEMM in ggml (`gfx906-ggml.patch`: the patches as pairs
-along k, v_dot2_f32_f16 instead of conversions and scalar FMAs), and the
-linear layers' Q8_0 matrix products over long token runs as gfx906's own W8A8
-GEMM instead of ggml's MMQ (`gemm_q8_gfx906.cuh`: the weights repacked into
-an aligned int8 matrix with fp32 block scales per call, the tokens quantized
-per block of 32, 128x128 output tiles in k-steps of 128, v_dot4 into int32
-per block and fp32 with both scales, the next k-step loaded into registers
-while the current one is computed from LDS); parts that wait stay in memory
+along k, v_dot2_f32_f16 instead of conversions and scalar FMAs); parts that wait stay in memory
 (`--offload-to-cpu`), the finished video is decoded by madebyollin's tiny autoencoder for H3
 (`taeh3`, MIT, pinned in `ops/video/h3/fetch.sh`: seconds instead of the VAE's
 minutes, a little softer; the VAE still encodes a first frame, the sound has

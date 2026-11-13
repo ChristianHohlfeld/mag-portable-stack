@@ -143,8 +143,8 @@ The AMD MI50 belongs to `mag-idol` alone. No bot model offloads to it: the
 llama.cpp runtime is built without a GPU backend
 (`ops/models/build-runtime.sh`) and `ops/ci/check.sh` refuses GPU flags in
 `models.json`. `mag-scene` has `PrivateDevices=true`. The card's power cap
-is 73 W: `ops/idol/power-cap.sh` runs as `ExecStartPre` of `mag-idol` and
-only ever lowers the cap to 73 W, never raises it. Every stage that uses
+is 85 W: `ops/idol/power-cap.sh` runs as `ExecStartPre` of `mag-idol` and
+only ever lowers the cap to 85 W, never raises it. Every stage that uses
 the card holds the flock `/var/lib/mag-idol/gpu.lock`.
 
 ## The room (`mag-room/native`, C++17, one process)
@@ -1070,7 +1070,7 @@ What resumes:
 | room restart (deploy) | turns cut off before anything was visible run again; resets and VM restores in progress go on; MI50 jobs and scene renders are picked up again and mirrored into their messages; a whole-room scene whose objects are done is assembled |
 | Idol worker restart | running stages keep running and are followed again; the queue keeps its order |
 | scene worker restart | a running film render keeps running and is followed again |
-| reboot | mag-modeld verifies stamps and starts the models; 3D jobs continue at their first missing stage, videos after their last finished step, pictures start again; films go on at the first missing frame; the queue order is restored from each job's `order`; the MI50 cap is clamped to 73 W before the worker starts; VMs boot; missed timers (`Persistent=true`) run |
+| reboot | mag-modeld verifies stamps and starts the models; 3D jobs continue at their first missing stage, videos after their last finished step, pictures start again; films go on at the first missing frame; the queue order is restored from each job's `order`; the MI50 cap is clamped to 85 W before the worker starts; VMs boot; missed timers (`Persistent=true`) run |
 | a VM save cut off | the next save or restore of that VM commits the side overlay back first |
 
 Nothing writes a 3D job off as "interrupted".

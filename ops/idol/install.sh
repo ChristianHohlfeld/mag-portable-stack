@@ -66,8 +66,8 @@ PY
 fi
 # The whole shape (shape.py): TripoSG (VAST-AI, MIT) in an environment of its
 # own that reuses Idol's ROCm torch through a .pth file and changes nothing in
-# it. Code and weights are pinned; ~/idol-mi50/triposg/fetch.sh fetches the
-# weights (8 GB, resumable). Without them the mesh is made from the splat.
+# it. Code and weights are pinned; ops/idol/env/setup.sh (the installer's idol
+# phase) fetches them (8 GB, resumable). Without them the mesh is made from the splat.
 TRIPO=$BASE/triposg
 if [[ -d $TRIPO/src && ! -x $TRIPO/venv/bin/python ]]; then
   sudo -u "$MAG_OWNER" python3 -m venv "$TRIPO/venv"

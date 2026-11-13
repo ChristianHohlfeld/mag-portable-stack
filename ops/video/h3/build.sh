@@ -32,6 +32,9 @@ git apply "$HERE/gfx906-kernels.patch"
 # ...and the sampler's state on disk after every step, so that a clip goes on
 # after a restart from its last finished step (SD_STATE_DIR, SD_STATE_DIR_FILE).
 git apply "$HERE/sample-state.patch"
+# ...and H3's own special tokens (<d> </d> for spoken dialogue, ...) at their
+# official ids: the built-in Qwen tokenizer does not know them.
+git apply "$HERE/h3-tokenizer.patch"
 # ...and in ggml: Conv3d (the VAE) as gfx906's own implicit GEMM with v_dot2_f32_f16.
 git -C ggml apply "$HERE/gfx906-ggml.patch"
 CPU="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"

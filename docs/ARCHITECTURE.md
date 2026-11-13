@@ -820,6 +820,17 @@ Idol's video stage, which holds the MI50's lock), and every other GPU stage,
 once the card is its own, has it unload the model, so 3D and pictures have
 the whole card. Where h3d does not answer, sd-cli makes the clip. The h3d job
 id is kept in the job folder, so a restarted stage follows the same clip.
+Speech is in H3's own form: H3's text encoder knows special tokens that the
+plain Qwen tokenizer does not (`<d>` 151669, `</d>` 151670, `<|cutoff|>`, the
+lyrics and caption marks up to 151675, at the ids of MiniMax's tokenizer as
+ComfyUI's minimax.py has them); `h3-tokenizer.patch` gives H3 that tokenizer
+in stable-diffusion.cpp (sd-cli and h3d). What is said stands word for word,
+never translated, in `<d>[German] ...</d>` with a speaker mark (S1), (S2):
+`video_generate` asks the bots for it (directions in English, a described
+voice per speaker, no made-up lines), and h3gen.py turns quoted speech of a
+prompt typed in the page („...", "...", »...«) into it (one unmarked speaker
+is (S1); a prompt with `<d>` stays as it is). A continued video gets the last
+frame and the words only, no voice of the part before: the voice can change.
 A finished H3 video goes on ("Fortsetzen" at its card, `POST
 /api/video/continue`, a bot's `video_generate` with `continue`): the room
 sends its mp4 to the worker (`?continue=1`), the stage takes its very last

@@ -730,14 +730,6 @@ private:
   std::string wire_path(const Bot &b) const { return room_.cfg.state_dir + "/wire/" + b.id + ".json"; }
   void save_wire(Bot &b) { write_json(wire_path(b), b.wire, 0600); }
 
-  static std::string day() {
-    time_t t = time(nullptr);
-    tm tmv{};
-    localtime_r(&t, &tmv);
-    char buf[16];
-    strftime(buf, sizeof buf, "%Y%m%d", &tmv);
-    return buf;
-  }
   static std::string clock_label(int64_t ms) {
     time_t t = (time_t)(ms / 1000);
     tm tmv{};
@@ -880,7 +872,23 @@ private:
     return true;
   }
 
-  std::string prefix_file(const Bot &b) { return "prefix-" + jstr(b.wire, "prefix") + "-" + day() + ".bin"; }
+  // The saved prefix state belongs to the prefix (system text, tools, template
+  // switches) and to the model process that evaluated it (file, context,
+  // drafter, projector); it does not expire with the day: the system text
+  // holds no date, and a new day cost every bot a full read of its prefix.
+  std::string prefix_file(const Bot &b) {
+    std::string model;
+    {
+      std::lock_guard<std::mutex> lk(models_mu_);
+      if (const Val *m = models_.find(b.id)) {
+        model = jstr(*m, "file") + "|" + std::to_string((long long)jnum(*m, "ctx", 0));
+        if (const Val *w = m->find("model")) model += "|" + std::to_string((long long)jnum(*w, "total", 0));
+        for (const char *k : {"draft", "mmproj"})
+          if (const Val *x = m->find(k)) model += std::string("|") + k + (jbool(*x, "active", false) ? "1" : "0");
+      }
+    }
+    return "prefix-" + jstr(b.wire, "prefix") + "-m" + sha256_hex(model).substr(0, 12) + ".bin";
+  }
 
   // Evaluates the system prefix once and saves that slot state, or restores
   // it when the file of today exists. Only for an empty conversation.

@@ -8,7 +8,7 @@ hand, a minor version for new features, a patch for fixes.
 ## 5.1.0 (2026-11-13)
 
 Videos with sound by HyperFlow H3, painted 3D models, and a chat whose every
-message can be deleted; 37 pull requests since 5.0.0 (#502–#538). A 5.0.0 host
+message can be deleted; 41 pull requests since 5.0.0 (#502–#542). A 5.0.0 host
 is updated with `ops/deploy.sh`; for videos the owner runs
 `ops/video/h3/fetch.sh` and `ops/video/h3/build.sh` once (licence).
 
@@ -26,7 +26,9 @@ is updated with `ops/deploy.sh`; for videos the owner runs
   is resumable like 3D and pictures: a restart (deploy, h3d, reboot) goes on
   after its last finished step, or only decodes (#535); „Fortsetzen“ at an H3 video (and `video_generate`
   with `continue`) makes a new part from its last frame and joins the whole
-  video without a seam in one new message (#538).
+  video without a seam in one new message (#538), and never meets a worker
+  that takes the video for a picture (#539); H3's own special tokens and
+  speech in its form (#541).
 - Photo to 3D: TripoSG's shape as its own scripts make it (no bust cut, hard
   mask, full picture), painted from six sides by MV-Adapter on SDXL, the views
   made twice as large by Real-ESRGAN as MV-Adapter's texture script does; a
@@ -52,7 +54,10 @@ is updated with `ops/deploy.sh`; for videos the owner runs
   same row with ⋯ and „Nachricht löschen“, always in sight; a running job can
   be deleted too (#527). Code longer than 12 lines folds like a step, and a
   tool call or a scene a bot writes into its text as JSON is taken out and the
-  bot is sent to make the call for real (#533, #537).
+  bot is sent to make the call for real (#533, #537). The room's markers
+  (`[[MAG:WEITER]]`) and a lone PASS never reach the chat, also after a step
+  or a restart (#540); the label of „Fortsetzen“ sits in the middle of its
+  button (#542).
 - CI on GitHub green again (#517).
 
 ## 5.0.0 (2026-11-12)

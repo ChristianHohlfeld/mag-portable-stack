@@ -28,6 +28,8 @@ struct Ctx {
   std::function<std::string(const std::string &, int, int, const std::string &, std::string &, const std::string &)> imagine; // ..., then_video
   // A video with its sound (the Idol worker's HyperFlow H3 Flash): (picture's name or "", prompt, by, error, seconds, use) -> message id.
   std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &, int, const std::string &)> film; // picture, prompt, by, error, seconds, use
+  // An H3 video of the chat goes on (Idol::extend): (video's name or "", prompt, by, error, seconds) -> message id.
+  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &, int)> extend;
   // A 3D model from a picture of the chat (photo to 3D): (picture's name, quality, error) -> message id.
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
@@ -180,9 +182,12 @@ inline Val schemas(bool has_vm, bool phone = false) {
                "words). Use it when Chris asks for a video, a clip or for a picture to come alive. Name the picture as the chat shows it "
                "([Bild <name> ...]). Describe in English what happens, how the camera moves and what is heard. It waits in the graphics "
                "card's line behind other jobs and takes minutes (10 seconds take about three times as long as 5); the video appears in the chat as its "
-               "own message, marked as made by AI with MiniMax H3.",
+               "own message, marked as made by AI with MiniMax H3. To make a video longer, give `continue` with the H3 video's file "
+               "name as the chat shows it (or \"newest\"): a new part starts from its last frame, does what the prompt says (same "
+               "people, place and sound) and the whole video, joined without a seam, comes as a new message.",
                R"j({"type":"object","properties":{"image":{"type":"string","description":"the picture's file name as in the chat; leave out for words alone"},)j"
                R"j("seconds":{"type":"integer","enum":[5,10],"description":"default 5"},)j"
+               R"j("continue":{"type":"string","description":"an H3 video of the chat to make longer: its file name, or newest"},)j"
                R"j("as":{"type":"string","enum":["first","reference"],"description":"with a picture: its first frame (default) or a reference"},)j"
                R"j("prompt":{"type":"string","description":"what happens and is heard, in English"}},"required":["prompt"]})j"));
   list.push(fn("scene_3d",
@@ -725,6 +730,14 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (name == "video_generate") {
     if (!ctx.film) return fail("Videos sind hier nicht eingerichtet.");
     std::string error;
+    if (const std::string from = trim(jstr(args, "continue")); !from.empty()) {
+      if (!ctx.extend) return fail("Videos fortsetzen ist hier nicht eingerichtet.");
+      const std::string id = ctx.extend(from == "newest" ? "" : from, jstr(args, "prompt"), jstr(ctx.bot, "id"), error,
+                                        jnum(args, "seconds", 5) < 10 ? 5 : 10);
+      if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht fortgesetzt." : error);
+      return {"Das Video wird fortgesetzt (HyperFlow H3 Flash auf der MI50, einige Minuten, hinter anderen Aufträgen der Grafikkarte): "
+              "der neue Teil beginnt mit seinem letzten Bild, und das ganze Video erscheint als neue Nachricht. Warte nicht darauf.", true};
+    }
     const std::string id = ctx.film(trim(jstr(args, "image")), jstr(args, "prompt"), jstr(ctx.bot, "id"), error,
                                     jnum(args, "seconds", 5) < 10 ? 5 : 10, jstr(args, "as") == "reference" ? "ref" : "first");
     if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);

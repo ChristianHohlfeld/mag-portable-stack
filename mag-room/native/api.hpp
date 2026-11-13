@@ -188,6 +188,17 @@ public:
       }
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && p == "/api/video/continue") {
+      // An H3 video goes on ({"message", "prompt", "seconds"}): a new part from
+      // its last frame, and a new message with the whole video, joined.
+      const Val in = jparse(r.body);
+      std::string error;
+      const std::string id = idol_.extend(jstr(in, "message"), jstr(in, "prompt"), "chris", error, (int)jnum(in, "seconds", 5));
+      if (id.empty()) return http::send_error(fd, 409, error.empty() ? "Der Auftrag wurde abgelehnt." : error);
+      Val out = Val::object();
+      out["model3d"] = id;
+      return http::send_json(fd, 200, out);
+    }
     if (r.method == "POST" && p == "/api/image/act") {
       // A picture of the chat (uploaded, painted or a bot's) goes on: to a 3D
       // model ({"do": "3d", "quality"}) or to a video ({"do": "video",

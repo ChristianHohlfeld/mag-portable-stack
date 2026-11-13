@@ -7,6 +7,8 @@ hand, a minor version for new features, a patch for fixes.
 
 ## Unreleased
 
+- "Fortsetzen" at an H3 video (and `video_generate` with `continue`): a new part from
+  its last frame, the whole video joined without a seam in one new message.
 - A video is resumable like 3D and pictures: the sampler's state after every step
   is on disk, and a restart (deploy, h3d, reboot) goes on after the last finished
   step, or only decodes.

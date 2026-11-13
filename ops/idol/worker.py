@@ -44,6 +44,7 @@ CPUS = os.environ.get("MAG_IDOL_CPUS", "28-55")  # never the models' cores
 # this long it has neither written a line nor used the processor.
 STALL = max(1, int(os.environ.get("MAG_IDOL_STALL_S", "600")))
 MAX_UPLOAD = 20 * 1024 * 1024
+MAX_VIDEO_UPLOAD = 500 * 1024 * 1024   # a video that is continued
 MAX_PENDING = 32   # a whole room of objects, pictures and videos wait in one line
 QUALITIES = ("fast", "normal", "high")
 RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-binary",
@@ -825,7 +826,9 @@ class API(BaseHTTPRequestHandler):
         if path == "/api/idol/videos":
             # A video with its sound (HyperFlow H3 Flash): ?prompt= what happens and is heard,
             # 5 or 10 ?seconds; the body a picture as its first frame or (?use=ref) as who
-            # or what is in it, or nothing: words alone.
+            # or what is in it, or nothing: words alone. ?continue=1: the body is the
+            # video so far (mp4); its last frame begins the new part, and the result is
+            # the whole video, joined without a seam.
             asked = parse_qs(url.query)
             if not h3_ready():
                 return self.reply(503, {"error": "Das Videomodell (H3) ist noch nicht ganz eingerichtet: Download oder Build läuft."})
@@ -839,7 +842,14 @@ class API(BaseHTTPRequestHandler):
             if not prompt:
                 return self.reply(400, {"error": "Was soll im Video geschehen?"})
             data = b""
-            if length:
+            going_on = asked.get("continue", ["0"])[0] == "1"
+            if going_on:
+                if not 8 <= length <= MAX_VIDEO_UPLOAD:
+                    return self.reply(413, {"error": "Das Video zum Fortsetzen fehlt oder ist größer als 500 MB"})
+                data = self.rfile.read(length)
+                if data[4:8] != b"ftyp":
+                    return self.reply(415, {"error": "Fortgesetzt wird nur ein MP4-Video"})
+            elif length:
                 if not 8 <= length <= MAX_UPLOAD:
                     return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
                 data = self.rfile.read(length)
@@ -854,7 +864,9 @@ class API(BaseHTTPRequestHandler):
                 folder = ROOT / identity
                 folder.mkdir(mode=0o700, parents=True)
                 if data:
-                    (folder / "input.png").write_bytes(data)
+                    (folder / ("prev.mp4" if going_on else "input.png")).write_bytes(data)
+                if going_on:
+                    told.update(use="first", continues=True)
                 (folder / "prompt.json").write_text(json.dumps(told))
                 item = {"id": identity, "kind": "video", "state": "queued", "stage": "Warteschlange", "quality": "normal",
                         "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": H3_STEPS,

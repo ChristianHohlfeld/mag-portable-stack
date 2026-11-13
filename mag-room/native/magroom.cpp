@@ -39,6 +39,10 @@ int main() {
     const Val image = picture(name, error);
     return image.isObj() ? idol.film(image, prompt, by, error, seconds, use) : std::string();
   };
+  engine.extend = [&idol](const std::string &name, const std::string &prompt, const std::string &by, std::string &error, int seconds) {
+    const std::string from = idol.video_to_continue(trim(name), error);
+    return from.empty() ? std::string() : idol.extend(from, prompt, by, error, seconds);
+  };
   engine.model = [&idol, picture](const std::string &name, const std::string &quality, std::string &error) {
     const Val image = picture(name, error);
     return image.isObj() ? idol.start(image, quality, error) : std::string();

@@ -125,6 +125,81 @@ public:
     return id;
   }
 
+  // An H3 video of the chat goes on (the owner's "Fortsetzen", a bot's
+  // video_generate with `continue`): its last frame begins a new part of
+  // `seconds` that does what `prompt` says, and the new message holds the
+  // whole video, joined without a seam (the worker does it, resumable like
+  // every video). `name`: the video's file name as the chat shows it, or ""
+  // for the newest. Returns the new message's id, or "" with `error`.
+  std::string video_to_continue(const std::string &name, std::string &error) {
+    const std::vector<Val> all = room_.all();
+    for (size_t i = all.size(); i-- > 0;) {
+      const Val &m = all[i];
+      const Val *m3 = m.find("model3d");
+      if (!m3 || jstr(*m3, "kind") != "video" || jstr(*m3, "model") != "h3" || jstr(*m3, "state") != "done") continue;
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (jstr(a, "kind") == "video" && (name.empty() || jstr(a, "name") == name || jstr(a, "file") == name)) return jstr(m, "id");
+    }
+    error = name.empty() ? "Im Chat ist kein fertiges H3-Video." : "Im Chat gibt es kein fertiges H3-Video " + name + ".";
+    return "";
+  }
+
+  std::string extend(const std::string &message_id, const std::string &prompt, const std::string &by, std::string &error, int seconds = 5) {
+    Val before;
+    if (!room_.get(message_id, before) || !before.find("model3d") || jstr(before["model3d"], "kind") != "video" ||
+        jstr(before["model3d"], "model") != "h3" || jstr(before["model3d"], "state") != "done") {
+      error = "Fortgesetzt wird ein fertiges H3-Video.";
+      return "";
+    }
+    Val video;
+    if (const Val *atts = before.find("attachments"); atts && atts->isArr())
+      for (auto &a : atts->asArr())
+        if (jstr(a, "kind") == "video") video = a;
+    std::string bytes;
+    const std::string path = video.isObj() ? room_.file_path(jstr(video, "file")) : "";
+    if (path.empty() || !read_file(path, bytes, 500u << 20) || bytes.size() < 8) { error = "Das Video fehlt oder ist größer als 500 MB."; return ""; }
+    const std::string said = clip(trim(prompt), 1500, "");
+    if (said.empty()) { error = "Was soll im nächsten Teil geschehen?"; return ""; }
+    http::ClientOptions opt = options("POST");
+    opt.body = bytes;
+    opt.headers.push_back({"Content-Type", "application/octet-stream"});
+    opt.timeout_s = 120;
+    const std::string ask = "/api/idol/videos?continue=1&prompt=" + url_encode(said) + "&seed=" +
+                            std::to_string(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1) + "&seconds=" + (seconds < 10 ? "5" : "10");
+    const auto res = http::fetch(room_.cfg.idol_url + ask, opt);
+    const Val job = jparse(res.body);
+    if (res.status != 202 || jstr(job, "id").empty()) {
+      error = res.error.empty() ? jstr(job, "error", "Der Videodienst hat den Auftrag abgelehnt.") : "3D-Dienst nicht erreichbar.";
+      return "";
+    }
+    const Val &old = before["model3d"];
+    const double total = (jnum(old, "total_seconds") > 0 ? jnum(old, "total_seconds") : jnum(old, "seconds", 5)) + (seconds < 10 ? 5 : 10);
+    Val m = Val::object(), m3 = Val::object();
+    m["from"] = "idol";
+    m["role"] = "service";
+    m["state"] = "streaming";
+    m["text"] = "";
+    m["attachments"] = Val::array();
+    m3["kind"] = "video";
+    m3["job"] = jstr(job, "id");
+    m3["state"] = "queued";
+    m3["stage"] = "Warteschlange";
+    m3["progress"] = 0;
+    m3["prompt"] = said;
+    m3["source"] = jstr(video, "name");
+    if (!jstr(old, "image").empty()) m3["image"] = jstr(old, "image");
+    m3["continues"] = message_id;          // the video it goes on from
+    m3["model"] = "h3";
+    m3["seconds"] = (double)(seconds < 10 ? 5 : 10);
+    m3["total_seconds"] = total;           // the whole joined video
+    m3["by"] = by;
+    m["model3d"] = m3;
+    const std::string id = jstr(room_.add(m), "id");
+    watch(id, jstr(job, "id"));
+    return id;
+  }
+
   // A picture from words (FLUX.2 klein on the MI50, in the worker's one
   // queue). The message is there at once with its progress and becomes the
   // picture: an ordinary image of the chat, which the bots see and which can

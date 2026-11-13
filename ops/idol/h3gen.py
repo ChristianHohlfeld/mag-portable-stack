@@ -19,9 +19,9 @@ steps (Video Rebirth's own 4-step schedule) instead of six, and 480p instead
 of one megapixel (a third of the tokens, a ninth of the attention). On gfx906
 there is no INT8 convrot, NVFP4 or SageAttention (all NVIDIA), so it is the
 same model as GGUF Q8_0, run by stable-diffusion.cpp (with Video Rebirth's
-patch) on ggml's Vulkan backend: parts that wait are kept in memory
-(--offload-to-cpu), attention is ggml's flash shader, the VAE decodes in
-tiles. The licence was granted to Chris personally (private, nothing passed
+patch) natively on ggml's HIP backend for gfx906 (ROCm 6.3.4): its int8 dp4a
+matrix kernels and fused flash attention; parts that wait are kept in memory
+(--offload-to-cpu), the VAE decodes in tiles. The licence was granted to Chris personally (private, nothing passed
 on, made by AI said so): the file says in its metadata that it is made by
 AI with MiniMax H3. Prints "MAG-VIDEO k/4" per step and "MAG-VIDEO-STAGE
 <words>" between parts; MAG-ERROR in words.
@@ -35,7 +35,8 @@ from pathlib import Path
 
 BASE = Path(os.environ.get("MAG_IDOL_BASE", os.path.expanduser("~/idol-mi50")))
 WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", str(BASE / "weights/hyperflow-h3")))
-CLI = Path(os.environ.get("MAG_H3_CLI", str(BASE / "h3/sd-cli")))
+CLI = Path(os.environ.get("MAG_H3_CLI", str(BASE / "h3/sd-cli-hip")))          # HIP for gfx906
+ROCM = BASE / "rocm-6.3.4/current"                                            # unpacked by ops/video/h3/rocm.sh
 STEPS, FPS = 4, 24
 SIGMAS = "1.0,0.962575793,0.755781889,0.312497854,0.0"   # Video Rebirth's pre-shifted 4-step schedule
 FRAMES = {5: 124, 10: 243}                  # 17n + 5 frames: 5.2 s and 10.1 s
@@ -69,6 +70,38 @@ def shape(picture):
     return width, height
 
 
+def run(job, command, env):
+    """One run of sd-cli, its progress told as MAG-VIDEO lines. Returns
+    (exit code, whether sampling had begun)."""
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=job)
+    sampling = False
+    began = False
+
+    def heard(part):
+        nonlocal sampling, began
+        text = part.decode("utf-8", "replace")
+        found = PROGRESS.search(text)
+        if found:
+            if sampling and int(found.group(2)) == STEPS:
+                print("MAG-VIDEO %s/%d" % (found.group(1), STEPS), flush=True)
+        elif "sampling using" in text:
+            sampling = began = True
+            say("Video und Ton rechnen")
+        elif "sampling completed" in text:
+            sampling = False
+            say("Bilder und Ton dekodieren")
+        elif text.strip():
+            print(text[:300], flush=True)   # the job's private log
+
+    rest = b""
+    while chunk := proc.stdout.read1(65536):
+        *lines, rest = re.split(rb"[\r\n]", rest + chunk)
+        for part in lines:
+            heard(part)
+    heard(rest)
+    return proc.wait(), began
+
+
 def main():
     job = Path(sys.argv[1])
     asked = json.loads((job / "prompt.json").read_text())
@@ -79,7 +112,7 @@ def main():
     if not prompt:
         print("MAG-ERROR Es fehlt, was im Video geschehen soll.", flush=True)
         sys.exit(2)
-    if not CLI.is_file() or not (WEIGHTS / ".complete").is_file():
+    if not CLI.is_file() or not ROCM.is_dir() or not (WEIGHTS / ".complete").is_file():
         print("MAG-ERROR H3 ist noch nicht ganz eingerichtet (Gewichte oder Programm fehlen).", flush=True)
         sys.exit(2)
     if use == "ref" and "<Picture 1>" not in prompt:
@@ -100,34 +133,13 @@ def main():
                    "-t", str(len(os.sched_getaffinity(0))), "-o", str(job / "h3.part.webm")]
         if picture:
             command += ["--ref-image" if use == "ref" else "--init-img", str(picture)]
-        env = dict(os.environ, GGML_VK_VISIBLE_DEVICES="0")
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=job)
-        sampling = False
-
-        def heard(part):
-            nonlocal sampling
-            text = part.decode("utf-8", "replace")
-            found = PROGRESS.search(text)
-            if found:
-                if sampling and int(found.group(2)) == STEPS:
-                    print("MAG-VIDEO %s/%d" % (found.group(1), STEPS), flush=True)
-            elif "sampling using" in text:
-                sampling = True
-                say("Video und Ton rechnen")
-            elif "sampling completed" in text:
-                sampling = False
-                say("Bilder und Ton dekodieren")
-            elif text.strip():
-                print(text[:300], flush=True)   # the job's private log
-
-        rest = b""
-        while chunk := proc.stdout.read1(65536):
-            *lines, rest = re.split(rb"[\r\n]", rest + chunk)
-            for part in lines:
-                heard(part)
-        heard(rest)
-        if proc.wait() != 0 or not (job / "h3.part.webm").is_file():
-            print("MAG-ERROR H3 hat kein Video erzeugt (Exit %d)." % proc.returncode, flush=True)
+        # One path: ggml's HIP backend for gfx906 (int8 dp4a matrix products,
+        # fused flash attention) against the unpacked ROCm 6.3.4.
+        env = dict(os.environ, HIP_VISIBLE_DEVICES="0", ROCR_VISIBLE_DEVICES="0",
+                   LD_LIBRARY_PATH=str(ROCM / "lib") + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
+        code, _ = run(job, command, env)
+        if code != 0 or not (job / "h3.part.webm").is_file():
+            print("MAG-ERROR H3 hat kein Video erzeugt (Exit %d)." % code, flush=True)
             sys.exit(3)
         (job / "h3.part.webm").rename(sound)
     say("Video schreiben")

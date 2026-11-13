@@ -798,9 +798,12 @@ the tokens and a ninth of the attention. Its NVIDIA
 parts (INT8 convrot, NVFP4, SageAttention) do not exist on gfx906, so the
 same model runs as GGUF Q8_0 with the MiniMax H3 Qwen3-VL-32B encoder as
 GGUF Q4_K_M and H3's video (fp16) and audio (fp32) VAEs, in
-stable-diffusion.cpp with Video Rebirth's patch on ggml's Vulkan backend
-(RADV): parts that wait stay in memory (`--offload-to-cpu`), attention is
-ggml's flash shader, the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
+stable-diffusion.cpp with Video Rebirth's patch on one native path, ggml's
+HIP backend for gfx906 (ROCm 6.3.4, unpacked by `ops/video/h3/rocm.sh` into
+the owner's directory and never installed into the system; `build.sh` builds
+`sd-cli-hip` against it): int8 dp4a matrix kernels (MMQ) for the Q8_0
+weights and fused flash attention; parts that wait stay in memory
+(`--offload-to-cpu`), the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
 The model's result (`h3.webm`) is kept, so a lost stage only writes the
 file again. Its licence (MiniMax H3 Community License) leaves out the EU;
 MiniMax authorised Chris personally on 2026-11-13 (private, non-commercial,

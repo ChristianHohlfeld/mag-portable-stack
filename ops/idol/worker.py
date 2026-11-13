@@ -53,7 +53,7 @@ RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-bina
 IMAGE_RESULTS = {"image.png": "image/png"}
 IMAGE_STEP = re.compile(r"MAG-IMAGE (\d+)/(\d+)")
 # A video with its sound (h3gen.py, HyperFlow H3 Flash, a few-step MiniMax H3,
-# by stable-diffusion.cpp on Vulkan), the same queue again. Licensed to Chris
+# by stable-diffusion.cpp natively on HIP for gfx906), the same queue again. Licensed to Chris
 # personally: its weights and program are fetched and built on this host by
 # hand (ops/video/h3), and until they are there the room is told so. (Wan 2.2
 # made the videos before; its weights stay on disk, unused.)
@@ -61,12 +61,13 @@ VIDEO_RESULTS = {"video.mp4": "video/mp4"}
 VIDEO_STEP = re.compile(r"MAG-VIDEO (\d+)/(\d+)")
 VIDEO_STAGE = re.compile(r"MAG-VIDEO-STAGE (.+)")
 H3_WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", os.path.join(IDOL_BASE, "weights/hyperflow-h3")))
-H3_CLI = Path(os.environ.get("MAG_H3_CLI", os.path.join(IDOL_BASE, "h3/sd-cli")))
+H3_CLI = Path(os.environ.get("MAG_H3_CLI", os.path.join(IDOL_BASE, "h3/sd-cli-hip")))
+H3_ROCM = Path(os.path.join(IDOL_BASE, "rocm-6.3.4/current"))
 H3_STEPS = 4
 
 
 def h3_ready():
-    return (H3_WEIGHTS / ".complete").is_file() and H3_CLI.is_file()
+    return (H3_WEIGHTS / ".complete").is_file() and H3_CLI.is_file() and H3_ROCM.is_dir()
 
 
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")

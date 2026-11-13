@@ -254,8 +254,9 @@ few-step MiniMax H3, the setup of its own workflow: its sigmas, Euler, CFG 1,
 24 fps; for minutes on the MI50 rather than an hour, four steps at 480p, 5 s
 or 10 s), from words alone, from a picture as
 its first frame or with the picture as who is in it ("Figur", ref2va). On
-gfx906 it is the same model as GGUF in stable-diffusion.cpp on Vulkan
-(`ops/idol/h3gen.py`, `ops/video/h3`); no ComfyUI. "Video erzeugen" in the
+gfx906 it is the same model as GGUF in stable-diffusion.cpp, one native
+path: HIP on ROCm 6.3.4 (unpacked for the owner, never installed into the
+system; `ops/idol/h3gen.py`, `ops/video/h3`); no Vulkan, no ComfyUI. "Video erzeugen" in the
 plus menu takes a picture from the gallery or the camera, or words alone; a
 bot's `video_generate` names the picture as the chat shows it or none.
 MiniMax licensed H3 to Chris personally (2026-11-13: private,

@@ -1,0 +1,144 @@
+diff --git a/src/ggml-cuda/conv3d.cu b/src/ggml-cuda/conv3d.cu
+index 7e4bd57a..a4b9cf2f 100644
+--- a/src/ggml-cuda/conv3d.cu
++++ b/src/ggml-cuda/conv3d.cu
+@@ -1,6 +1,9 @@
+ #include "conv3d.cuh"
+ #include "convert.cuh"
+ #include "mma.cuh"
++#if defined(GGML_USE_HIP)
++#include "conv3d_dot2_gfx906.cuh"   // MAG stack: gfx906's own implicit GEMM
++#endif
+ 
+ struct conv3d_params {
+     int64_t IW, IH, ID;
+@@ -344,6 +347,23 @@ void ggml_cuda_op_conv3d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+         const dim3 grid(unsigned((positions + 63) / 64), unsigned((OC + 63) / 64), unsigned(B * split_k));
+         if (use_mma) {
+             conv3d_launch_implicit_gemm<true>(x_half.get(), w, result, padded_params, split_k, grid, block, stream);
++#if defined(GGML_USE_HIP)
++        } else if (device.cc == GGML_CUDA_CC_VEGA20) {
++            // gfx906: pairs of fp16 products by v_dot2_f32_f16 (conv3d_dot2_gfx906.cuh).
++            const auto * xi = reinterpret_cast<const _Float16 *>(x_half.get());
++            const auto * wi = reinterpret_cast<const _Float16 *>(w);
++            const bool aligned = uintptr_t(w) % sizeof(int4) == 0 &&
++                                 (padded_params.IC * padded_params.KW * padded_params.KH * padded_params.KD) % 8 == 0;
++            if (KW == 3 && KH == 3 && KD == 3) {
++                conv3d_implicit_gemm_dot2<3, 3, 3><<<grid, 256, 0, stream>>>(xi, wi, result, padded_params, split_k, aligned);
++            } else if (KW == 1 && KH == 1 && KD == 3) {
++                conv3d_implicit_gemm_dot2<1, 1, 3><<<grid, 256, 0, stream>>>(xi, wi, result, padded_params, split_k, aligned);
++            } else if (KW == 1 && KH == 1 && KD == 1) {
++                conv3d_implicit_gemm_dot2<1, 1, 1><<<grid, 256, 0, stream>>>(xi, wi, result, padded_params, split_k, aligned);
++            } else {
++                conv3d_implicit_gemm_dot2<0, 0, 0><<<grid, 256, 0, stream>>>(xi, wi, result, padded_params, split_k, aligned);
++            }
++#endif
+         } else {
+             conv3d_launch_implicit_gemm<false>(x_half.get(), w, result, padded_params, split_k, grid, block, stream);
+         }
+diff --git a/src/ggml-cuda/conv3d_dot2_gfx906.cuh b/src/ggml-cuda/conv3d_dot2_gfx906.cuh
+new file mode 100644
+index 00000000..c4e30c27
+--- /dev/null
++++ b/src/ggml-cuda/conv3d_dot2_gfx906.cuh
+@@ -0,0 +1,100 @@
++// The MI50's (gfx906) own implicit fp16 GEMM for Conv3d: the same 64x64x64
++// tiles, split over k, and output as ggml's conv3d_implicit_gemm_f16, but the
++// patches lie in LDS as pairs along k, so that every pair of fp16 products
++// goes into an fp32 sum with one v_dot2_f32_f16, instead of two conversions
++// and two scalar FMAs per product on GCN without MFMA. The input is ggml's
++// padded fp16 copy. Self-contained (Params needs conv3d_params' fields) so a
++// small program can check it against a Conv3d on the CPU. MAG stack.
++#pragma once
++#include <cstdint>
++
++typedef _Float16 conv3d_half2_t __attribute__((ext_vector_type(2)));
++
++template <int KW, int KH, int KD, typename Params>
++static __global__ void __launch_bounds__(256) conv3d_implicit_gemm_dot2(const _Float16 * __restrict__ input,
++                                                                         const _Float16 * __restrict__ weight,
++                                                                         float * __restrict__ output,
++                                                                         const Params P,
++                                                                         const int split_k,
++                                                                         const bool aligned_weights) {
++    constexpr int BM = 64, BN = 64, BK = 64, KP = BK / 2;
++    __shared__ __attribute__((aligned(16))) conv3d_half2_t a_s[BM][KP + 4];   // [output channel][pair of k]
++    __shared__ __attribute__((aligned(16))) conv3d_half2_t b_s[KP][BN + 4];   // [pair of k][position]
++    const int tid = threadIdx.x;
++    const int iw = int(P.IW), ih = int(P.IH), id = int(P.ID);
++    const int ow = int(P.OW), oh = int(P.OH), od = int(P.OD);
++    const int kw = KW ? KW : int(P.KW), kh = KH ? KH : int(P.KH), kd = KD ? KD : int(P.KD);
++    const int ic = int(P.IC), oc = int(P.OC);
++    const int sx = int(P.ST_X), sy = int(P.ST_Y), sz = int(P.ST_Z);
++    const int dx = int(P.DL_X), dy = int(P.DL_Y), dz = int(P.DL_Z);
++    const int n = blockIdx.z / split_k, split = blockIdx.z % split_k;
++    const int m0 = blockIdx.y * BM, n0 = blockIdx.x * BN;
++    const int k_total = ic * kw * kh * kd, positions = ow * oh * od;
++
++    // The position this thread loads (one column of b_s) and where its patch starts.
++    const int b_col = tid % BN, b_pair0 = tid / BN;   // 4 threads per column
++    const int spatial = n0 + b_col, valid = spatial < positions;
++    const int sp = valid ? spatial : 0;
++    const int pos = ((sp / (ow * oh)) * sz * ih + (sp / ow % oh) * sy) * iw + (sp % ow) * sx;
++
++    const int simt_m = tid / 16 * 4, simt_n = tid % 16 * 4;
++    float c[4][4] = {};
++    const int tiles = (k_total + BK - 1) / BK;
++    const int begin = int(int64_t(tiles) * split / split_k) * BK;
++    const int end   = int(int64_t(tiles) * (split + 1) / split_k) * BK;
++    for (int k0 = begin; k0 < end; k0 += BK) {
++        if (aligned_weights) {
++            for (int i = tid; i < BM * BK / 8; i += 256) {
++                const int row = i / (BK / 8), col = 8 * (i % (BK / 8));
++                const int4 v = m0 + row < oc && k0 + col < k_total ? ((const int4 *) weight)[((m0 + row) * k_total + k0 + col) / 8]
++                                                                    : make_int4(0, 0, 0, 0);
++                *(int4 *) &a_s[row][col / 2] = v;
++            }
++        } else {
++            for (int i = tid; i < BM * KP; i += 256) {
++                const int row = i / KP, col = 2 * (i % KP);
++                conv3d_half2_t v = {(_Float16) 0.f, (_Float16) 0.f};
++                if (m0 + row < oc && k0 + col < k_total) {
++                    v.x = weight[(m0 + row) * k_total + k0 + col];
++                    if (k0 + col + 1 < k_total) v.y = weight[(m0 + row) * k_total + k0 + col + 1];
++                }
++                a_s[row][col / 2] = v;
++            }
++        }
++#pragma unroll
++        for (int pair = b_pair0; pair < KP; pair += 256 / BN) {
++            conv3d_half2_t v = {(_Float16) 0.f, (_Float16) 0.f};
++#pragma unroll
++            for (int h = 0; h < 2; ++h) {
++                const int ki = k0 + 2 * pair + h;
++                if (valid && ki < k_total) {
++                    const int ci = ki / (kw * kh * kd), kz = ki / (kw * kh) % kd, ky = ki / kw % kh, kx = ki % kw;
++                    const _Float16 x = input[((n * ic + ci) * id + kz * dz) * ih * iw + ky * dy * iw + kx * dx + pos];
++                    if (h == 0) v.x = x; else v.y = x;
++                }
++            }
++            b_s[pair][b_col] = v;
++        }
++        __syncthreads();
++#pragma unroll 8
++        for (int pair = 0; pair < KP; ++pair) {
++            conv3d_half2_t a[4], b[4];
++#pragma unroll
++            for (int i = 0; i < 4; ++i) a[i] = a_s[simt_m + i][pair];
++#pragma unroll
++            for (int j = 0; j < 4; ++j) b[j] = b_s[pair][simt_n + j];
++#pragma unroll
++            for (int i = 0; i < 4; ++i)
++#pragma unroll
++                for (int j = 0; j < 4; ++j) c[i][j] = __builtin_amdgcn_fdot2(a[i], b[j], c[i][j], false);
++        }
++        __syncthreads();
++    }
++#pragma unroll
++    for (int i = 0; i < 4; ++i)
++#pragma unroll
++        for (int j = 0; j < 4; ++j) {
++            const int co = m0 + simt_m + i, p = n0 + simt_n + j;
++            if (co < oc && p < positions) output[(int64_t(blockIdx.z) * oc + co) * positions + p] = c[i][j];
++        }
++}

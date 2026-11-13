@@ -804,11 +804,13 @@ HIP backend for gfx906 (ROCm 6.3.4, unpacked by `ops/video/h3/rocm.sh` into
 the owner's directory and never installed into the system; `build.sh` builds
 `sd-cli-hip` against it): int8 dp4a matrix kernels (MMQ) for the Q8_0
 weights, stable-diffusion.cpp's fused RMSNorm(q/k)+RoPE, and our own kernels
-(`ops/video/h3/gfx906-kernels.patch`, each checked against exact math on the
+(`ops/video/h3/gfx906-kernels.patch` and `gfx906-ggml.patch`, each checked against exact math on the
 CPU by `ops/video/h3/check.sh`): the attention for gfx906 (`--sage-attn`: K
 less its token mean, Q in int8 per row and K per block of 64, Q*K^T by
-v_dot4, online softmax in fp32, P*V by v_dot2_f32_f16) and RMSNorm, its
-weight and the AdaLN modulation in one pass; parts that wait stay in memory
+v_dot4, online softmax in fp32, P*V by v_dot2_f32_f16), RMSNorm, its
+weight and the AdaLN modulation in one pass, and the VAE's Conv3d as gfx906's
+own implicit fp16 GEMM in ggml (`gfx906-ggml.patch`: the patches as pairs
+along k, v_dot2_f32_f16 instead of conversions and scalar FMAs); parts that wait stay in memory
 (`--offload-to-cpu`), the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
 The model's result (`h3.webm`) is kept, so a lost stage only writes the
 file again. Its licence (MiniMax H3 Community License) leaves out the EU;

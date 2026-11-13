@@ -252,8 +252,11 @@ answer that was cut off in view stays as it is ("Gestoppt").
 
 Each llama-server has one slot (`--parallel 1`), no host prompt cache
 (`--cache-ram 0`) and no context checkpoints. The only slot state ever
-written to disk is the evaluated system prefix of the day
-(`/var/lib/mag-models/slots/prefix-<hash>-<date>.bin`).
+written to disk is the evaluated system prefix
+(`/var/lib/mag-models/slots/<bot>/prefix-<hash>-m<model>.bin`: the prefix
+and the model process it belongs to, not the day). It is saved when the
+warming after the trash finishes; a new message waits for the warming
+instead of cancelling it, so the next trash restores it in seconds.
 
 ### What a model wrote
 

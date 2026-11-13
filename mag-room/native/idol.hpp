@@ -85,7 +85,7 @@ public:
       const std::string path = room_.file_path(jstr(image, "file"));
       if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
     }
-    const std::string said = clip(trim(prompt), 1500, "");
+    const std::string said = clip(trim(prompt), 6000, "");   // H3's own prompts are long
     if (said.empty()) { error = "Was soll im Video geschehen?"; return ""; }
     http::ClientOptions opt = options("POST");
     opt.body = bytes;
@@ -159,7 +159,7 @@ public:
     std::string bytes;
     const std::string path = video.isObj() ? room_.file_path(jstr(video, "file")) : "";
     if (path.empty() || !read_file(path, bytes, 500u << 20) || bytes.size() < 8) { error = "Das Video fehlt oder ist größer als 500 MB."; return ""; }
-    const std::string said = clip(trim(prompt), 1500, "");
+    const std::string said = clip(trim(prompt), 6000, "");   // H3's own prompts are long
     if (said.empty()) { error = "Was soll im nächsten Teil geschehen?"; return ""; }
     // A worker from before continuing (in the minute of a deploy between the
     // room and the worker) would take the video for a picture and refuse it

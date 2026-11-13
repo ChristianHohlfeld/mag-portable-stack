@@ -832,7 +832,7 @@ class API(BaseHTTPRequestHandler):
             asked = parse_qs(url.query)
             if not h3_ready():
                 return self.reply(503, {"error": "Das Videomodell (H3) ist noch nicht ganz eingerichtet: Download oder Build läuft."})
-            prompt = asked.get("prompt", [""])[0].strip()[:1500]
+            prompt = asked.get("prompt", [""])[0].strip()[:6000]
             try:
                 seed = int(asked.get("seed", ["0"])[0])
                 seconds = 5 if int(asked.get("seconds", ["5"])[0]) < 10 else 10

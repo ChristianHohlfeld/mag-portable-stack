@@ -180,11 +180,15 @@ inline Val schemas(bool has_vm, bool phone = false) {
                "at 480p, with voices, noises and music as the words say. From words alone (no image), or from a picture in the chat "
                "as its first frame, or with as: reference the picture shows who or what is in the video (name it <Picture 1> in the "
                "words). Use it when Chris asks for a video, a clip or for a picture to come alive. Name the picture as the chat shows it "
-               "([Bild <name> ...]). Describe in English what happens, how the camera moves and what is heard. Speech: every speaker gets "
-               "a mark (S1), (S2) and a described voice (\"(S1), a deep, calm male voice\"); what is said goes word for word, in its "
-               "own language and never translated, inside <d>[German] ...</d> (or [English], ...), e.g. (S1) says <d>[German] Komm "
-               "her!</d>. Only speech Chris asked for: never make up lines. It waits in the graphics "
-               "card's line behind other jobs and takes minutes (10 seconds take about three times as long as 5); the video appears in the chat as its "
+               "([Bild <name> ...]). Write the prompt in MiniMax's own form, in English (only the spoken words stay in their language): "
+               "three fields separated by blank lines: \"integrated_multimodal_description: [Shot 1] <style, e.g. Live-action, "
+               "cinematic or 3D cartoon>, <shot and camera motion with amplitude and speed>, <who is where, what they do along the "
+               "timeline>; [Shot 2] At 00:04.000, the camera cuts to ... only when wanted\", then \"overall_soundscape: <1-4 sentences of "
+               "ambient and action sounds>\", then \"non_diegetic_music: <1-3 sentences, or N/A>\". Speech: describe the speaker and voice, "
+               "then a stable ID and the verb, then the words: the old man with a deep, calm voice (S1) says: <d>[German] Komm her!</d> "
+               "(two at once: (S1,S2)). Inside <d> only the language tag and Chris's words, verbatim, never translated; never make up "
+               "lines. With a picture as first frame (or `continue`) the description starts from <Picture 1> and keeps its people, "
+               "look and place. It waits in the graphics ""card's line behind other jobs and takes minutes (10 seconds take about three times as long as 5); the video appears in the chat as its "
                "own message, marked as made by AI with MiniMax H3. To make a video longer, give `continue` with the H3 video's file "
                "name as the chat shows it (or \"newest\"): a new part starts from its last frame, does what the prompt says (same "
                "people, place and sound) and the whole video, joined without a seam, comes as a new message.",
@@ -192,7 +196,7 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("seconds":{"type":"integer","enum":[5,10],"description":"default 5"},)j"
                R"j("continue":{"type":"string","description":"an H3 video of the chat to make longer: its file name, or newest"},)j"
                R"j("as":{"type":"string","enum":["first","reference"],"description":"with a picture: its first frame (default) or a reference"},)j"
-               R"j("prompt":{"type":"string","description":"what happens and is heard, in English"}},"required":["prompt"]})j"));
+               R"j("prompt":{"type":"string","description":"in MiniMax's form: integrated_multimodal_description / overall_soundscape / non_diegetic_music, in English; spoken words verbatim in <d>[Language] ...</d>"}},"required":["prompt"]})j"));
   list.push(fn("scene_3d",
                "Build an animated 3D scene from 3D models in the chat (Blender). Every figure gets a skeleton by itself: an animal walks on its "
                "four legs and moves head and tail, somebody on two legs walks, nods and waves, a bird walks, pecks and flies, an insect or spider "

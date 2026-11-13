@@ -276,7 +276,7 @@ secret ever reaches it, `ops/security/secrets-scan.sh` finds where and
   builds (`taskset -c 28-55`), deploys, one-off jobs, workers, VMs. Backups
   and the CI runner use 42-55.
 - Start any ad hoc heavy command with `taskset -c 28-55`.
-- The MI50 belongs to `mag-idol` alone. Its power cap stays at 72 W:
+- The MI50 belongs to `mag-idol` alone. Its power cap stays at 78 W:
   `ops/idol/power-cap.sh` only lowers it. Nothing may raise it, and no bot
   model and no scene uses the card.
 - Anything that would use the card takes `/var/lib/mag-idol/gpu.lock`

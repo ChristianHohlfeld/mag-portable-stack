@@ -745,9 +745,11 @@ an opacity field, smoothed, decimated to a printable STL and a lighter GLB,
 unwrapped (`unwrap.py`: xatlas with a time limit, else a simple chart
 layout), textured. The side the photo shows wears the photo itself (up to
 4096 px); what the photo did not see takes its colours carried over the
-surface from the nearest seen part. A figure the photo cuts off at its lower
-edge stands on a clean flat base. "Netz neu" makes a model anew from what
-the job has.
+surface from the nearest seen part. The shape is TripoSG's as its own
+scripts make it (the picture prepared as `scripts/image_process.py` does: a
+hard mask on white, 10 % margin, at most 2000 px; 50 steps, guidance 7,
+seed 42); nothing is cut off or added to it. "Netz neu" makes a model anew
+from what the job has.
 
 "Objekt wählen": SAM 2 (`objects.py`, `facebook/sam2.1-hiera-small`) on the
 CPU finds the object Chris taps, every object by itself, or a named one

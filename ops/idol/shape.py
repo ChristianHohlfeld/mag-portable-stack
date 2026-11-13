@@ -55,17 +55,15 @@ def cut_out(job):
     del net
     torch.cuda.empty_cache()
     out = photo.convert("RGB")
-    out.putalpha(alpha)
+    out.putalpha(alpha.point(lambda a: 255 if a >= 128 else 0))   # a hard mask, as TripoSG's own preparation makes it
     return out
 
 
-def framed(image, margin=0.1, side=1024):
-    """On white, square, the thing in the middle with `margin` around it; and
+def framed(image, margin=0.1, side=2000):
+    """On white, square, the thing in the middle with `margin` around it (as
+    TripoSG's own scripts/image_process.py: at most 2000 px, never enlarged); and
     the same square as fine as the photo has it (at most 4096 px), with the
-    thing's outline as alpha: mesh.py lays it onto the shape. And where in
-    that square the photo ends below the thing (None where the photo shows
-    it to its foot): a bust cut off by the photo's lower edge stands on a
-    clean base there (mesh.py, based)."""
+    thing's outline as alpha: mesh.py lays it onto the shape."""
     alpha = np.asarray(image.getchannel(3))
     ys, xs = np.nonzero(alpha > 127)
     if len(xs) == 0:
@@ -80,21 +78,19 @@ def framed(image, margin=0.1, side=1024):
     fine.paste(box.convert("RGBA"), at)
     if square > 4096:
         fine = fine.resize((4096, 4096), Image.LANCZOS)
-    cut = (at[1] + box.height) / square if ys.max() >= alpha.shape[0] - 1 - max(1, alpha.shape[0] // 200) else None
-    return white.resize((side, side), Image.LANCZOS), fine, cut
+    return (white.resize((side, side), Image.LANCZOS) if square > side else white), fine
 
 
 def main():
     torch.set_num_threads(16)                                 # the unit counts its tasks
     job = Path(sys.argv[1])
     try:
-        picture, fine, cut = framed(cut_out(job))
+        picture, fine = framed(cut_out(job))
     except Exception as exc:
         print("MAG-ERROR Im Foto ist kein Ding zu finden (%s)." % type(exc).__name__, flush=True)
         sys.exit(2)
     picture.save(job / "outputs" / "shape_input.png")
     fine.save(job / "outputs" / "shape_photo.png")
-    (job / "outputs" / "shape_cut.json").write_text(json.dumps({"bottom": cut}))
     # The mesh is taken with marching cubes on the CPU; the CUDA-only extractor is never imported.
     sys.modules.setdefault("diso", types.SimpleNamespace(DiffDMC=None))
     sys.path.insert(0, SOURCE)

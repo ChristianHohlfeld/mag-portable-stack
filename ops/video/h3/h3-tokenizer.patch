@@ -1,0 +1,56 @@
+diff --git a/src/conditioning/conditioner.hpp b/src/conditioning/conditioner.hpp
+index e3832a1..3cc3fc4 100644
+--- a/src/conditioning/conditioner.hpp
++++ b/src/conditioning/conditioner.hpp
+@@ -2042,6 +2042,8 @@ struct LLMEmbedder : public Conditioner {
+         if (!tokenizer) {
+             if (arch == LLM::LLMArch::MISTRAL_SMALL_3_2 || arch == LLM::LLMArch::MINISTRAL_3_3B) {
+                 tokenizer = std::make_shared<MistralTokenizer>();
++            } else if (sd_version_is_minimax_h3(version)) {
++                tokenizer = std::make_shared<MiniMaxH3Tokenizer>();   // <d>/</d> and H3's other tokens (MAG stack)
+             } else {
+                 tokenizer = std::make_shared<Qwen2Tokenizer>();
+             }
+diff --git a/src/tokenizers/qwen2_tokenizer.cpp b/src/tokenizers/qwen2_tokenizer.cpp
+index a9f340f..3a8d76e 100644
+--- a/src/tokenizers/qwen2_tokenizer.cpp
++++ b/src/tokenizers/qwen2_tokenizer.cpp
+@@ -105,3 +105,19 @@ Qwen2Tokenizer::Qwen2Tokenizer(const std::string& merges_utf8_str,
+         load_from_merges(load_qwen2_merges());
+     }
+ }
++
++static const std::vector<std::string>& minimax_h3_special_tokens() {
++    // Qwen's own up to </think> (151643..151668), then H3's (151669..151675).
++    static const std::vector<std::string> tokens = [] {
++        std::vector<std::string> list(qwen2_special_tokens().begin(), qwen2_special_tokens().begin() + 26);
++        for (const char* token : {"<d>", "</d>", "<|cutoff|>", "<|lyrics_start|>", "<|lyrics_end|>", "<|caption_start|>", "<|caption_end|>"}) {
++            list.push_back(token);
++        }
++        return list;
++    }();
++    return tokens;
++}
++
++MiniMaxH3Tokenizer::MiniMaxH3Tokenizer()
++    : Qwen2Tokenizer("", minimax_h3_special_tokens()) {
++}
+diff --git a/src/tokenizers/qwen2_tokenizer.h b/src/tokenizers/qwen2_tokenizer.h
+index 1273946..7531831 100644
+--- a/src/tokenizers/qwen2_tokenizer.h
++++ b/src/tokenizers/qwen2_tokenizer.h
+@@ -16,4 +16,14 @@ public:
+     explicit Qwen2Tokenizer(const std::string& merges_utf8_str = "");
+ };
+ 
++// MiniMax-H3's text encoder: Qwen with the special tokens H3 adds after
++// </think> (151668): <d> 151669, </d> 151670 (spoken dialogue), <|cutoff|>,
++// <|lyrics_start|>, <|lyrics_end|>, <|caption_start|>, <|caption_end|>, at
++// the ids of MiniMax's released tokenizer (as ComfyUI's minimax.py has them).
++// MAG stack.
++class MiniMaxH3Tokenizer : public Qwen2Tokenizer {
++public:
++    MiniMaxH3Tokenizer();
++};
++
+ #endif  // __SD_TOKENIZERS_QWEN2_TOKENIZER_H__

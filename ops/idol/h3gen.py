@@ -194,6 +194,28 @@ def by_h3d(job, prompt, width, height, frames, seed, picture, use):
         time.sleep(2)
 
 
+QUOTES = re.compile(r'„([^“”"]+)[“”"]|“([^”"]+)[”"]|»([^«]+)«|"([^"]+)"')
+GERMAN = re.compile(r"[äöüÄÖÜß]|\b(ich|du|wir|ihr|nicht|und|der|die|das|ist|bin|bist|sind|mein|dein|hallo|ja|nein|was|wie|wo|warum|komm|geh)\b", re.I)
+
+
+def dialogue(prompt):
+    """H3's own form for speech: what is said, word for word and never
+    translated, inside <d>[Language] ... </d>, said by (S1), (S2) ... A
+    prompt that has <d> already is left as it is; otherwise every quoted
+    passage („...", "...", »...«) becomes one line of speech, and when no
+    speaker is marked it is the one speaker (S1). Nothing is made up."""
+    if "<d>" in prompt:
+        return prompt
+
+    def line(found):
+        text = next(g for g in found.groups() if g is not None).strip()
+        return "<d>[%s] %s</d>" % ("German" if GERMAN.search(text) else "English", text)
+    spoken = QUOTES.sub(line, prompt)
+    if spoken != prompt and not re.search(r"\(S\d+\)", spoken):
+        spoken = spoken.replace("<d>", "(S1) <d>")
+    return spoken
+
+
 def say(stage):
     print("MAG-VIDEO-STAGE " + stage, flush=True)
 
@@ -275,6 +297,7 @@ def main():
     if not CLI.is_file() or not ROCM.is_dir() or not (WEIGHTS / ".complete").is_file():
         print("MAG-ERROR H3 ist noch nicht ganz eingerichtet (Gewichte oder Programm fehlen).", flush=True)
         sys.exit(2)
+    prompt = dialogue(prompt)               # speech in H3's form: <d>[German] word for word</d>
     if previous:
         # The same shot goes on: the model is told so, so that people, look and sound stay.
         prompt = ("Continuation of the same shot, the same characters, look, light and sound, no cut: " + prompt)[:1500]

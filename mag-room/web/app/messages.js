@@ -374,6 +374,7 @@
     return { box, pick, uses: (picture) => picture ? seg('Bild als', 'use', [['first', 'Anfang'], ['ref', 'Figur']]) : null };
   };
   MAG.videoHint = (pick) => 'HyperFlow H3 Flash (MiniMax H3): mit Ton, ' + pick.seconds + ' s, 480p, als KI-generiert gekennzeichnet. '
+    + 'Gesprochenes in Anführungszeichen („…“) wird wörtlich gesprochen, nicht übersetzt. '
     + (pick.seconds > 5 ? 'Dauert etwa dreimal so lange wie 5 s.' : 'Läuft auf der Grafikkarte, wenn sie frei ist.');
   function makeVideo(a) {
     MAG.sheet('Video aus dem Bild', (content, _, close) => {

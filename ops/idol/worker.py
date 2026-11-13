@@ -52,18 +52,14 @@ RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-bina
 # same queue: the card does one thing at a time.
 IMAGE_RESULTS = {"image.png": "image/png"}
 IMAGE_STEP = re.compile(r"MAG-IMAGE (\d+)/(\d+)")
-# A video from a picture (videogen.py, Wan 2.2 I2V-A14B on the MI50), the same
-# queue again. Its own environment reuses Idol's torch; without its weights
-# (~/idol-mi50/video/fetch.sh) the room is told so before anything is queued.
+# A video with its sound (h3gen.py, HyperFlow H3 Flash, a few-step MiniMax H3,
+# by stable-diffusion.cpp on Vulkan), the same queue again. Licensed to Chris
+# personally: its weights and program are fetched and built on this host by
+# hand (ops/video/h3), and until they are there the room is told so. (Wan 2.2
+# made the videos before; its weights stay on disk, unused.)
 VIDEO_RESULTS = {"video.mp4": "video/mp4"}
 VIDEO_STEP = re.compile(r"MAG-VIDEO (\d+)/(\d+)")
 VIDEO_STAGE = re.compile(r"MAG-VIDEO-STAGE (.+)")
-VIDEO_PYTHON = os.environ.get("MAG_VIDEO_PYTHON", os.path.join(IDOL_BASE, "video/venv/bin/python"))
-VIDEO_WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", os.path.join(IDOL_BASE, "weights/wan22-i2v")))
-# A video with its sound (h3gen.py, HyperFlow H3 Flash, a few-step MiniMax H3,
-# by stable-diffusion.cpp on Vulkan): the same line again. Licensed to Chris
-# personally; its weights and program are fetched and built on this host
-# (ops/video/h3), and without them the room is told so.
 H3_WEIGHTS = Path(os.environ.get("MAG_H3_WEIGHTS", os.path.join(IDOL_BASE, "weights/hyperflow-h3")))
 H3_CLI = Path(os.environ.get("MAG_H3_CLI", os.path.join(IDOL_BASE, "h3/sd-cli")))
 H3_STEPS = 6
@@ -71,10 +67,6 @@ H3_STEPS = 6
 
 def h3_ready():
     return (H3_WEIGHTS / ".complete").is_file() and H3_CLI.is_file()
-
-
-def wan_ready():
-    return (VIDEO_WEIGHTS / ".complete").is_file() and Path(VIDEO_PYTHON).is_file()
 
 
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -518,7 +510,7 @@ def image_line(job_id, value):
 
 
 def video_line(job_id, value):
-    """One line of videogen.py: which part it is in, how far it got."""
+    """One line of h3gen.py: which part it is in, how far it got."""
     found = VIDEO_STEP.search(value)
     if found:
         k, n = int(found.group(1)), max(1, int(found.group(2)))
@@ -532,16 +524,9 @@ def video_line(job_id, value):
 def process_video(job_id):
     folder = ROOT / job_id
     if not (folder / "video.mp4").is_file():
-        try:
-            h3 = json.loads((folder / "prompt.json").read_text()).get("model") == "h3"
-        except (OSError, ValueError):
-            h3 = False
-        if h3:
-            command = [PYTHON, str(Path(__file__).with_name("h3gen.py")), str(folder)]
-        else:
-            command = [VIDEO_PYTHON, str(Path(__file__).with_name("videogen.py")), str(folder)]
+        command = [PYTHON, str(Path(__file__).with_name("h3gen.py")), str(folder)]
         run_stage(job_id, "video", command, video_line, dict(phase=1, phases=2, stage="Modell laden", step=0,
-                                                              total_steps=H3_STEPS if h3 else 160, progress=0.0, eta=None))
+                                                              total_steps=H3_STEPS, progress=0.0, eta=None))
         if not (folder / "video.mp4").is_file():
             raise RuntimeError("Das Video wurde nicht fertig")
     update(job_id, state="done", stage="Fertig", phase=2, files=list(VIDEO_RESULTS), finished=int(time.time()), pid=None)
@@ -802,15 +787,12 @@ class API(BaseHTTPRequestHandler):
                 pending.put_nowait(identity)
             return self.reply(202, item)
         if path == "/api/idol/videos":
-            # A video from a picture: the picture as the body, ?prompt= what should happen.
-            # ?model=h3: HyperFlow H3 Flash with its sound, 5 or 10 ?seconds, the picture
-            # as the first frame or (?use=ref) a reference, or words alone (no body).
+            # A video with its sound (HyperFlow H3 Flash): ?prompt= what happens and is heard,
+            # 5 or 10 ?seconds; the body a picture as its first frame or (?use=ref) as who
+            # or what is in it, or nothing: words alone.
             asked = parse_qs(url.query)
-            h3 = asked.get("model", ["wan"])[0] == "h3"
-            if h3 and not h3_ready():
-                return self.reply(503, {"error": "H3 ist noch nicht ganz eingerichtet (Download oder Build läuft)."})
-            if not h3 and not wan_ready():
-                return self.reply(503, {"error": "Das Videomodell (Wan 2.2) ist noch nicht ganz heruntergeladen."})
+            if not h3_ready():
+                return self.reply(503, {"error": "Das Videomodell (H3) ist noch nicht ganz eingerichtet: Download oder Build läuft."})
             prompt = asked.get("prompt", [""])[0].strip()[:1500]
             try:
                 seed = int(asked.get("seed", ["0"])[0])
@@ -818,18 +800,17 @@ class API(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 return self.reply(400, {"error": "Ungültiger Videoauftrag"})
-            if h3 and not prompt:
+            if not prompt:
                 return self.reply(400, {"error": "Was soll im Video geschehen?"})
             data = b""
-            if length or not h3:
+            if length:
                 if not 8 <= length <= MAX_UPLOAD:
                     return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
                 data = self.rfile.read(length)
                 if not is_picture(data):
                     return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
-            told = {"prompt": prompt, "seed": seed}
-            if h3:
-                told.update(model="h3", seconds=seconds, use="ref" if asked.get("use", ["first"])[0] == "ref" else "first")
+            told = {"prompt": prompt, "seed": seed, "model": "h3", "seconds": seconds,
+                    "use": "ref" if asked.get("use", ["first"])[0] == "ref" else "first"}
             with lock:
                 if pending.qsize() >= MAX_PENDING:
                     return self.reply(429, {"error": "Idol-Warteschlange voll"})
@@ -840,10 +821,8 @@ class API(BaseHTTPRequestHandler):
                     (folder / "input.png").write_bytes(data)
                 (folder / "prompt.json").write_text(json.dumps(told))
                 item = {"id": identity, "kind": "video", "state": "queued", "stage": "Warteschlange", "quality": "normal",
-                        "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": H3_STEPS if h3 else 160,
-                        "phase": 0, "phases": 2}
-                if h3:
-                    item["model"] = "h3"
+                        "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": H3_STEPS,
+                        "phase": 0, "phases": 2, "model": "h3"}
                 jobs[identity] = item
                 save(item)
                 pending.put_nowait(identity)
@@ -895,7 +874,7 @@ class API(BaseHTTPRequestHandler):
                 active = sum(1 for item in jobs.values() if item["state"] in ("queued", "running"))
             # "resumable": this worker's jobs survive its restart.
             return self.reply(200, {"ok": True, "queued": pending.qsize(), "active": active, "resumable": True,
-                                    "video": wan_ready(), "h3": h3_ready()})
+                                    "video": h3_ready()})
         if len(parts) < 4 or parts[:3] != ["api", "idol", "jobs"] or not VALID_ID.fullmatch(parts[3]):
             return self.reply(404, {"error": "Nicht gefunden"})
         with lock:

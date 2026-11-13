@@ -34,10 +34,10 @@ int main() {
     return image;
   };
   engine.film = [&idol, picture](const std::string &name, const std::string &prompt, const std::string &by, std::string &error,
-                                 const std::string &model, int seconds, const std::string &use) {
-    if (model == "h3" && trim(name).empty()) return idol.film(Val(), prompt, by, error, model, seconds); // words alone, with sound
+                                 int seconds, const std::string &use) {
+    if (trim(name).empty()) return idol.film(Val(), prompt, by, error, seconds); // words alone, with its sound
     const Val image = picture(name, error);
-    return image.isObj() ? idol.film(image, prompt, by, error, model, seconds, use) : std::string();
+    return image.isObj() ? idol.film(image, prompt, by, error, seconds, use) : std::string();
   };
   engine.model = [&idol, picture](const std::string &name, const std::string &quality, std::string &error) {
     const Val image = picture(name, error);

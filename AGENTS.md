@@ -244,27 +244,29 @@ Pictures are painted from words on the MI50 (FLUX.2 klein 4B, Apache-2.0):
 "Bild erzeugen" in the plus menu or a bot's `image_generate`; a job of Idol's
 one queue, never beside a 3D job, and the result is an ordinary image.
 Every picture of the chat (uploaded, painted, a bot's) goes on from its own
-place: "3D" (a model, which can then be animated at its message) or "Video"
-(Wan 2.2 I2V-A14B, Apache-2.0, GGUF Q6_K with the Lightning 4-step LoRA,
-about five seconds at 480p; a bot's `video_generate` names the picture as
-the chat shows it). "Video erzeugen" in the plus menu takes a picture from
-the gallery or the camera, or words alone: then the first frame is painted
-first and its message orders the video by itself (a bot: `video_generate`
-with `paint`). 3D, pictures and videos are jobs of one line
+place: "3D" (a model, which can then be animated at its message) or "Video".
+A video is made WITH its sound by HyperFlow H3 Flash (Video Rebirth's
+few-step MiniMax H3, the setup of its own workflow: six steps, Euler, CFG 1,
+about one megapixel, 24 fps, 5 or 10 s), from words alone, from a picture as
+its first frame or with the picture as who is in it ("Figur", ref2va). On
+gfx906 it is the same model as GGUF in stable-diffusion.cpp on Vulkan
+(`ops/idol/h3gen.py`, `ops/video/h3`); no ComfyUI. "Video erzeugen" in the
+plus menu takes a picture from the gallery or the camera, or words alone; a
+bot's `video_generate` names the picture as the chat shows it or none.
+MiniMax licensed H3 to Chris personally (2026-11-13: private,
+non-commercial, nothing passed on, marked as made by AI, no training of
+other models, only him): its weights stay on his host, never in this
+repository, a backup, a shared place or an installer that runs by itself,
+and every H3 video is marked "KI-generiert · MiniMax H3" in the chat and in
+its file. Wan 2.2 made the videos before; its weights stay on disk, unused.
+3D, pictures and videos are jobs of one line
 on the MI50: whoever has the card has it alone (at 72 W), the others wait
 with their place shown (Chris moves them forwards or backwards, or cancels
 them, at their message; the line survives restarts and reboots) and run
-after it by themselves; the bots order 3D and videos from a picture too
+after it by themselves; the bots order 3D and videos too
 (`photo_to_3d`, `video_generate`); a lock file that
-cannot be taken never fails a job. A video can also be made with its sound
-by HyperFlow H3 Flash (MiniMax H3; "H3 · mit Ton", `video_generate` with
-`model: h3`; stable-diffusion.cpp on Vulkan, `ops/idol/h3gen.py`). MiniMax
-licensed it to Chris personally (2026-11-13: private, non-commercial,
-nothing passed on, marked as made by AI, no training of other models, only
-him): its weights stay on his host, never in this repository, a shared place
-or an installer that runs by itself, and every H3 video is marked
-"KI-generiert · MiniMax H3" in the chat and in its file. Hunyuan models are
-not to be fetched (licence).
+cannot be taken never fails a job. Hunyuan models are not to be fetched
+(licence).
 The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants

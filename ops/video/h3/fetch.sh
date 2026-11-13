@@ -30,10 +30,14 @@ get() {  # get LOCAL URL
   fi
   echo "${SHA[$1]}  $1" | sha256sum --quiet -c - || { echo "WRONG $1" >&2; exit 2; }
 }
-get audio_vae.safetensors "$COMFY/vae/minimax_h3_audio_vae_fp32.safetensors"
-get video_vae.safetensors "$COMFY/vae/minimax_h3_video_vae_fp16.safetensors"
-get ref2va.gguf "$FLASH/ref2va_gguf/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf"
-get fl2va.gguf "$FLASH/fl2va_gguf/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf"
-get text_encoder.gguf "$GGUF/qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+# Each file has one writer; the files come side by side (one connection each).
+get audio_vae.safetensors "$COMFY/vae/minimax_h3_audio_vae_fp32.safetensors" &
+get video_vae.safetensors "$COMFY/vae/minimax_h3_video_vae_fp16.safetensors" &
+get ref2va.gguf "$FLASH/ref2va_gguf/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf" &
+get fl2va.gguf "$FLASH/fl2va_gguf/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf" &
+get text_encoder.gguf "$GGUF/qwen3vl_32b_minimax_h3-Q4_K_M.gguf" &
+failed=0
+for job in $(jobs -p); do wait "$job" || failed=1; done
+(( failed == 0 )) || { echo 'not complete' >&2; exit 1; }
 touch .complete
 echo done

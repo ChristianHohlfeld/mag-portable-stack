@@ -45,7 +45,7 @@ Read next:
 | Bot VMs | `magbot`: spawn, reset, save, restore of one KVM guest per bot from a golden image | `mag-room/native/vm.cpp`, `ops/vm`, `ops/mag-agents.nft` |
 | VM live link | `mag-browser` in each VM, `mag-browser-webrtc` on the host: browser picture and terminal over UDP/WebRTC | `mag-room/native/browser.cpp`, `mag-room/webrtc` |
 | Bot sites | `<name>.bot.stardenburg.de` (tailnet only), uploaded through `mag-bots-publish` | `ops/bots` |
-| MI50 queue | `mag-idol`: photo to 3D (TripoSG, Idol), pictures (FLUX.2 klein 4B), videos (Wan 2.2 I2V-A14B); one job at a time, 72 W | `ops/idol`, `ops/imagegen`, `ops/video` |
+| MI50 queue | `mag-idol`: photo to 3D (TripoSG, Idol), pictures (FLUX.2 klein 4B), videos with sound (HyperFlow H3 Flash); one job at a time, 72 W | `ops/idol`, `ops/imagegen`, `ops/video/h3` |
 | Scenes | `mag-scene`: pinned Blender on the CPU, rigging, recorded and worked-out motion, films | `ops/scene` |
 | Dictation | `mag-stt`: transcribe.cpp with German Parakeet TDT, CPU only | `mag-room/native/mag_stt.cpp`, `ops/stt` |
 | Reading aloud | Supertonic 3 in the browser (onnxruntime-web, WebGPU or WASM), served under `/tts/` | `ops/tts`, `mag-room/web/app/speak.js` |
@@ -146,7 +146,7 @@ recorded here, read the upstream model card before relying on it.
 | --- | --- | --- |
 | TripoSG (VAST-AI) | whole shape of a photo's object | MIT (`ops/idol/shape.py`) |
 | FLUX.2 klein 4B (Black Forest Labs) | pictures from words | Apache-2.0 (`ops/imagegen/fetch.sh`) |
-| Wan 2.2 I2V-A14B (Wan-AI), GGUF by QuantStack, Lightning LoRA by lightx2v | videos from pictures | Apache-2.0 (`ops/video/fetch.sh`) |
+| HyperFlow H3 Flash (Video Rebirth, from MiniMax H3), GGUF; stable-diffusion.cpp | videos with their sound | MiniMax H3 Community License, licensed to the owner personally; never fetched by the installer (`ops/video/h3`) |
 | Parakeet TDT 0.6B v3 (NVIDIA), German fine-tune by primeLine, GGUF | dictation | CC-BY-4.0 (`ops/stt/bootstrap.sh`) |
 | transcribe.cpp | dictation runtime | pinned in `ops/stt/transcribe.lock`; licence not recorded here |
 | Supertonic 3 (Supertone) | reading aloud | weights OpenRAIL-M, see its `LICENSE` (`ops/tts/bootstrap.sh`, `ops/tts/source.lock`) |

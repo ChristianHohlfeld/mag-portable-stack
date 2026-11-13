@@ -142,3 +142,227 @@ index 00000000..c4e30c27
 +            if (co < oc && p < positions) output[(int64_t(blockIdx.z) * oc + co) * positions + p] = c[i][j];
 +        }
 +}
+diff --git a/src/ggml-cuda/gemm_q8_gfx906.cuh b/src/ggml-cuda/gemm_q8_gfx906.cuh
+new file mode 100644
+index 00000000..9801dae8
+--- /dev/null
++++ b/src/ggml-cuda/gemm_q8_gfx906.cuh
+@@ -0,0 +1,168 @@
++// The MI50's (gfx906) own W8A8 GEMM for Q8_0 weights, for long token runs
++// (H3's linear layers): dst[n][m] = sum_k W[m][k] * X[n][k].
++//  1. repack: the Q8_0 weights (34-byte blocks, only 2-byte aligned) into an
++//     aligned int8 matrix and one fp32 scale per block of 32, so that every
++//     load of the GEMM is a 16-byte vector;
++//  2. quantize_x: X (fp32) to int8 per block of 32 with one scale (as Q8_0);
++//  3. gemm: 128x128 output tiles, k in steps of 128 (four blocks), 256
++//     threads of 8x8 outputs each; v_dot4_i32_i8 (four int8 products per
++//     instruction) into int32 per block, into fp32 with both scales; the next
++//     k-step is loaded into registers while the current one is computed from
++//     LDS (word-major, 128-bit reads).
++// Self-contained so that a small program can check it against the plain
++// product on the CPU. MAG stack.
++#pragma once
++#include <cstdint>
++
++namespace gfx906_q8 {
++    constexpr int QK = 32;                 // values per Q8_0 block
++    constexpr int BLOCK_BYTES = 34;        // fp16 scale + 32 int8
++    constexpr int BM = 128, BN = 128;      // output tile: weight rows x tokens
++    constexpr int KB = 4;                  // blocks of 32 per k-step (k step 128)
++    constexpr int WORDS = KB * QK / 4;     // int32 words of a row per k-step (32)
++
++    // Q8_0 rows -> wq [m][k] int8 and ws [m][k/32] fp32; one block per thread.
++    static __global__ void repack(const uint8_t * __restrict__ w, int64_t row_bytes, int8_t * __restrict__ wq,
++                                  float * __restrict__ ws, int64_t blocks_total, int k) {
++        const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++        if (i >= blocks_total) return;
++        const int kb = k / QK;
++        const int64_t row = i / kb, b = i % kb;
++        const uint16_t * src = reinterpret_cast<const uint16_t *>(w + row * row_bytes + b * BLOCK_BYTES);
++        ws[i] = float(*reinterpret_cast<const _Float16 *>(src));
++        int words[QK / 4];
++#pragma unroll
++        for (int j = 0; j < QK / 4; ++j) words[j] = int(src[1 + 2 * j]) | (int(src[2 + 2 * j]) << 16);
++        int4 * dst = reinterpret_cast<int4 *>(wq + row * k + b * QK);
++        dst[0] = make_int4(words[0], words[1], words[2], words[3]);
++        dst[1] = make_int4(words[4], words[5], words[6], words[7]);
++    }
++
++    // X (fp32 rows of k, stride row_stride floats) -> xq [rows][k] int8, xs [rows][k/32].
++    static __global__ void quantize_x(const float * __restrict__ x, int8_t * __restrict__ xq, float * __restrict__ xs,
++                                      int64_t blocks_total, int k, int64_t row_stride) {
++        const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++        if (i >= blocks_total) return;
++        const int kb = k / QK;
++        const int64_t row = i / kb, b = i % kb;
++        const float * src = x + row * row_stride + b * QK;
++        float v[QK], peak = 0.f;
++#pragma unroll
++        for (int j = 0; j < QK; ++j) { v[j] = src[j]; peak = fmaxf(peak, fabsf(v[j])); }
++        const float inv = peak > 0.f ? 127.f / peak : 0.f;
++        int words[QK / 4];
++#pragma unroll
++        for (int w = 0; w < QK / 4; ++w) {
++            int packed = 0;
++#pragma unroll
++            for (int j = 0; j < 4; ++j)
++                packed |= (__float2int_rn(fminf(fmaxf(v[4 * w + j] * inv, -127.f), 127.f)) & 0xff) << (8 * j);
++            words[w] = packed;
++        }
++        int4 * dst = reinterpret_cast<int4 *>(xq + row * k + b * QK);
++        dst[0] = make_int4(words[0], words[1], words[2], words[3]);
++        dst[1] = make_int4(words[4], words[5], words[6], words[7]);
++        xs[i] = peak / 127.f;
++    }
++
++    struct Tile {          // one k-step of one thread, in registers: 4 x 16 bytes of W and of X, 2 scales each
++        int4 a[4], b[4];
++        float sa[2], sb[2];
++    };
++
++    // Thread t loads the 16-byte pieces t, t+256, t+512, t+768 of each 128 x 128-byte tile
++    // (piece p: row p % 128, chunk p / 128 of 8), and the scales t and t+256 of 128 x 4.
++    static __device__ __forceinline__ void load(Tile & r, const int8_t * __restrict__ wq, const float * __restrict__ ws,
++                                                const int8_t * __restrict__ xq, const float * __restrict__ xs,
++                                                int m0, int n0, int kb0, int m, int n, int k, int tid) {
++        const int kb_total = k / QK;
++#pragma unroll
++        for (int i = 0; i < 4; ++i) {
++            const int p = tid + 256 * i, row = p % 128, chunk = p / 128, kbyte = kb0 * QK + chunk * 16;
++            const bool kin = kbyte < k;
++            r.a[i] = m0 + row < m && kin ? *reinterpret_cast<const int4 *>(wq + int64_t(m0 + row) * k + kbyte) : make_int4(0, 0, 0, 0);
++            r.b[i] = n0 + row < n && kin ? *reinterpret_cast<const int4 *>(xq + int64_t(n0 + row) * k + kbyte) : make_int4(0, 0, 0, 0);
++        }
++#pragma unroll
++        for (int i = 0; i < 2; ++i) {
++            const int p = tid + 256 * i, row = p % 128, blk = p / 128, kb = kb0 + blk;
++            r.sa[i] = m0 + row < m && kb < kb_total ? ws[int64_t(m0 + row) * kb_total + kb] : 0.f;
++            r.sb[i] = n0 + row < n && kb < kb_total ? xs[int64_t(n0 + row) * kb_total + kb] : 0.f;
++        }
++    }
++
++    // grid (ceil(n/128), ceil(m/128)), 256 threads.
++    static __global__ void __launch_bounds__(256) gemm(const int8_t * __restrict__ wq, const float * __restrict__ ws,
++                                                       const int8_t * __restrict__ xq, const float * __restrict__ xs,
++                                                       float * __restrict__ dst, int64_t dst_row_stride, int m, int n, int k) {
++        __shared__ __attribute__((aligned(16))) int a_s[WORDS][BM];   // [word][weight row]  16 KB
++        __shared__ __attribute__((aligned(16))) int b_s[WORDS][BN];   // [word][token]       16 KB
++        __shared__ float sa_s[KB][BM], sb_s[KB][BN];                  //                      4 KB
++        const int tid = threadIdx.x, ty = tid / 16, tx = tid % 16;
++        const int m0 = blockIdx.y * BM, n0 = blockIdx.x * BN;
++        const int kb_total = k / QK;
++        float c[8][8] = {};
++        Tile r;
++        load(r, wq, ws, xq, xs, m0, n0, 0, m, n, k, tid);
++        for (int kb0 = 0; kb0 < kb_total; kb0 += KB) {
++            // registers -> LDS (word-major; consecutive lanes write consecutive rows)
++#pragma unroll
++            for (int i = 0; i < 4; ++i) {
++                const int p = tid + 256 * i, row = p % 128, w0 = (p / 128) * 4;
++                a_s[w0 + 0][row] = r.a[i].x; a_s[w0 + 1][row] = r.a[i].y; a_s[w0 + 2][row] = r.a[i].z; a_s[w0 + 3][row] = r.a[i].w;
++                b_s[w0 + 0][row] = r.b[i].x; b_s[w0 + 1][row] = r.b[i].y; b_s[w0 + 2][row] = r.b[i].z; b_s[w0 + 3][row] = r.b[i].w;
++            }
++#pragma unroll
++            for (int i = 0; i < 2; ++i) {
++                const int p = tid + 256 * i;
++                sa_s[p / 128][p % 128] = r.sa[i];
++                sb_s[p / 128][p % 128] = r.sb[i];
++            }
++            __syncthreads();
++            // the next k-step into registers while this one is computed
++            if (kb0 + KB < kb_total) load(r, wq, ws, xq, xs, m0, n0, kb0 + KB, m, n, k, tid);
++#pragma unroll
++            for (int blk = 0; blk < KB; ++blk) {
++                int acc[8][8] = {};
++#pragma unroll
++                for (int j = 0; j < QK / 4; ++j) {
++                    const int w = blk * (QK / 4) + j;
++                    const int4 a0 = *reinterpret_cast<const int4 *>(&a_s[w][ty * 8]);
++                    const int4 a1 = *reinterpret_cast<const int4 *>(&a_s[w][ty * 8 + 4]);
++                    const int4 b0 = *reinterpret_cast<const int4 *>(&b_s[w][tx * 8]);
++                    const int4 b1 = *reinterpret_cast<const int4 *>(&b_s[w][tx * 8 + 4]);
++                    const int a[8] = {a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w};
++                    const int b[8] = {b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w};
++#pragma unroll
++                    for (int i = 0; i < 8; ++i)
++#pragma unroll
++                        for (int t = 0; t < 8; ++t) acc[i][t] = __builtin_amdgcn_sdot4(a[i], b[t], acc[i][t], false);
++                }
++                float br[8];
++#pragma unroll
++                for (int t = 0; t < 8; ++t) br[t] = sb_s[blk][tx * 8 + t];
++#pragma unroll
++                for (int i = 0; i < 8; ++i) {
++                    const float ar = sa_s[blk][ty * 8 + i];
++#pragma unroll
++                    for (int t = 0; t < 8; ++t) c[i][t] = fmaf(float(acc[i][t]) * br[t], ar, c[i][t]);
++                }
++            }
++            __syncthreads();
++        }
++#pragma unroll
++        for (int t = 0; t < 8; ++t) {
++            const int tok = n0 + tx * 8 + t;
++            if (tok >= n) continue;
++            float * out = dst + int64_t(tok) * dst_row_stride + m0 + ty * 8;
++            if (m0 + ty * 8 + 8 <= m && (reinterpret_cast<uintptr_t>(out) & 15) == 0) {
++                reinterpret_cast<float4 *>(out)[0] = make_float4(c[0][t], c[1][t], c[2][t], c[3][t]);
++                reinterpret_cast<float4 *>(out)[1] = make_float4(c[4][t], c[5][t], c[6][t], c[7][t]);
++            } else {
++#pragma unroll
++                for (int i = 0; i < 8; ++i)
++                    if (m0 + ty * 8 + i < m) out[i] = c[i][t];
++            }
++        }
++    }
++}
+diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
+index 24ebc5ed..a8cd1169 100644
+--- a/src/ggml-cuda/ggml-cuda.cu
++++ b/src/ggml-cuda/ggml-cuda.cu
+@@ -2237,6 +2237,30 @@ static bool ggml_cuda_match_shared_expert(const ggml_cgraph * graph, int routed_
+     return true;
+ }
+ 
++#if defined(GGML_USE_HIP)
++#include "ggml-cuda/gemm_q8_gfx906.cuh"
++// dst [n][m] = src0 (Q8_0, [k] x m rows) * src1 (fp32, [k] x n rows): repack, quantize, GEMM.
++static bool ggml_mul_mat_q8_gfx906(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
++    const int64_t k = src0->ne[0], m = src0->ne[1], n = src1->ne[1];
++    if (k > INT32_MAX || m > INT32_MAX || n > INT32_MAX || src1->ne[0] != k || dst->ne[0] != m || dst->ne[1] != n ||
++        src1->nb[1] % sizeof(float) || dst->nb[1] % sizeof(float)) {
++        return false;
++    }
++    const int64_t kb = k / gfx906_q8::QK;
++    cudaStream_t stream = ctx.stream();
++    ggml_cuda_pool_alloc<int8_t> wq(ctx.pool(), m * k), xq(ctx.pool(), n * k);
++    ggml_cuda_pool_alloc<float>  ws(ctx.pool(), m * kb), xs(ctx.pool(), n * kb);
++    gfx906_q8::repack<<<unsigned((m * kb + 255) / 256), 256, 0, stream>>>(
++        (const uint8_t *) src0->data, int64_t(src0->nb[1]), wq.get(), ws.get(), m * kb, int(k));
++    gfx906_q8::quantize_x<<<unsigned((n * kb + 255) / 256), 256, 0, stream>>>(
++        (const float *) src1->data, xq.get(), xs.get(), n * kb, int(k), int64_t(src1->nb[1] / sizeof(float)));
++    gfx906_q8::gemm<<<dim3(unsigned((n + gfx906_q8::BN - 1) / gfx906_q8::BN), unsigned((m + gfx906_q8::BM - 1) / gfx906_q8::BM)), 256, 0, stream>>>(
++        wq.get(), ws.get(), xq.get(), xs.get(), (float *) dst->data, int64_t(dst->nb[1] / sizeof(float)), int(m), int(n), int(k));
++    CUDA_CHECK(cudaGetLastError());
++    return true;
++}
++#endif
++
+ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     GGML_TENSOR_BINARY_OP_LOCALS
+ 
+@@ -2294,6 +2318,14 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
+         return;
+     }
++#if defined(GGML_USE_HIP)
++    // gfx906's own W8A8 GEMM for Q8_0 weights over long token runs (MAG stack).
++    if (cc == GGML_CUDA_CC_VEGA20 && src0->type == GGML_TYPE_Q8_0 && ne11 >= 128 && ne02 == 1 && ne03 == 1 &&
++        ne12 == 1 && ne13 == 1 && ne00 % 32 == 0 && ggml_is_contiguous(src0) && src1->nb[0] == sizeof(float) &&
++        dst->nb[0] == sizeof(float) && ggml_mul_mat_q8_gfx906(ctx, src0, src1, dst)) {
++        return;
++    }
++#endif
+     if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
+         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
+         return;

@@ -29,7 +29,7 @@ if getent group magbot >/dev/null; then
 else
   install -d -m 0700 "$STATE/control"
 fi
-for f in run.sh fetch.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
+for f in run.sh fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
 # Paths and the unit's user follow this host's owner (ops/host.env).
 mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
 chmod 0644 "$LIB/models.json.next"

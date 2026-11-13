@@ -224,6 +224,7 @@ static bool has_open_handle(const std::string &path) {
 
 struct Artifact {
   std::string kind, path, url, pinned_sha;
+  bool built = false; // no GGUF published: fetch.sh converts the pinned weights (build-draft.sh)
   uint64_t pinned_size = 0;
   bool configured = false;
 
@@ -547,7 +548,7 @@ static void step(Bot &b) {
   // leaves every model missing.
   for (Artifact *a : {&b.model, &b.draft, &b.mmproj}) {
     if (access("/etc/mag-stack/no-model-download", F_OK) == 0) break;
-    if (!a->configured || a->url.empty() || a->complete() || a->verify == Artifact::OK) continue;
+    if (!a->configured || (a->url.empty() && !a->built) || a->complete() || a->verify == Artifact::OK) continue;
     if (a != &b.model && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file
     if (now - a->last_growth < std::chrono::seconds(g_quiet_s)) break;
@@ -676,6 +677,7 @@ static Artifact artifact_from(const Val *v, const char *kind) {
   a.url = s("url");
   a.pinned_sha = s("sha256");
   if (auto p = v->find("size")) a.pinned_size = (uint64_t)p->asNum();
+  if (auto b = v->find("build")) a.built = b->isObj() && a.pinned_size && !a.pinned_sha.empty();
   a.configured = !a.path.empty();
   return a;
 }

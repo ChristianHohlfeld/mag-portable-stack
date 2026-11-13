@@ -475,9 +475,17 @@ runs (`POST /api/routines/<id>/<what>`) and removes (`DELETE`) them.
 ## Models (`ops/models`)
 
 `models.json` declares both bots: the GGUF (path, Hugging Face URL, size,
-SHA256), Lena's MTP draft model and vision projector, NUMA node, CPUs,
-threads, port, context and sampling arguments, and the pinned llama.cpp
-revision (`runtime.rev`), which `build-runtime.sh` builds CPU-only.
+SHA256), each bot's drafter (Lena: Gemma's MTP head from her model's repo;
+Noah: NVIDIA's EAGLE-3 head for gpt-oss-120b) and Lena's vision projector,
+NUMA node, CPUs, threads, port, context and sampling arguments, and the
+pinned llama.cpp revision (`runtime.rev`), which `build-runtime.sh` builds
+CPU-only. A drafter only proposes the next few tokens; the bot's own model
+checks every one and keeps only what it would have written itself, so a
+drafter changes speed, never the answer. Noah's head is published as weights
+only: its `build` (repository and commit, SHA256, the target's tokenizer by
+commit) is converted by `build-draft.sh` with the runtime's own converter,
+started through `fetch.sh` under the file's lock, and the GGUF is then
+checked against the size and SHA256 pinned in `models.json` like a download.
 
 `mag-modeld` is the single owner of the model lifecycle:
 

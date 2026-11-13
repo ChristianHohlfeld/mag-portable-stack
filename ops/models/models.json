@@ -47,6 +47,21 @@
         "size": 65369016608,
         "sha256": "8f2bc3ba1f84707ce18bbc75a4cdbb211f365928e60a1ed076238dfd3de0c0f7"
       },
+      "draft": {
+        "path": "/home/chris/models/gpt-oss-120b-heretic-v2/eagle3-gpt-oss-120b-v3-Q8_0.gguf",
+        "size": 849102848,
+        "sha256": "c68b2ec7e00ee0a9ca9e3a737f1b243844edb85b4e746d2d89d2cd7929e02bc6",
+        "build": {
+          "type": "eagle3",
+          "repo": "nvidia/gpt-oss-120b-Eagle3-v3",
+          "rev": "975baaffe27cc031ba21ae370602735d8e3df052",
+          "sha256": "9318fd58293f0afdebaf2016db0f5818cad428b4d4a9fa0f23240b9b41da28fc",
+          "target": "openai/gpt-oss-120b",
+          "target_rev": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+          "outtype": "q8_0"
+        },
+        "args": ["--spec-type", "draft-eagle3", "--spec-draft-n-max", "3", "--spec-draft-p-min", "0.75"]
+      },
       "args": ["--reasoning-effort", "low", "--temp", "1.0", "--top-p", "1.0", "--top-k", "0", "--min-p", "0.0", "--repeat-penalty", "1.0"]
     }
   }

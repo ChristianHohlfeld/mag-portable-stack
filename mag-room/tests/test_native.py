@@ -921,7 +921,7 @@ class RoomContract(unittest.TestCase):
         asked = text_of(r.lena.chats()[before]["messages"][-1]["content"])
         note = ('Chris: @Lena Der Fuchs springt über den Gnom\n[Chris schreibt das zur 3D-Szene "Fuchs besucht Gnom": Er möchte eine neue Fassung mit denselben Figuren. '
                 "So wurde sie mit scene_3d gebaut: " + json.dumps(recipe, ensure_ascii=False, separators=(",", ":")) +
-                " Baue die neue mit scene_3d: dieselben actors, die actions nach seinem Wunsch.]")
+                " Baue die neue mit dem Werkzeug scene_3d (nicht als JSON im Text): dieselben actors, die actions nach seinem Wunsch.]")
         self.assertIn(note, asked)
         self.assertEqual(len(r.noah.chats()), noahs)                                    # it asks Noah nothing
         again = scenes()[-1]

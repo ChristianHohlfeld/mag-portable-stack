@@ -1,0 +1,116 @@
+diff --git a/src/runtime/denoiser.hpp b/src/runtime/denoiser.hpp
+index 6fbcb43..0d1ed46 100644
+--- a/src/runtime/denoiser.hpp
++++ b/src/runtime/denoiser.hpp
+@@ -12,6 +12,7 @@
+ #include <utility>
+ 
+ #include "core/rng.hpp"
++#include "runtime/sample_state.hpp"
+ #include "core/rng_mt19937.hpp"
+ #include "core/rng_philox.hpp"
+ #include "core/tensor.hpp"
+@@ -1841,7 +1842,12 @@ static sd::Tensor<float> sample_euler(denoise_cb_t model,
+                                       sd::Tensor<float> x,
+                                       const std::vector<float>& sigmas) {
+     int steps = static_cast<int>(sigmas.size()) - 1;
+-    for (int i = 0; i < steps; i++) {
++    // MAG stack: go on after the last finished step of an interrupted run (sample_state.hpp).
++    int first = 0;
++    if (sd_state::load(x, first, sigmas)) {
++        LOG_INFO("sampling resumed after step %d of %d", first, steps);
++    }
++    for (int i = first; i < steps; i++) {
+         float sigma = sigmas[i];
+         if (sigma == sigmas[i + 1]) {
+             continue;
+@@ -1853,6 +1859,7 @@ static sd::Tensor<float> sample_euler(denoise_cb_t model,
+         sd::Tensor<float> denoised = std::move(denoised_opt.pred);
+         sd::Tensor<float> d        = (x - denoised) / sigma;
+         x += d * (sigmas[i + 1] - sigma);
++        sd_state::save(x, i + 1, sigmas);
+     }
+     return x;
+ }
+diff --git a/src/runtime/sample_state.hpp b/src/runtime/sample_state.hpp
+new file mode 100644
+index 0000000..bc808d7
+--- /dev/null
++++ b/src/runtime/sample_state.hpp
+@@ -0,0 +1,76 @@
++// The sampler's state on disk, so that a video interrupted by a restart goes
++// on after its last finished step instead of starting again (MAG stack).
++// Where: SD_STATE_DIR, else the first line of the file SD_STATE_DIR_FILE (a
++// server making one clip at a time). The state is x after a step, with its
++// step and shape, and the sigmas it was made with; it is only taken up again
++// for the same shape and the same sigmas. Written to a .part file, then
++// renamed: a state on disk is always whole.
++#pragma once
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <fstream>
++#include <string>
++#include <vector>
++
++#include "core/tensor.hpp"
++
++namespace sd_state {
++    inline std::string dir() {
++        if (const char* d = std::getenv("SD_STATE_DIR"); d && *d) return d;
++        if (const char* f = std::getenv("SD_STATE_DIR_FILE"); f && *f) {
++            std::ifstream in(f);
++            std::string line;
++            if (in && std::getline(in, line)) return line;
++        }
++        return {};
++    }
++
++    inline std::string file(const std::string& d) { return d + "/sample.state"; }
++
++    // Header: magic, step, number of sigmas, sigmas, rank, shape; then the values.
++    inline bool load(sd::Tensor<float>& x, int& step, const std::vector<float>& sigmas) {
++        const std::string d = dir();
++        if (d.empty()) return false;
++        std::ifstream in(file(d), std::ios::binary);
++        if (!in) return false;
++        uint32_t magic = 0, rank = 0, count = 0;
++        int32_t saved = 0;
++        in.read(reinterpret_cast<char*>(&magic), 4).read(reinterpret_cast<char*>(&saved), 4).read(reinterpret_cast<char*>(&count), 4);
++        if (!in || magic != 0x4d414731u || count != sigmas.size()) return false;   // "MAG1"
++        std::vector<float> stored(count);
++        in.read(reinterpret_cast<char*>(stored.data()), count * sizeof(float));
++        if (!in || stored != sigmas) return false;
++        in.read(reinterpret_cast<char*>(&rank), 4);
++        std::vector<int64_t> shape(rank);
++        in.read(reinterpret_cast<char*>(shape.data()), rank * sizeof(int64_t));
++        if (!in || shape != x.shape() || saved < 1 || saved > int32_t(count) - 1) return false;
++        sd::Tensor<float> loaded(shape);
++        in.read(reinterpret_cast<char*>(loaded.data()), loaded.numel() * sizeof(float));
++        if (!in) return false;
++        x    = std::move(loaded);
++        step = saved;
++        return true;
++    }
++
++    inline void save(const sd::Tensor<float>& x, int step, const std::vector<float>& sigmas) {
++        const std::string d = dir();
++        if (d.empty()) return;
++        const std::string target = file(d), part = target + ".part";
++        {
++            std::ofstream out(part, std::ios::binary | std::ios::trunc);
++            if (!out) return;
++            const uint32_t magic = 0x4d414731u, count = uint32_t(sigmas.size()), rank = uint32_t(x.shape().size());
++            const int32_t s = step;
++            out.write(reinterpret_cast<const char*>(&magic), 4).write(reinterpret_cast<const char*>(&s), 4)
++                .write(reinterpret_cast<const char*>(&count), 4);
++            out.write(reinterpret_cast<const char*>(sigmas.data()), count * sizeof(float));
++            out.write(reinterpret_cast<const char*>(&rank), 4);
++            out.write(reinterpret_cast<const char*>(x.shape().data()), rank * sizeof(int64_t));
++            out.write(reinterpret_cast<const char*>(x.data()), x.numel() * sizeof(float));
++            out.flush();
++            if (!out) return;
++        }
++        std::rename(part.c_str(), target.c_str());
++    }
++}

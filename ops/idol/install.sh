@@ -114,10 +114,18 @@ mv -f /etc/systemd/system/mag-h3d.service.next /etc/systemd/system/mag-h3d.servi
 systemctl daemon-reload
 systemctl enable mag-idol.service
 systemctl enable mag-h3d.service >/dev/null 2>&1 || :
-# Restarted only when it is idle: a clip that is being made is never cut off.
+# A new build of h3d (the owner's ops/video/h3/build.sh) is taken up only
+# while no video is running or waiting: a clip that is being made is never
+# cut off (it would resume, but need not). Otherwise the next deploy does it.
 if [[ -x $BASE/h3/h3d ]]; then
   if ! systemctl is-active --quiet mag-h3d.service; then
     systemctl start mag-h3d.service || echo 'mag-h3d: not started' >&2
+  else
+    started=$(date -d "$(systemctl show -p ActiveEnterTimestamp --value mag-h3d.service)" +%s 2>/dev/null || echo 0)
+    if (( $(stat -c %Y "$BASE/h3/h3d") > started )) &&
+       ! grep -lE '"state": *"(running|queued)"' /var/lib/mag-idol/jobs/*/status.json 2>/dev/null | xargs -r grep -l '"kind": *"video"' | grep -q .; then
+      systemctl restart mag-h3d.service && echo 'mag-h3d: new build taken up'
+    fi
   fi
 fi
 # Restart the worker only when its code or unit changed. Its jobs survive

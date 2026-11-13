@@ -743,4 +743,6 @@ article.flash { animation: flash 1.6s ease-out; }
 .staged .video-choice { flex: 1 1 auto; }
 /* "Fortsetzen" at a finished video: its own row inside the card, the whole width. */
 .m3 .line-acts.go { padding: 0 10px 10px; margin-top: 0; }
-.m3 .line-acts.go .pill { flex: 1; justify-content: center; min-height: 36px; }
+.m3 .line-acts.go .pill { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; }
+/* The label sits on the button's middle, not on a baseline pushed down by the height. */
+.m3 .line-acts.go .pill b { line-height: 1; display: block; }

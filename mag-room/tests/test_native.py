@@ -845,7 +845,7 @@ class RoomContract(unittest.TestCase):
         r.idle()
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
         self.assertEqual([(s["tool"], s["state"]) for s in steps], [("models_3d", "ok"), ("scene_3d", "error"), ("scene_3d", "ok"), ("scene_3d", "error")])
-        self.assertIn("Auf diese Bitte hin hast du schon eine Szene gebaut", steps.pop()["output"])
+        self.assertIn("Zu dieser Bitte steht schon eine Szene im Chat", steps.pop()["output"])
         self.assertEqual(len(r.scene.specs), 2)   # the worker was not asked again
         self.assertEqual(steps[2]["title"], "Baut die 3D-Szene Fuchs besucht Gnom")
         # The bot is told what there is: the model, where it comes from, and what each of its figures is.

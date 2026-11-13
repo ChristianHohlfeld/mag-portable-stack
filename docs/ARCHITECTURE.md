@@ -817,7 +817,10 @@ an aligned int8 matrix with fp32 block scales per call, the tokens quantized
 per block of 32, 128x128 output tiles in k-steps of 128, v_dot4 into int32
 per block and fp32 with both scales, the next k-step loaded into registers
 while the current one is computed from LDS); parts that wait stay in memory
-(`--offload-to-cpu`), the VAE decodes in tiles; ffmpeg writes H.264 with AAC.
+(`--offload-to-cpu`), the finished video is decoded by madebyollin's tiny autoencoder for H3
+(`taeh3`, MIT, pinned in `ops/video/h3/fetch.sh`: seconds instead of the VAE's
+minutes, a little softer; the VAE still encodes a first frame, the sound has
+its own VAE); ffmpeg writes H.264 with AAC.
 A clip is made by `mag-h3d` (stable-diffusion.cpp's server from the same
 build, `127.0.0.1:8796`, cores 28-55, its own 64 GB limit): it keeps H3 loaded
 between clips (`models/load` with the recipe `minimax-h3-fl2va` or

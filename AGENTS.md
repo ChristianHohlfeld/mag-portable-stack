@@ -250,8 +250,9 @@ one queue, never beside a 3D job, and the result is an ordinary image.
 Every picture of the chat (uploaded, painted, a bot's) goes on from its own
 place: "3D" (a model, which can then be animated at its message) or "Video".
 A video is made WITH its sound by HyperFlow H3 Flash (Video Rebirth's
-few-step MiniMax H3, the setup of its own workflow: six steps, Euler, CFG 1,
-about one megapixel, 24 fps, 5 or 10 s), from words alone, from a picture as
+few-step MiniMax H3, the setup of its own workflow: its sigmas, Euler, CFG 1,
+24 fps; for minutes on the MI50 rather than an hour, four steps at 480p, 5 s
+or 10 s), from words alone, from a picture as
 its first frame or with the picture as who is in it ("Figur", ref2va). On
 gfx906 it is the same model as GGUF in stable-diffusion.cpp on Vulkan
 (`ops/idol/h3gen.py`, `ops/video/h3`); no ComfyUI. "Video erzeugen" in the

@@ -175,14 +175,14 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("quality":{"type":"string","enum":["fast","normal","high"],"description":"default normal"}}})j"));
   list.push(fn("video_generate",
                "Make a video WITH its sound (HyperFlow H3 Flash, a few-step MiniMax H3, on the server's graphics card): 5 or 10 seconds "
-               "at about 768p, with voices, noises and music as the words say. From words alone (no image), or from a picture in the chat "
+               "at 480p, with voices, noises and music as the words say. From words alone (no image), or from a picture in the chat "
                "as its first frame, or with as: reference the picture shows who or what is in the video (name it <Picture 1> in the "
                "words). Use it when Chris asks for a video, a clip or for a picture to come alive. Name the picture as the chat shows it "
                "([Bild <name> ...]). Describe in English what happens, how the camera moves and what is heard. It waits in the graphics "
-               "card's line behind other jobs and takes long (up to about an hour for 10 seconds); the video appears in the chat as its "
+               "card's line behind other jobs and takes minutes (10 seconds take about three times as long as 5); the video appears in the chat as its "
                "own message, marked as made by AI with MiniMax H3.",
                R"j({"type":"object","properties":{"image":{"type":"string","description":"the picture's file name as in the chat; leave out for words alone"},)j"
-               R"j("seconds":{"type":"integer","enum":[5,10],"description":"default 10"},)j"
+               R"j("seconds":{"type":"integer","enum":[5,10],"description":"default 5"},)j"
                R"j("as":{"type":"string","enum":["first","reference"],"description":"with a picture: its first frame (default) or a reference"},)j"
                R"j("prompt":{"type":"string","description":"what happens and is heard, in English"}},"required":["prompt"]})j"));
   list.push(fn("scene_3d",
@@ -726,9 +726,9 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     if (!ctx.film) return fail("Videos sind hier nicht eingerichtet.");
     std::string error;
     const std::string id = ctx.film(trim(jstr(args, "image")), jstr(args, "prompt"), jstr(ctx.bot, "id"), error,
-                                    jnum(args, "seconds", 10) < 10 ? 5 : 10, jstr(args, "as") == "reference" ? "ref" : "first");
+                                    jnum(args, "seconds", 5) < 10 ? 5 : 10, jstr(args, "as") == "reference" ? "ref" : "first");
     if (id.empty()) return fail(error.empty() ? "Das Video wurde nicht in Auftrag gegeben." : error);
-    return {"Das Video mit Ton wird gemacht (HyperFlow H3 Flash auf der MI50, bis zu etwa einer Stunde, hinter anderen Aufträgen der "
+    return {"Das Video mit Ton wird gemacht (HyperFlow H3 Flash auf der MI50, einige Minuten, hinter anderen Aufträgen der "
             "Grafikkarte); es ist als KI-generiert gekennzeichnet. Es erscheint im Chat als eigene Nachricht; warte nicht darauf und "
             "beschreibe es nicht, bevor es da ist.", true};
   }

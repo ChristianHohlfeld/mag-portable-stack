@@ -785,13 +785,16 @@ an ordinary image of the chat. The weights come from `ops/imagegen/fetch.sh`.
 Every picture of the chat has "3D" and "Video" below it
 (`POST /api/image/act`), and "Video erzeugen" in the plus menu
 (`/api/message` with `mode: video`) takes a picture from the gallery or the
-camera, or words alone (`seconds` 5 or 10, `use` first or ref; a bot's
+camera, or words alone (`seconds` 5, the default, or 10, `use` first or ref; a bot's
 `video_generate`). Every video is HyperFlow H3 Flash by Video Rebirth, a 14B few-step
 MiniMax H3 that makes the video and its stereo sound together, from words
 alone, from a picture as its first frame (fl2va) or with the picture as who
 or what is in it (ref2va, "<Picture 1>"). Its setup is Video Rebirth's own
-workflow (six steps of its HyperFlow sigmas, Euler, CFG 1, about one
-megapixel, 16:9 without a picture, 24 fps, 124 or 243 frames). Its NVIDIA
+workflow (its HyperFlow sigmas, Euler, CFG 1, 24 fps, 124 or 243 frames),
+made for minutes on the MI50 instead of about an hour: Video Rebirth's
+4-step schedule instead of six steps, and 480p (864x480 without a picture,
+else that area in the picture's shape) instead of one megapixel, a third of
+the tokens and a ninth of the attention. Its NVIDIA
 parts (INT8 convrot, NVFP4, SageAttention) do not exist on gfx906, so the
 same model runs as GGUF Q8_0 with the MiniMax H3 Qwen3-VL-32B encoder as
 GGUF Q4_K_M and H3's video (fp16) and audio (fp32) VAEs, in

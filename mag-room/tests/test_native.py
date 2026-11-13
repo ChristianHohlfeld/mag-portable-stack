@@ -84,7 +84,8 @@ class Room:
         (self.tmp / "control").mkdir()
         (self.tmp / "state").mkdir()
         # Lena has a (fake) VM, Noah is chat-only.
-        (self.tmp / "state" / "agents.json").write_text(json.dumps([{"name": "Lena", "vm": "agent1"}, {"name": "Noah", "vm": ""}]))
+        bot = lambda id, name, vm: {"id": id, "name": name, "vm": vm, "enabled": True, "thinking": False, "persona": "", "memory": []}
+        (self.tmp / "state" / "bots.json").write_text(json.dumps([bot("lena", "Lena", "agent1"), bot("noah", "Noah", "")]))
         self.proc = None
         self.start()
 

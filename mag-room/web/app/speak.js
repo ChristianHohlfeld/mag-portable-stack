@@ -86,10 +86,10 @@
     const advance = (piece) => {
       if (!planning) return;
       const sec = piece.length / 14;
-      ahead = out.length === 1 ? sec : Math.max(0, ahead + sec - (a + b * 2 * sec));
+      ahead = out.length === 1 ? sec : Math.max(0, ahead + sec - (a + b * MIN_STEPS * sec));
     };
     if (first && rest.length > 40) {
-      const lo = Math.min(60, Math.max(8, Math.ceil(1.3 * least(3))));
+      const lo = Math.min(60, Math.max(8, Math.ceil(1.3 * least(MIN_STEPS))));
       const head = rest.slice(0, Math.max(44, lo + 30));
       let cut = -1;
       for (const m of head.matchAll(/[,;:–—]\s|[.!?]\s|\s(?=(?:und|oder|aber|denn|weil|dass|wenn|als|wie)\s)/g))
@@ -109,9 +109,9 @@
       }
       let most = max;
       if (planning) {
-        if (!out.length) most = Math.min(max, Math.max(36, Math.ceil(1.3 * least(3))));
+        if (!out.length) most = Math.min(max, Math.max(36, Math.ceil(1.3 * least(MIN_STEPS))));
         else {
-          const lo = Math.ceil(1.3 * least(2)), can = Math.floor(14 * (0.85 * ahead - a) / (b * 2));
+          const lo = Math.ceil(1.3 * least(MIN_STEPS)), can = Math.floor(14 * (0.85 * ahead - a) / (b * MIN_STEPS));
           most = Math.min(max, Math.max(24, can >= lo ? can : lo));
         }
       }
@@ -335,15 +335,11 @@
   }
   // ---- how fast this device makes speech, and in how many steps --------------
   // In how many steps a part is made. The model refines its sound in steps:
-  // five is its usual quality, four and three are heard a little, two more;
-  // a device that makes eight in a quarter of the time they play (a GPU)
-  // gets eight, the cleanest. A
-  // part gets as many as there is time for: it must be made by the moment the
-  // reading gets to it, or the reading would stop there. So the first words of
-  // a reading are made in three (the sound starts at once), and what follows
-  // in five as soon as what is ready covers the time it takes to make; a
-  // device that cannot keep up even so (WASM on a phone) reads on in two
-  // rather than stop between sentences. How
+  // five is the quality of Supertone's own reference, and never less (fewer
+  // steps sound broken: Chris, 2026-11-13, "sehr gute Qualität"); a device
+  // that makes more in a fraction of the time they play (a GPU) gets eight
+  // or ten, cleaner still. A part gets more only where there is time for it:
+  // it must be made by the moment the reading gets to it. How
   // fast the device is, is measured on every part (work per second of
   // speech and step) and kept.
   //
@@ -370,14 +366,15 @@
   }
   const cost = (steps, sec) => { const { a, b } = line(); return a + b * steps * sec; };
   const partMax = () => (line().a > 0.5 ? 200 : 120);   // where every part costs much, parts are longer
-  const topSteps = () => (cost(8, 8) / 8 < 0.25 ? 8 : 5);
+  const MIN_STEPS = 5;
+  const topSteps = () => (cost(10, 8) / 8 < 0.25 ? 10 : cost(8, 8) / 8 < 0.4 ? 8 : MIN_STEPS);
   function stepsFor(pb, text) {
     const length = Math.max(0.4, text.length / 14);                     // seconds of speech, about
     const now = performance.now() / 1000;
     let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
     for (const part of pb.waiting) { reached += part.length; made += part.work; }
     let steps = topSteps();
-    const least = pb.until || pb.waiting.length ? 2 : 3;
+    const least = MIN_STEPS;
     while (steps > least && made + cost(steps, length) + 0.05 > reached) steps--;
     const part = { length, work: cost(steps, length) + 0.05 };
     pb.waiting.push(part);
@@ -688,10 +685,10 @@
       keptFor.delete(k); prepared.delete(k); sum -= v;
     }
   }
-  // As many steps as the device makes in the time the sound plays (two at least).
+  // As many steps as the device makes in the time the sound plays (five at least).
   function keepUpSteps() {
     let steps = topSteps();
-    while (steps > 2 && cost(steps, 8) / 8 > 0.85) steps--;
+    while (steps > MIN_STEPS && cost(steps, 8) / 8 > 0.85) steps--;
     return steps;
   }
   let preparedFor = '';                 // the newest message being made ready

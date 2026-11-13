@@ -319,7 +319,7 @@ async function build(id) {
       alive();
       // The first runs of a network are its slowest (the browser is still making its code fast).
       // They happen here, in the background, not when somebody taps "Vorlesen".
-      await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist.', 'de', style, 3, 1.05);
+      await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist.', 'de', style, 5, 1.05);
       return e;
     } catch (err) {
       last = err;
@@ -535,7 +535,8 @@ async function synth(text, model, id, rate, lang, steps) {
   const speed = 1.05 * (rate >= 0.5 && rate <= 2.5 ? rate : 1);
   const parts = [], gap = Math.round(sampleRate * 0.12);
   const list = pieces(said, tongue === 'ko' || tongue === 'ja' ? 120 : 280);
-  const taken = steps >= 2 && steps <= 12 ? Math.round(steps) : STEPS[e.provider] || 5;
+  // Never fewer steps than Supertone's reference takes: fewer sound broken.
+  const taken = steps >= 5 && steps <= 12 ? Math.round(steps) : STEPS[e.provider] || 5;
   for (let i = 0; i < list.length; i++) {
     parts.push(await infer(e, list[i], tongue, style, taken, speed));
     if (i + 1 < list.length) parts.push(new Float32Array(gap));
@@ -555,12 +556,13 @@ function trimmed(audio, rate, sentence) {
   let peak = 0;
   for (let i = 0; i < audio.length; i++) { const a = Math.abs(audio[i]); if (a > peak) peak = a; }
   if (peak < 1e-4) return audio;
-  const quiet = peak * 0.02;
+  // Only real silence goes: a soft last sound (an "s", a "t", a breath out) is far below the peak and stays.
+  const quiet = peak * 0.004;
   let from = 0, to = audio.length - 1;
   while (from < to && Math.abs(audio[from]) < quiet) from++;
   while (to > from && Math.abs(audio[to]) < quiet) to--;
   from = Math.max(0, from - Math.round(rate * 0.02));
-  to = Math.min(audio.length, to + 1 + Math.round(rate * (sentence ? 0.22 : 0.05)));
+  to = Math.min(audio.length, to + 1 + Math.round(rate * (sentence ? 0.25 : 0.1)));
   return from === 0 && to === audio.length ? audio : audio.slice(from, to);
 }
 // One request at a time: a stopped playback may still have a part in flight,

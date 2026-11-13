@@ -101,7 +101,7 @@ brows) carry the skin, speech goes from the words to their sounds (German by
 rules, clearly English text by lighter ones, numbers as words; pure Python in
 `ops/scene/phonemes.py`) and from the sounds to mouth shapes that last as long
 as each sound, and it blinks now and then. Its film speaks what was said: when Chris asks for the
-film, the page makes the voices on the device (Piper, one voice per
+film, the page makes the voices on the device (Supertonic, one voice per
 figure) and sends them as the film's sound; nothing is spoken on the server.
 Each voice's tempo is fitted to how long that mouth moves (0.8x to 1.3x), so
 lips and voice start and end together; the same voices play in the chat with
@@ -341,18 +341,19 @@ order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,
 runtime and a cancel button. All settings live in one sheet.
 Reading aloud happens in the client alone, on the phone and the desktop
-(Chris, 2026-11-13): Piper voices run in the browser (`app/tts-worker.js`, a
-Web Worker with onnxruntime-web in WASM and espeak-ng from piper-wasm), each
-voice German and English (Kerstin, Ramona, Thorsten, Karlsson; English by
-Alba and Joe), the language of the text picks which reads. The browser
-fetches runtime and voices straight from jsDelivr and Hugging Face, pinned
-by version and SHA256, once into Cache Storage; the room serves nothing for
-it, installs nothing and makes no speech, and nothing of it goes back to
-the server. One voice and tempo per speaker, kept on the device; the page
-loads the bots' voices in the background, so the first tap speaks at once,
-and until a voice is there the device's own voice reads. Nothing plays by
-itself. Never bring a server path for speech back. The retired Supertonic
-and Piper files stay on disk (`/opt/mag-tts`, the owner's cache).
+(Chris, 2026-11-13), and in top quality: Supertonic 3 runs in the browser
+(`app/tts-worker.js`, a Web Worker with onnxruntime-web, on WebGPU or in
+WASM), German and English from one model, ten voices, the language of the
+text picks how it reads. The browser fetches the model straight from
+Hugging Face and the runtime from jsDelivr, pinned by commit, version and
+SHA256, once into Cache Storage; the room serves nothing for it, installs
+nothing and makes no speech. One voice and tempo per speaker, kept on the
+device; the page loads the model in the background, so the first tap speaks
+at once without pauses, and says quietly whether the voice is there; until
+then the device's own voice reads. Nothing plays by itself. Piper sounded
+robotic and is no option (Chris, 2026-11-13); replace the model only with a
+better one. Never bring a server path for speech back. The retired files
+stay on disk (`/opt/mag-tts`, the owner's cache).
 Dictation is local and live: the microphone button sends 16 kHz PCM to the
 room while Chris speaks (`/api/stt/live`), `mag-stt` recognizes it and the
 text grows in the message field; a sentence followed by a pause is final.

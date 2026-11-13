@@ -451,7 +451,7 @@
               select(String(now.rate), MAG.voices.rates.map((r) => [String(r), String(r).replace('.', ',') + '×']), (v) => MAG.voices.set(b.id, { rate: +v })))));
           }
           voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('span', { class: 'voice-state', text: MAG.voices.state() }),
-            el('small', { text: 'Die Stimmen laufen nur in diesem Browser, Deutsch und Englisch je nach Text. Jede wird einmal im Hintergrund geladen (rund 63 MB) und bleibt dann auf dem Gerät; der Server macht dafür nichts.' }))));
+            el('small', { text: 'Die Stimmen laufen nur in diesem Browser (Supertonic 3, Deutsch und Englisch). Das Sprachmodell wird einmal im Hintergrund geladen (rund 400 MB) und bleibt dann auf dem Gerät; der Server macht dafür nichts.' }))));
         });
       }
 

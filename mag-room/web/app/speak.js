@@ -1,32 +1,39 @@
 // Read aloud, on the device: every answer can be spoken with a local voice.
-// Piper voices run in the browser (a Web Worker with onnxruntime-web and
-// espeak-ng, app/tts-worker.js): runtime and voices come straight from where
-// they are published (jsDelivr, Hugging Face), pinned, once into Cache
-// Storage, and after that a reading touches no network. The room hands out
-// nothing for it and no speech is ever made on the server. Playback starts
-// with the first words while the next parts are made, laid end to end on the
-// audio clock. Nothing plays by itself.
+// Supertonic 3 runs in the browser (a Web Worker with onnxruntime-web,
+// app/tts-worker.js): the browser fetches the model from Hugging Face and the
+// runtime from jsDelivr once into Cache Storage, and after that a playback
+// touches no network; the room hands out nothing for it. Playback starts
+// with the first words while the next parts are made,
+// laid end to end on the audio clock. Nothing plays by itself, and no speech
+// is ever made on the server.
 //
 // Every speaker has a voice and a tempo of their own (Lena, Noah, Chris), kept
-// on this device; a voice has a German and an English side, and the language
-// of the text picks which reads. Until a voice is there, the best system
-// voice reads instead, but never in the middle of a message that the model
-// has begun.
+// on this device. Until the model is there, or where it fails, the best
+// system voice reads instead, but never in the middle of a message that the
+// model has begun.
 'use strict';
 (function () {
   const { MAG } = window, S = MAG.state;
   const synth = window.speechSynthesis;
   const systemOk = !!synth && typeof window.SpeechSynthesisUtterance === 'function';
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const modelPossible = typeof Worker === 'function' && !!AudioCtx && typeof fetch === 'function' && !!window.crypto?.subtle && typeof caches === 'object';
+  const modelPossible = typeof Worker === 'function' && !!AudioCtx && typeof fetch === 'function';
   const GOOD_VOICE = /natural|premium|siri|enhanced|neural|online/i;
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
   const LIVE_IDLE_MS = 30000;
-  // A voice is a download of about 63 MB the first time (with the runtime
-  // about 33 MB more): that has no limit (the worker asks again for what does
-  // not come, by itself), and a part to make has one. Time in which the page
-  // was not in view does not count: a phone holds a page in the background.
-  const SPEAK_TIMEOUT_MS = 60000, WARM_TIMEOUT_MS = 120000;
+  // A part may take a while on a phone without WebGPU. Loading the model is a
+  // download of about 400 MB the first time: it has no limit at all (the
+  // worker asks again for what does not come, by itself, for as long as the
+  // page is open), and making the model ready after it has one for standing
+  // still (the worker reports every step). Time in which the page was not
+  // in view does not count: a phone holds a page in the background.
+  const SPEAK_TIMEOUT_MS = 120000, WARM_TIMEOUT_MS = 180000;
+  // The device's GPU gets this long to make the model ready and speak its
+  // first word; a GPU that does not is not asked again on this device, and
+  // the model is made in WASM instead (it is already downloaded).
+  const GPU_LIMIT_MS = 90000;
+  const gpuOk = () => !!navigator.gpu && localStorage.getItem('mag-tts-gpu') !== 'no';
+  function noGpu() { try { localStorage.setItem('mag-tts-gpu', 'no'); } catch {} }
   let current = null;
 
   function normalize(text) {
@@ -59,20 +66,36 @@
   }
 
   // One sentence per call of the model, capped so a long sentence still starts soon.
-  // Abbreviations (z.B., Dr.) are not treated as sentence ends. The very first
-  // part of a playback is short (`first`): a clause, so the sound starts after
-  // a few words are made and the rest is made while they play.
-  const ABBREV = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl|mr|mrs|ms|vs)$/i;
-  const PART_MAX = 200;
-  function modelParts(text, max = PART_MAX, first = false) {
+  // Abbreviations (z.B., Dr.) are not treated as sentence ends.
+  const ABBREV = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl)$/i;
+  // The very first part of a playback is short (`first`): a clause, not a
+  // whole sentence. The sound starts after what a few words take to make,
+  // and the rest is made while they play. How long the first parts are
+  // follows from how fast this device makes speech (see line()): each is as
+  // long as can be made while what is ready plays, and never so short that
+  // it plays for less time than it takes to make (a GPU spends about a
+  // second on every part, however short): then the reading runs on without
+  // a pause from the first word.
+  function modelParts(text, max = partMax(), first = false) {
     const out = [];
     let rest = String(text || '').trim();
-    if (first && rest.length > 60) {
-      const head = rest.slice(0, 90);
+    const { a, b } = line();
+    // Letters below which a part in `steps` plays for less time than it takes to make.
+    const least = (steps) => (b * steps < 0.95 ? 14 * a / (1 - b * steps) : 14 * a * 20);
+    let planning = first, ahead = 0;     // seconds of sound that are ready ahead of what is being made
+    const advance = (piece) => {
+      if (!planning) return;
+      const sec = piece.length / 14;
+      ahead = out.length === 1 ? sec : Math.max(0, ahead + sec - (a + b * 2 * sec));
+    };
+    if (first && rest.length > 40) {
+      const lo = Math.min(60, Math.max(8, Math.ceil(1.3 * least(3))));
+      const head = rest.slice(0, Math.max(44, lo + 30));
       let cut = -1;
-      for (const m of head.matchAll(/[,;:–—]\s|[.!?]\s|\s(?=(?:und|oder|aber|denn|weil|dass|wenn|als|wie|and|but|because|when)\s)/g))
-        if (m.index >= 20 && cut < 0) cut = m.index + (/\s/.test(m[0][0]) ? 0 : 1);       // the first place a speaker would breathe
-      if (cut >= 20) { out.push(rest.slice(0, cut).trim()); rest = rest.slice(cut).trimStart(); }
+      for (const m of head.matchAll(/[,;:–—]\s|[.!?]\s|\s(?=(?:und|oder|aber|denn|weil|dass|wenn|als|wie)\s)/g))
+        if (m.index >= lo && cut < 0) cut = m.index + (/\s/.test(m[0][0]) ? 0 : 1);       // the first place a speaker would breathe
+      if (cut < 0) cut = head.lastIndexOf(' ', Math.max(30, lo + 16));
+      if (cut >= lo) { out.push(rest.slice(0, cut).trim()); advance(out[0]); rest = rest.slice(cut).trimStart(); }
     }
     while (rest) {
       let cut = rest.length;
@@ -84,13 +107,23 @@
         if (m[0][0] === '.' && (token.includes('.') || ABBREV.test(token))) continue;
         if (at >= 8) { cut = at; break; }
       }
-      if (cut > max) {
-        const word = rest.lastIndexOf(' ', max);
-        cut = word >= Math.floor(max / 3) ? word + 1 : max;
+      let most = max;
+      if (planning) {
+        if (!out.length) most = Math.min(max, Math.max(36, Math.ceil(1.3 * least(3))));
+        else {
+          const lo = Math.ceil(1.3 * least(2)), can = Math.floor(14 * (0.85 * ahead - a) / (b * 2));
+          most = Math.min(max, Math.max(24, can >= lo ? can : lo));
+        }
+      }
+      if (cut > most) {
+        const word = rest.lastIndexOf(' ', most);
+        cut = word >= Math.floor(most / 3) ? word + 1 : most;
       }
       const piece = rest.slice(0, cut).trim();
       if (!piece) break;
       out.push(piece);
+      advance(piece);
+      if (planning && most >= max) planning = false;
       rest = rest.slice(cut).trimStart();
     }
     return out;
@@ -136,18 +169,9 @@
 
   // ---- who speaks with which voice, how fast --------------------------------
   const RATES = [0.75, 0.85, 1, 1.15, 1.3, 1.5, 1.75, 2];
-  // Each voice reads German with a Piper voice and English with one of the
-  // same kind (all free to use: Thorsten and Kerstin CC0, Karlsson and Ramona
-  // M-AILABS, Joe CC0, Alba CC BY 4.0).
-  const VOICES = [
-    { id: 'kerstin', label: 'Kerstin (Frau)', de: 'de_DE-kerstin-low', en: 'en_GB-alba-medium' },
-    { id: 'ramona', label: 'Ramona (Frau)', de: 'de_DE-ramona-low', en: 'en_GB-alba-medium' },
-    { id: 'thorsten', label: 'Thorsten (Mann)', de: 'de_DE-thorsten-medium', en: 'en_US-joe-medium' },
-    { id: 'karlsson', label: 'Karlsson (Mann)', de: 'de_DE-karlsson-low', en: 'en_US-joe-medium' },
-  ];
-  const DEFAULT_VOICE = { user: 'karlsson', lena: 'kerstin', noah: 'thorsten' };
-  const VOICE_SET = 'piper-1';           // what kept sound was made with
-  const modelOf = (voice, lang) => (String(lang || 'de').startsWith('en') ? voice.en : voice.de);
+  const DEFAULT_VOICE = { user: 'm1', lena: 'f1', noah: 'm2' };
+  const FALLBACK_VOICES = [
+    { id: 'f1', label: 'Frau 1', model: 'F1.json' }, { id: 'm1', label: 'Mann 1', model: 'M1.json' }, { id: 'm2', label: 'Mann 2', model: 'M2.json' }];
   // A speaker is a bot (by its id, which a rename does not change) or Chris.
   const speakerKey = (who) => (who === 'chris' || who === 'user' ? 'user' : 'bot:' + who);
   function prefs() { try { return JSON.parse(localStorage.getItem('mag-tts-speakers') || '{}') || {}; } catch { return {}; } }
@@ -156,12 +180,13 @@
     all[key] = { ...(all[key] || {}), ...entry };
     try { localStorage.setItem('mag-tts-speakers', JSON.stringify(all)); } catch {}
   }
+  function voiceList() { return tts.config?.voices?.length ? tts.config.voices : FALLBACK_VOICES; }
   function profile(who) {
-    const key = speakerKey(who), saved = prefs()[key] || {};
+    const key = speakerKey(who), saved = prefs()[key] || {}, voices = voiceList();
     // A voice that was chosen from an earlier set of voices is gone: the speaker's own default takes its place.
-    const usual = DEFAULT_VOICE[key === 'user' ? 'user' : who] || 'thorsten';
-    const wanted = saved.voice === 'system' || VOICES.some((v) => v.id === saved.voice) ? saved.voice : usual;
-    const voice = wanted === 'system' ? null : (VOICES.find((v) => v.id === wanted) || VOICES.find((v) => v.id === usual) || VOICES[0]);
+    const usual = tts.config?.defaults?.[key === 'user' ? 'user' : who] || DEFAULT_VOICE[key === 'user' ? 'user' : who] || 'm1';
+    const wanted = saved.voice === 'system' || voices.some((v) => v.id === saved.voice) ? saved.voice : usual;
+    const voice = wanted === 'system' ? null : (voices.find((v) => v.id === wanted) || voices.find((v) => v.id === usual) || voices[0]);
     return { key, voiceId: voice ? voice.id : 'system', voice, rate: RATES.includes(+saved.rate) ? +saved.rate : 1 };
   }
   function rateFor(key) { const r = +(prefs()[key] || {}).rate; return RATES.includes(r) ? r : 1; }
@@ -180,25 +205,54 @@
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
   // ---- the model (worker) -----------------------------------------------------
-  const tts = { failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set() };
+  const tts = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
+                };
+  // The voices of Supertonic 3: ten styles of one model; each speaks German and English.
+  const CONFIG = { models: 's3o', voices: [
+    { id: 'f1', label: 'Frau 1', model: 'F1.json' }, { id: 'f2', label: 'Frau 2', model: 'F2.json' }, { id: 'f3', label: 'Frau 3', model: 'F3.json' },
+    { id: 'f4', label: 'Frau 4', model: 'F4.json' }, { id: 'f5', label: 'Frau 5', model: 'F5.json' }, { id: 'm1', label: 'Mann 1', model: 'M1.json' },
+    { id: 'm2', label: 'Mann 2', model: 'M2.json' }, { id: 'm3', label: 'Mann 3', model: 'M3.json' }, { id: 'm4', label: 'Mann 4', model: 'M4.json' },
+    { id: 'm5', label: 'Mann 5', model: 'M5.json' }], defaults: { user: 'm1', lena: 'f1', noah: 'm2' } };
+  tts.config = CONFIG;
+  const loadConfig = () => Promise.resolve(CONFIG);
   function worker() {
     if (!tts.worker) {
-      tts.worker = new Worker('/app/tts-worker.js?v=' + encodeURIComponent(MAG.assets));
+      // The model lies in a folder of its own, so it stays in the browser when the worker changes.
+      const query = new URLSearchParams({ v: MAG.assets || '' });
+      if (gpuOk()) query.set('gpu', '1');
+      const w = tts.worker = new Worker('/app/tts-worker.js?' + query);
       tts.worker.onmessage = (ev) => {
         const m = ev.data || {};
-        if (m.type === 'progress') {     // a voice is coming in: that is not standing still
+        if (m.type === 'nogpu') { clearTimeout(tts.gpuTimer); noGpu(); return; }
+        if (m.trying === 'webgpu') {
+          clearTimeout(tts.gpuTimer);
+          tts.gpuTimer = setTimeout(() => {
+            if (tts.worker !== w || tts.ready.size) return;
+            // The GPU is still at it: this worker ends, and the next makes the model in WASM.
+            noGpu();
+            const again = [...tts.loading.keys()];
+            resetWorker();
+            setTimeout(() => again.forEach((model) => { tts.failed.delete(model); warm({ model }); }), 0);
+          }, GPU_LIMIT_MS);
+        }
+        if (m.type === 'progress') {     // the model is coming in: that is not standing still
           for (const loading of tts.pending.values()) {
             if (!loading.again) continue;
             clearTimeout(loading.timer);
-            loading.timer = setTimeout(loading.again, WARM_TIMEOUT_MS);
+            // While it downloads, the worker itself asks again for what does not come; after that, a step must not take forever.
+            loading.timer = m.making ? setTimeout(loading.again, WARM_TIMEOUT_MS) : 0;
           }
-          if (m.progress >= 0) shown('loading', m.progress / 100);
+          if (!tts.ready.size) {
+            if (m.making) shown('making', 1);
+            else if (m.progress >= 0) shown('loading', m.progress / 100);
+          }
           return;
         }
         const p = tts.pending.get(m.id);
         if (!p) return;
         tts.pending.delete(m.id);
         clearTimeout(p.timer);
+        if (m.type === 'ready') clearTimeout(tts.gpuTimer);
         if (m.type === 'error') p.reject(new Error(m.error)); else p.resolve(m);
       };
       tts.worker.onerror = () => resetWorker();
@@ -229,14 +283,18 @@
   }
   let seen = performance.now();          // when the page came into view last
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') seen = performance.now(); });
-  // Whether the voice is there, shown without taking room: while it loads, a
-  // thin line under every "Vorlesen" button fills up (its title says how
-  // far); once it is there, nothing is shown in the chat. The settings say it
-  // in words.
-  const voiceState = { state: '', part: 0 };
+  // Resolves true once the model is usable, false if the model failed for it. A
+  // failure is retried after a short pause instead of disabling the voice
+  // until reload (mobile networks drop).
+  // Whether the voice is there, shown without taking room: while the model
+  // loads, a thin line under every "Vorlesen" button fills up (its title
+  // says how far), and it breathes while the model is made ready; once it is
+  // there, nothing is shown in the chat. The settings say it in words.
+  const voiceState = { state: '', part: 0, provider: '' };
   function stateText() {
-    const { state, part } = voiceState;
-    if (state === 'ready') return 'Stimme bereit';
+    const { state, part, provider } = voiceState;
+    if (state === 'ready') return 'Stimme bereit' + (provider === 'webgpu' ? ' (Grafikchip)' : provider === 'wasm' ? ' (Prozessor)' : '');
+    if (state === 'making') return 'Stimme wird bereit gemacht … solange liest die Gerätestimme';
     if (state === 'loading') return 'Stimme lädt' + (part ? ' ' + Math.round(100 * part) + ' %' : '') + ' … solange liest die Gerätestimme';
     return 'Stimme noch nicht geladen; solange liest die Gerätestimme';
   }
@@ -249,48 +307,114 @@
     document.querySelectorAll('.act[data-speak][aria-pressed="false"]').forEach((b) => { b.title = title; });
     document.querySelectorAll('.voice-state').forEach((n) => { n.textContent = stateText(); });
   }
-  // Resolves true once the voice (one Piper model) is usable, false if it
-  // failed. A failure is tried again after a short pause instead of
-  // disabling the voice until a reload (mobile networks drop).
-  function warm(model) {
-    if (tts.ready.has(model)) return Promise.resolve(true);
+  function warm(v) {
+    if (tts.ready.has(v.model)) return Promise.resolve(true);
     if (!tts.ready.size) shown('loading');
-    if ((tts.failed.get(model) || 0) > Date.now()) return Promise.resolve(false);
-    if (tts.loading.has(model)) return tts.loading.get(model);
-    const p = ask({type: 'warm', model}, WARM_TIMEOUT_MS)
-      .then(() => { tts.ready.add(model); shown('ready'); setTimeout(paint, 0); return true; })
+    if ((tts.failed.get(v.model) || 0) > Date.now()) return Promise.resolve(false);
+    if (tts.loading.has(v.model)) return tts.loading.get(v.model);
+    const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
+      .then((m) => { tts.ready.add(v.model); voiceState.provider = m?.provider || voiceState.provider; shown('ready'); setTimeout(paint, 0); if (m?.provider) return true; })
       .catch(() => {
-        tts.failed.set(model, Date.now() + 20000);
-        setTimeout(() => { if (!tts.ready.has(model)) warm(model); }, 21000);
+       
+        // Not there yet (a broken connection, a full device): it is tried again in a while, by itself.
+        tts.failed.set(v.model, Date.now() + 20000);
+        setTimeout(() => { if (!tts.ready.size) warm(v); }, 21000);
         return false;
       })
-      .finally(() => tts.loading.delete(model));
-    tts.loading.set(model, p);
+      .finally(() => tts.loading.delete(v.model));
+    tts.loading.set(v.model, p);
     return p;
   }
-  // A crashed or stuck worker is replaced and the part is made again.
+  // A crashed or stuck worker is replaced and the part is synthesised again.
   function resetWorker() {
+    clearTimeout(tts.gpuTimer);
     try { tts.worker?.terminate(); } catch (_) {}
     tts.worker = null; tts.ready.clear(); tts.loading.clear();
     for (const p of tts.pending.values()) { clearTimeout(p.timer); p.reject(new Error('worker reset')); }
     tts.pending.clear();
   }
+  // ---- how fast this device makes speech, and in how many steps --------------
+  // In how many steps a part is made. The model refines its sound in steps:
+  // five is its usual quality, four and three are heard a little, two more;
+  // a device that makes eight in a quarter of the time they play (a GPU)
+  // gets eight, the cleanest. A
+  // part gets as many as there is time for: it must be made by the moment the
+  // reading gets to it, or the reading would stop there. So the first words of
+  // a reading are made in three (the sound starts at once), and what follows
+  // in five as soon as what is ready covers the time it takes to make; a
+  // device that cannot keep up even so (WASM on a phone) reads on in two
+  // rather than stop between sentences. How
+  // fast the device is, is measured on every part (work per second of
+  // speech and step) and kept.
+  //
+  // A part takes a fixed time (four networks are started; on a GPU every
+  // run costs its dispatch, about a second for a part on Chris's phone) and
+  // a time that grows with its length and its steps:
+  //   seconds to make = a + b * steps * seconds of speech.
+  // a and b are a line through what this device took for its parts (older
+  // ones weigh less), one for the GPU and one for the CPU, kept on the
+  // device; what a phone usually takes holds the line until there is more.
+  const PRIOR = { webgpu: [1.0, 0.06], wasm: [0.3, 0.3] };
+  let fits = {};
+  try { fits = JSON.parse(localStorage.getItem('mag-tts-fit') || '{}') || {}; } catch { fits = {}; }
+  function line(provider) {
+    const p = provider || voiceState.provider || (gpuOk() ? 'webgpu' : 'wasm');
+    const [pa, pb] = PRIOR[p] || PRIOR.wasm, f = fits[p] || {};
+    // The prior is two points (at 3 and 24) of half a weight each, so a line stands even when all parts were alike.
+    let n = 1, x = 13.5, y = pa + 13.5 * pb, xx = 0.5 * (9 + 576), xy = 0.5 * (3 * (pa + 3 * pb) + 24 * (pa + 24 * pb));
+    if (f.n > 0) { n += f.n; x += f.x; y += f.y; xx += f.xx; xy += f.xy; }
+    const d = n * xx - x * x;
+    const b = Math.max(0.005, d > 1e-6 ? (n * xy - x * y) / d : pb);
+    const a = Math.min(3, Math.max(0, (y - b * x) / n));
+    return { a, b };
+  }
+  const cost = (steps, sec) => { const { a, b } = line(); return a + b * steps * sec; };
+  const partMax = () => (line().a > 0.5 ? 200 : 120);   // where every part costs much, parts are longer
+  const topSteps = () => (cost(8, 8) / 8 < 0.25 ? 8 : 5);
+  function stepsFor(pb, text) {
+    const length = Math.max(0.4, text.length / 14);                     // seconds of speech, about
+    const now = performance.now() / 1000;
+    let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
+    for (const part of pb.waiting) { reached += part.length; made += part.work; }
+    let steps = topSteps();
+    const least = pb.until || pb.waiting.length ? 2 : 3;
+    while (steps > least && made + cost(steps, length) + 0.05 > reached) steps--;
+    const part = { length, work: cost(steps, length) + 0.05 };
+    pb.waiting.push(part);
+    return [steps, part];
+  }
+  function measured(res) {
+    if (!(res.synthMs > 0) || !(res.audio.length > res.rate / 4) || !(res.steps > 0)) return;
+    const p = res.provider === 'webgpu' ? 'webgpu' : 'wasm', f = fits[p] || (fits[p] = { n: 0, x: 0, y: 0, xx: 0, xy: 0 });
+    const x = res.steps * res.audio.length / res.rate, y = res.synthMs / 1000;
+    for (const k of ['n', 'x', 'y', 'xx', 'xy']) f[k] *= 0.92;
+    f.n += 1; f.x += x; f.y += y; f.xx += x * x; f.xy += x * y;
+    try { localStorage.setItem('mag-tts-fit', JSON.stringify(fits)); } catch {}
+  }
   // The first words of the newest answer are made before anybody asks for
   // them (see prepare): a tap on "Vorlesen" then speaks at once.
   const prepared = new Map();           // what is asked -> its sound, in the making or made
-  const asked = (model, rate, text) => model + '|' + rate + '|' + text;
+  const asked = (model, rate, lang, text) => model + '|' + rate + '|' + lang + '|' + text;
   async function synthPart(pb, text, rate) {
-    const early = prepared.get(asked(pb.model, rate, text));
+    const lang = (pb.lang || 'de').slice(0, 2);
+    const early = prepared.get(asked(pb.voice.model, rate, lang, text));
     if (early) {
-      try { const res = await early; if (res?.audio?.length) return { ...res, audio: res.audio.slice() }; }
+      try { const res = await early; if (res?.audio?.length) { pb.until = Math.max(performance.now() / 1000, pb.until || 0) + res.audio.length / res.rate; return { ...res, audio: res.audio.slice() }; } }
       catch { /* made anew below */ }
     }
-    const msg = {type: 'speak', text, model: pb.model, rate};
-    try { return await ask(msg, SPEAK_TIMEOUT_MS); }
+    const [steps, part] = stepsFor(pb, text);
+    const msg = {type: 'speak', text, model: pb.voice.model, rate, lang, steps};
+    const done = (res) => {
+      pb.waiting = pb.waiting.filter((p) => p !== part);
+      if (res) { measured(res); pb.until = Math.max(performance.now() / 1000, pb.until || 0) + res.audio.length / res.rate; }
+      return res;
+    };
+    try { return done(await ask(msg, SPEAK_TIMEOUT_MS)); }
     catch (e) {
+      done(null);
       if (current !== pb) throw e;
-      // Nothing speakable (only symbols): skip this part, keep reading.
-      if (/Phonemisierung/.test(e.message)) return {audio: new Float32Array(0), rate: 22050};
+      // Nothing speakable (only symbols/emoji): skip this part, keep reading.
+      if (/Phonemisierung/.test(e.message)) return {audio: new Float32Array(0), rate: 16000};
       resetWorker();
       return ask(msg, SPEAK_TIMEOUT_MS);
     }
@@ -342,7 +466,9 @@
   // Old WebKit returns undefined instead of a promise.
   function resume(ctx) { try { Promise.resolve(ctx.resume?.()).catch(() => {}); } catch (_) {} }
   // Parts are made ahead of what plays: up to three are ready or being made
-  // at any time, in order, so the reading does not stop between sentences.
+  // at any time, in order. So a part that takes longer to make than the one
+  // before it takes to play costs no pause, and the reading does not stop
+  // between sentences.
   async function modelPlay(pb) {
     const ahead = [];
     let more = true;
@@ -366,10 +492,11 @@
       }
       let cur = ahead.shift();
       pb.room?.();
-      // Tempo changed while this part was prepared: make it again.
+      // Tempo changed while this part was prepared: synthesise it again.
       if (cur.rate !== rateFor(pb.speaker)) cur = request(pb, cur.text);
       const res = await cur.p;
       if (current !== pb) return;
+      if (!pb.spoken)
       pb.spoken = true;
       // Laid behind what plays; the next part is awaited while this one begins and plays.
       if (!(await reach(pb, schedule(pb, res)))) return;
@@ -381,7 +508,7 @@
     const norm = normalize(text);
     pb.live = !!live;
     // A message whose parts were made ahead is cut as it was then, so the tap finds them; the rest after it as usual.
-    if (pb.model && !pb.queued && !pb.live) {
+    if (pb.de && !pb.queued && !pb.live) {
       const cut = cuts.get(pb.key);
       if (cut && cut.text && norm.startsWith(cut.text)) { pb.parts.push(...cut.parts); pb.queued = cut.text.length; }
     }
@@ -390,7 +517,7 @@
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        pb.parts.push(...(pb.model ? modelParts(piece, PART_MAX, !pb.queued) : split(piece)));
+        pb.parts.push(...(pb.de ? modelParts(piece, partMax(), !pb.queued) : split(piece)));
         pb.queued += take;
       }
     }
@@ -419,7 +546,7 @@
     if (systemOk) synth.cancel();
     for (const src of tts.sources) { try { src.stop(); } catch (_) {} }
     tts.sources.clear();
-    // Drop what is queued for the stopped playback.
+    // Drop synthesis that is queued for the stopped playback.
     if (tts.worker && pb) { try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {} }
     setButtons();
   }
@@ -452,18 +579,18 @@
     if (!normalized) return false;
     const lang = textLocale(normalized);
     const prof = profile(who);
-    const model = modelPossible && prof.voice ? modelOf(prof.voice, lang) : null;
-    const pb = { key, who, speaker: prof.key, lang, model, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false };
+    const de = modelPossible && prof.voiceId !== 'system';   // the model reads German and English alike
+    const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
     // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
     // dropped, what is made stays, and this reading asks for its own parts in its own order.
-    if (model && prepared.size && tts.worker) {
+    if (de && pb.voice && prepared.size && tts.worker) {
       try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
     setButtons();
-    if (!model) {
+    if (!de) {
       if (!systemOk) { current = null; setButtons(); return false; }
       // The first speech call happens inside the tap (iOS Safari wants that).
       systemNext(pb);
@@ -473,17 +600,27 @@
     try { tts.ctx = tts.ctx && tts.ctx.state !== 'closed' ? tts.ctx : new AudioCtx(); resume(tts.ctx); }
     catch { return fallback(pb); }
     const start = () => modelPlay(pb).catch(() => fallback(pb));
-    const tempo = rateFor(pb.speaker);
-    // The voice is loaded, or every part of this one was made before and kept: it plays in its own voice.
-    if (tts.ready.has(model) || pb.parts.every((t) => prepared.has(asked(model, tempo, t)))) { start(); return true; }
+    // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
+    if (tts.config && pb.voice && tts.ready.size) { start(); return true; }
+    // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
+    const tongue = (pb.lang || 'de').slice(0, 2), tempo = rateFor(pb.speaker);
+    if (tts.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
     // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
-    // wait: the device's own voice reads this one, and the voice goes on
+    // wait: the device's own voice reads this one, and the model goes on
     // loading behind it for the next. Only a device without a voice of its
     // own waits for the model.
-    if (systemOk) { warm(model); return fallback(pb); }
+    if (systemOk) {
+      loadConfig().then((cfg) => { if (cfg) { const v = profile(who).voice || pb.voice; if (v) warm(v); } }).catch(() => {});
+      return fallback(pb);
+    }
     pb.loading = true;
     setButtons();
-    warm(model).then((ok) => {
+    loadConfig().then((cfg) => {
+      if (current !== pb) return false;
+      if (!cfg) return null;
+      pb.voice = profile(who).voice || pb.voice; // the real config has the real model names
+      return warm(pb.voice);
+    }).then((ok) => {
       if (current !== pb) return;
       pb.loading = false;
       setButtons();
@@ -503,7 +640,7 @@
       MAG.toast('Vorlesen: Die Stimme konnte nicht geladen werden.', true);
       return false;
     }
-    pb.model = null;
+    pb.de = false;
     pb.parts = split(pb.parts.slice(Math.max(0, pb.at - 1)).join(' '));
     pb.at = 0;
     setButtons();
@@ -519,7 +656,11 @@
   };
   // The newest answers are made ready before anybody asks for them, whole,
   // while they come in and nothing else is read: the tap that most often
-  // comes finds its sound there and plays it at once. Only with the voice
+  // comes finds its sound there, from the first word to the last, and plays
+  // it without a pause on a phone that makes speech slower than it plays.
+  // The first two parts get the device's best quality; the rest as many
+  // steps as the device makes in the time they play (so a tap while they are
+  // still being made does not catch up with them). Only with the model
   // loaded and the page in view; about four minutes of sound are kept.
   const cuts = new Map();               // message id -> {text: how far it is cut, parts}
   function cutFor(id, text, growing) {
@@ -529,7 +670,7 @@
     const take = growing ? completeLength(rest) : rest.length;
     if (take > 0) {
       const piece = rest.slice(0, take);
-      cut = { text: cut.text + piece, parts: [...cut.parts, ...modelParts(piece, PART_MAX, !cut.text)] };
+      cut = { text: cut.text + piece, parts: [...cut.parts, ...modelParts(piece, partMax(), !cut.text)] };
     }
     cuts.delete(id); cuts.set(id, cut);
     while (cuts.size > 10) cuts.delete(cuts.keys().next().value);
@@ -547,50 +688,56 @@
       keptFor.delete(k); prepared.delete(k); sum -= v;
     }
   }
+  // As many steps as the device makes in the time the sound plays (two at least).
+  function keepUpSteps() {
+    let steps = topSteps();
+    while (steps > 2 && cost(steps, 8) / 8 > 0.85) steps--;
+    return steps;
+  }
   let preparedFor = '';                 // the newest message being made ready
   function prepare(m, head = false) {
-    if (!m || current || !modelPossible || document.visibilityState !== 'visible') return;
+    if (!m || current || !modelPossible || document.visibilityState !== 'visible' || !tts.config) return;
     const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
-    if (!prof.voice) return;
+    if (!prof.voice || !tts.ready.size) return;
     const text = normalize((m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text) || '');
     if (!text) return;
-    const model = modelOf(prof.voice, textLocale(text));
-    if (!tts.ready.has(model)) return;
     // A newer answer comes first: what is still waiting to be made for an older one is dropped (what is made stays).
     if (!head) {
       if (preparedFor && preparedFor !== m.id && tts.worker) { try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {} }
       preparedFor = m.id;
     }
+    const lang = textLocale(text).slice(0, 2);
     const parts = cutFor(m.id, text, m.state !== 'done').parts;
-    (head ? parts.slice(0, 1) : parts).forEach((part) => {
-      const key = asked(model, prof.rate, part);
+    (head ? parts.slice(0, 1) : parts).forEach((part, i) => {
+      const key = asked(prof.voice.model, prof.rate, lang, part);
       if (prepared.has(key)) return;
-      const sound = ask({type: 'speak', text: part, model, rate: prof.rate}, SPEAK_TIMEOUT_MS);
-      sound.then((res) => keep(key, res), () => { prepared.delete(key); keptFor.delete(key); });
+      const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: i < 2 ? topSteps() : keepUpSteps()}, SPEAK_TIMEOUT_MS);
+      sound.then((res) => { measured(res); keep(key, res); }, () => { prepared.delete(key); keptFor.delete(key); });
       prepared.set(key, sound);
       keptFor.set(key, 0);
     });
     if (!head && m.state === 'done') {
-      const sounds = parts.map((part) => prepared.get(asked(model, prof.rate, part)));
-      if (sounds.every(Boolean)) said.put(m.id, cuts.get(m.id), sounds, model, prof.rate);
+      const sounds = parts.map((part) => prepared.get(asked(prof.voice.model, prof.rate, lang, part)));
+      if (sounds.every(Boolean)) said.put(m.id, cuts.get(m.id), sounds, prof.voice.model, prof.rate, lang);
     }
   }
   // ---- what was said is kept across a reload -------------------------------------
   // The newest answers, made whole ahead, are kept in Cache Storage as they
   // were made (16 bit, the last four answers): after a reload the tap on one
-  // of them plays its own voice at once, while the voice is still being loaded.
+  // of them plays the model's own voice at once, while the model is still
+  // being made ready (seconds on a phone), not the device's voice.
   const said = (() => {
     const NAME = 'mag-tts-said', MOST = 4, done = new Set();
     const address = (id) => location.origin + '/tts-said/' + encodeURIComponent(id);   // a name in the cache, never fetched
     async function open() { try { return await caches.open(NAME); } catch { return null; } }
-    async function put(id, cut, sounds, model, rate) {
+    async function put(id, cut, sounds, model, rate, lang) {
       const mark = id + '|' + model + '|' + rate + '|' + (cut?.text.length || 0);
       if (!cut || done.has(mark)) return;
       done.add(mark);
       let made;
       try { made = await Promise.all(sounds); } catch { done.delete(mark); return; }
       if (!made.every((r) => r?.audio && r.rate === made[0].rate)) return;
-      const meta = new TextEncoder().encode(JSON.stringify({ id, text: cut.text, parts: cut.parts, lens: made.map((r) => r.audio.length), rate: made[0].rate, model, voiceRate: rate, models: VOICE_SET }));
+      const meta = new TextEncoder().encode(JSON.stringify({ id, text: cut.text, parts: cut.parts, lens: made.map((r) => r.audio.length), rate: made[0].rate, model, voiceRate: rate, lang, models: tts.config?.models || '' }));
       const head = (4 + meta.length + 1) & ~1, n = made.reduce((a, r) => a + r.audio.length, 0);
       const bytes = new Uint8Array(head + 2 * n);
       new DataView(bytes.buffer).setUint32(0, meta.length, true);
@@ -616,15 +763,15 @@
           const bytes = new Uint8Array(await (await cache.match(k)).arrayBuffer());
           const size = new DataView(bytes.buffer).getUint32(0, true);
           const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + size)));
-          if (meta.models !== VOICE_SET) { await cache.delete(k); continue; }
+          if (meta.models !== (tts.config?.models || '')) { await cache.delete(k); continue; }
           const head = (4 + size + 1) & ~1, pcm = new Int16Array(bytes.buffer, head, (bytes.length - head) >> 1);
           let at = 0;
           meta.parts.forEach((part, i) => {
             const audio = new Float32Array(meta.lens[i]);
             for (let j = 0; j < audio.length; j++) audio[j] = pcm[at++] / 32767;
-            const key = asked(meta.model, meta.voiceRate, part);
+            const key = asked(meta.model, meta.voiceRate, meta.lang, part);
             if (prepared.has(key)) return;
-            prepared.set(key, Promise.resolve({ audio, rate: meta.rate, synthMs: 0 }));
+            prepared.set(key, Promise.resolve({ audio, rate: meta.rate, synthMs: 0, provider: 'kept', steps: 0 }));
             keptFor.set(key, audio.length / meta.rate);
           });
           if (!cuts.has(meta.id)) cuts.set(meta.id, { text: meta.text, parts: meta.parts });
@@ -670,30 +817,36 @@
     possible: () => modelPossible,
     rates: RATES,
     async options() {
-      return [...VOICES.map((v) => ({ id: v.id, label: v.label })), { id: 'system', label: 'Systemstimme' }];
+      await loadConfig();
+      return [...voiceList().map((v) => ({ id: v.id, label: v.label })), { id: 'system', label: 'Systemstimme' }];
     },
-    // Whether the voice is there, in words, for the settings (kept up to date while they are open).
+    // Whether the model is there, in words, for the settings (kept up to date while they are open).
     state: () => stateText(),
     of: (who) => { const p = profile(who); return { voice: p.voiceId, rate: p.rate }; },
     set(who, entry) {
       savePref(speakerKey(who), entry);
-      const v = entry.voice && VOICES.find((x) => x.id === entry.voice);
-      if (v && modelPossible) warm(v.de);
+      const v = entry.voice && voiceList().find((x) => x.id === entry.voice);
+      if (v) loadConfig().then((cfg) => cfg && warm(v));
     },
   };
-  // Shortly after the page is there, the German voices of the bots are made
-  // ready in the background (fetched once into Cache Storage, then never
-  // again) and their English voices fetched, so the first tap speaks at
-  // once. Only with data saving on, the first tap loads them.
+  // Shortly after the page is there, the model and the voices of the bots are
+  // made ready in the background: fetched into Cache Storage once (about
+  // 400 MB, then never again) and loaded, so the first tap speaks at once.
+  // Over a mobile connection too (it is fetched once, and Chris wants the
+  // first tap to speak); only with data saving on the first tap loads it.
   function warmUp() {
     // What is downloaded once must stay: the browser is asked not to clear it when space runs short.
     try { navigator.storage?.persist?.().catch(() => {}); } catch {}
-    said.restore().then(() => setButtons()).catch(() => {});
-    if (navigator.connection?.saveData) return;
-    const voices = [...new Set(S.bots.map((b) => profile(b.id).voice).filter(Boolean))];
-    const de = [...new Set(voices.map((v) => v.de))], en = [...new Set(voices.map((v) => v.en))];
-    de.reduce((p, model) => p.then(() => warm(model)), Promise.resolve())
-      .then(() => { for (const model of en) ask({ type: 'prefetch', model }, WARM_TIMEOUT_MS).catch(() => {}); });
+    loadConfig().then((cfg) => cfg && said.restore()).then(() => setButtons()).catch(() => {});
+    const link = navigator.connection;
+    if (link && link.saveData) return;
+    loadConfig().then((cfg) => {
+      if (!cfg) return;
+      const models = [...new Set(S.bots.map((b) => profile(b.id).voice?.model).filter(Boolean))];
+      if (!models.length) return;
+      warm({ model: models[0] });
+      for (const model of models.slice(1)) ask({ type: 'prefetch', model }, WARM_TIMEOUT_MS).catch(() => {});
+    });
   }
   // For the film of a scene: what a figure says, in a voice of its own (the
   // k-th of the voices, so two figures do not sound alike), made here on the
@@ -702,13 +855,16 @@
   // still sounds natural (0.8x to 1.3x). Returns { audio: Float32Array, rate } or null.
   MAG.voices.make = async function (text, k, seconds) {
     if (!modelPossible) return null;
-    const v = VOICES[((k | 0) % VOICES.length + VOICES.length) % VOICES.length], clean = normalize(text || '');
+    const cfg = await loadConfig();
+    const list = voiceList().filter((v) => v.model);
+    if (!cfg || !list.length) return null;
+    const v = list[((k | 0) % list.length + list.length) % list.length], clean = normalize(text || '');
     if (!clean) return null;
-    const model = modelOf(v, textLocale(clean));
+    const lang = textLocale(clean).slice(0, 2);
     const say = async (tempo) => {
       const sounds = [];
-      for (const part of modelParts(clean, PART_MAX, false)) {
-        const res = await ask({ type: 'speak', text: part, model, rate: tempo }, WARM_TIMEOUT_MS);
+      for (const part of modelParts(clean, 120, false)) {
+        const res = await ask({ type: 'speak', text: part, model: v.model, rate: tempo, lang, steps: topSteps() }, SPEAK_TIMEOUT_MS);
         if (res?.audio?.length) sounds.push(res);
       }
       if (!sounds.length) return null;

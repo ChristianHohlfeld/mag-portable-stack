@@ -48,9 +48,9 @@ Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
 Lena = Gemma 4 26B-A4B on NUMA0 (physical cores 0-13, :8191), Noah = gpt-oss
 120B on NUMA1 (cores 14-27, :8192). Lena also loads the Gemma vision projector
 (`mmproj`, on the CPU) so she sees images. No GPU offload: the MI50 belongs to MAG
-Idol alone and its power cap stays at 78 W (Chris, 2026-11-13; before: 72 W;
-`ops/idol/power-cap.sh` only ever lowers it; never add anything that raises
-it, and nothing above 78 W). `mag-modeld` is the single
+Idol alone and its power cap stays at 73 W (Chris, 2026-11-13, for its
+temperature; 72 W before, 78 W for some hours; `ops/idol/power-cap.sh` only
+ever lowers it; never add anything that raises it, and nothing above 73 W). `mag-modeld` is the single
 owner of the model lifecycle: it checks each GGUF against the Hugging Face
 size, verifies its SHA256 once, starts `mag-model@<bot>.service` and publishes
 `/run/mag-models/status.json`. Do not start, stop or enable model units by
@@ -270,7 +270,7 @@ repository, a backup, a shared place or an installer that runs by itself,
 and every H3 video is marked "KI-generiert · MiniMax H3" in the chat and in
 its file. Wan 2.2 made the videos before; its weights stay on disk, unused.
 3D, pictures and videos are jobs of one line
-on the MI50: whoever has the card has it alone (at 78 W), the others wait
+on the MI50: whoever has the card has it alone (at 73 W), the others wait
 with their place shown (Chris moves them forwards or backwards, or cancels
 them, at their message; the line survives restarts and reboots) and run
 after it by themselves; the bots order 3D and videos too

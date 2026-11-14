@@ -116,7 +116,7 @@
       ? el('button', { class: 'cancel', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); MAG.api('POST', '/api/stop', { bot: m.from }).catch((x) => MAG.toast(x.message, true)); } })
       : null;
     // Collapsed, a running step still shows its last lines as they arrive.
-    const shot = step.shot ? '/api/shot/' + m.id + '-' + index + '.jpg' : '';
+    // No pictures of a browser in the chat (Chris, 2026-11-14): only the real one, live.
     node.append(el('summary', {},
       el('span', { class: 'mark', html: stepMark[step.state] || '' }),
       el('span', { class: 'title', text: step.title || step.tool }),
@@ -124,40 +124,44 @@
       cancel,
       el('span', { class: 'chev', html: MAG.icons.chev }),
       asking,
-      step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null,
-      // The browser as this step left it: small in the line, large when the step is open.
-      shot && latestShot(m) === index && !ask ? el('span', { class: 'shot-row' }, el('img', { class: 'shot-mini', src: shot, alt: '', loading: 'lazy' })) : null));
+      step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
     // A card's step (approval, login, payment) is the card and nothing more: no raw input, no output.
     if (['consent', 'browser_login', 'browser_pay'].includes(step.tool)) {
       node.classList.add('card-step');
-      // While it waits, the card shows the browser live; a picture only once it is done.
-      if (shot && !ask) node.append(el('div', { class: 'body' }, el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' })));
+      // While it waits, the card is the browser live; afterwards the card is done and shows nothing.
       return node;
     }
     // A browser step is the browser and nothing more: no raw input or output
-    // (the long address, the list of elements), only a failure in one line.
-    // Open, the newest browser step of the bot is its browser live, to tap and
-    // type in like the card; an older one shows the page as that step left it.
+    // (the long address, the list of elements), no picture, only a failure in
+    // one line. Open, it is the bot's browser live over its realtime link (one
+    // view per bot, it goes where it is opened), to tap and type in like the
+    // card. The newest browser step of a bot stands open by itself.
     if (step.tool.startsWith('browser_')) {
       node.classList.add('browser-step');
-      const picture = shot ? el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' }) : null;
+      node.dataset.bot = m.from;
       const failed = step.state === 'error' ? el('div', { class: 'fail', text: (step.output || '').split('\n')[0].slice(0, 200) }) : null;
-      const body = el('div', { class: 'body' }, picture, failed);
+      const body = el('div', { class: 'body' }, failed);
       node.append(body);
-      if (picture && S.you.role === 'owner' && step.state !== 'running' && newestBrowser(m.from) === m.id + '-' + index) {
+      if (S.you.role === 'owner') {
+        const slot = el('div', { class: 'live-slot' });
+        body.prepend(slot);
         const swap = () => {
-          if (node.open && picture.isConnected) picture.replaceWith(liveIn(m.from, 'step-' + m.from));
-          else if (!node.open && !picture.isConnected) body.querySelector('.live')?.replaceWith(picture);
+          if (node.open && !slot.firstChild) slot.append(liveIn(m.from, 'step-' + m.from));
+          else if (!node.open) slot.replaceChildren();
         };
         node.addEventListener('toggle', swap);
-        if (node.open) queueMicrotask(swap);
+        if (newestBrowser(m.from) === m.id + '-' + index && !opened.has(m.id + '-' + index)) {
+          opened.add(m.id + '-' + index);
+          // The live view moves on to the newest step: the one before closes.
+          document.querySelectorAll('details.browser-step[open]').forEach((d) => { if (d.dataset.bot === m.from) d.open = false; });
+          node.open = true;
+        }
       }
       return node;
     }
     node.append(el('div', { class: 'body' },
-      shot ? el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' }) : null,
       input ? el('div', { class: 'label', text: step.tool === 'shell' ? 'Befehl' : 'Eingabe' }) : null,
       input ? el('pre', { class: 'cmd', text: input }) : null,
       el('div', { class: 'label', text: step.state === 'running' ? 'Ausgabe (live)' : 'Ausgabe' + (step.cut ? ' (Ende; vollständig im Log der VM)' : '') }),
@@ -241,18 +245,19 @@
       note);
   }
 
-  // The newest browser step of a bot in the whole chat ("<message>-<part>"): only that one opens live.
+  // The newest browser step of a bot in the whole chat ("<message>-<part>"): it stands open, live.
+  // Opened once by the page; after that it is the reader's to close.
+  const opened = new Set();
+  const isBrowser = (p) => p.k === 'step' && (p.tool || '').startsWith('browser_') && !['browser_login', 'browser_pay'].includes(p.tool);
   function newestBrowser(bot) {
     let best = '', at = '';
     for (const m of S.messages.values()) {
       if (m.from !== bot || m.id <= best) continue;
-      const i = latestShot(m);
+      const i = (m.parts || []).reduce((found, p, j) => (isBrowser(p) ? j : found), -1);
       if (i >= 0) { best = m.id; at = m.id + '-' + i; }
     }
     return at;
   }
-  // Only the newest browser picture of an answer stands in its line; the others open with their step.
-  const latestShot = (m) => (m.parts || []).reduce((at, p, i) => (p.shot ? i : at), -1);
   const lastLines = (text) => text.replace(/\s+$/, '').split('\n').slice(-3).join('\n');
 
   // ---- pages: a bot's HTML, running in a frame from the bot's own site -----
@@ -1071,7 +1076,7 @@
     const body = node.querySelector('.body'), old = body.querySelector(':scope > [data-part="' + part + '"]'), fresh = buildStep(m, part);
     if (old) { fresh.open = old.open; grow(() => old.replaceWith(fresh)); }
     else grow(() => body.append(fresh));
-    if (fresh.querySelector('.shot-row')) node.querySelectorAll('.shot-row').forEach((row) => { if (!fresh.contains(row)) row.remove(); });
+
     markStreaming(node, m);
   });
   MAG.on('step_output', (m, part, text) => {

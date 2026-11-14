@@ -431,8 +431,10 @@ int main(int argc, char **argv) {
                          "if(e.tagName==='IFRAME')return 'maybe';"
                          "if(e.isContentEditable||e.tagName==='TEXTAREA'||e.tagName==='SELECT')return true;"
                          "return e.tagName==='INPUT'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type)})(),"
-                         "secret:document.activeElement?.type==='password'})");
-      state["udp_transport"] = "MGB8"; // MGB8: MGB7 and the focused field (editable, secret) in the state
+                         "secret:document.activeElement?.type==='password',"
+                         "field:(()=>{const e=document.activeElement;if(!e||e===document.body)return null;"
+                         "const r=e.getBoundingClientRect();return [Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)]})()})");
+      state["udp_transport"] = "MGB9"; // MGB9: MGB7 and the focused field (editable, secret, its box) in the state
       state["udp_port"] = 9227;
       try {
         const Val nav = c.call("Page.getNavigationHistory");

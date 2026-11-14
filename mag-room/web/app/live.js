@@ -445,9 +445,19 @@
         keys.type = state.secret ? 'password' : 'text';
         if (document.activeElement !== keys) { clearKeys(); keys.focus({ preventScroll: true }); }
         // About 420 px of the page across the view: a form is as large as on the phone itself.
+        // The field across the view (at most 4x), its left edge at the left, near the top;
+        // without its box, about 420 px of the page around the tap.
         if (lastTap && zoom.z < 2) {          // lastTap: a finger's, never a mouse's
-          const r = canvas.parentNode.getBoundingClientRect();
-          zoomTo(Math.max(2, Math.min(4, 1440 / 420)), lastTap.x, lastTap.y, r.width / 2, r.height * 0.3);
+          const r = canvas.parentNode.getBoundingClientRect(), g = place(), base = g.scale / zoom.z;
+          const box = Array.isArray(state.field) && state.field.length === 4 ? state.field : null;
+          if (box && box[2] > 0) {
+            const z = Math.max(1.5, Math.min(4, (r.width * 0.92) / (box[2] * base)));
+            const left = (g.left - r.left - zoom.tx) / zoom.z, top = (g.top - r.top - zoom.ty) / zoom.z;   // the picture's corner in the view, unzoomed
+            zoom.z = z;
+            zoom.tx = r.width * 0.04 - (left + box[0] * base) * z;
+            zoom.ty = r.height * 0.3 - (top + (box[1] + box[3] / 2) * base) * z;
+            applyZoom();
+          } else zoomTo(Math.max(2, Math.min(4, 1440 / 420)), lastTap.x, lastTap.y, undefined, r.height * 0.3);
         }
       } else if (field === false && document.activeElement === keys) keys.blur();
     };

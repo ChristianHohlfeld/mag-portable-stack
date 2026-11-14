@@ -424,8 +424,15 @@ int main(int argc, char **argv) {
                          "t.includes('checking your browser')||"
                          "t.includes('are you a robot')||"
                          "t.includes('security check')||"
-                         "t.includes('captcha'))})()})");
-      state["udp_transport"] = "MGB7"; // MGB7: numbered elements (frames too), click by number or point, wait
+                         "t.includes('captcha'))})(),"
+                         // The field that has the focus: the page in the chat opens the phone's
+                         // keyboard for it (a frame's field is not seen from here: maybe).
+                         "editable:(()=>{const e=document.activeElement;if(!e||e===document.body)return false;"
+                         "if(e.tagName==='IFRAME')return 'maybe';"
+                         "if(e.isContentEditable||e.tagName==='TEXTAREA'||e.tagName==='SELECT')return true;"
+                         "return e.tagName==='INPUT'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type)})(),"
+                         "secret:document.activeElement?.type==='password'})");
+      state["udp_transport"] = "MGB8"; // MGB8: MGB7 and the focused field (editable, secret) in the state
       state["udp_port"] = 9227;
       try {
         const Val nav = c.call("Page.getNavigationHistory");

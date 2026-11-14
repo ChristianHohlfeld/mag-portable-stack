@@ -321,7 +321,7 @@ private:
     return argv;
   }
   static bool current(const http::ClientResult &r) {
-    return r.status == 200 && jstr(jparse(r.body), "udp_transport") == "MGB7";
+    return r.status == 200 && jstr(jparse(r.body), "udp_transport") == "MGB8";
   }
   std::string fail(Start &start, std::string &error, const std::string &why) {
     start.failed_at = now_s();

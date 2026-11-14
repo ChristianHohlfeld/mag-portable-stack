@@ -257,7 +257,7 @@ def main():
     pipe.load_custom_adapter(str(WEIGHTS / "mv-adapter"), weight_name="mvadapter_ig2mv_sdxl.safetensors")
     pipe.to(device="cuda", dtype=torch.float16)
     pipe.cond_encoder.to(device="cuda", dtype=torch.float16)
-    pipe.enable_vae_slicing()
+    pipe.vae.enable_slicing()  # diffusers 0.42 has it only on the VAE
 
     def said(_pipe, i, _t, kwargs):
         print(f"MAG-PAINT {i + 1}/{STEPS}", flush=True)

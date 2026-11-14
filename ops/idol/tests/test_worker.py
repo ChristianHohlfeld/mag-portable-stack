@@ -82,7 +82,9 @@ def main():
     port = free_port()
     env = dict(os.environ, MAG_IDOL_JOB_ROOT=str(root), MAG_IDOL_PORT=str(port), MAG_IDOL_PYTHON=str(stage),
                MAG_IDOL_CPUS="", FAKE_DELAY="0.1", MAG_IDOL_STALL_S="2",
-               MAG_TRIPOSG_PYTHON=str(tmp / "no-shape-python"))      # the whole shape stage is not installed here
+               MAG_TRIPOSG_PYTHON=str(tmp / "no-shape-python"),      # the whole shape stage is not installed here
+               MAG_GPU_TEMP_FILE=str(tmp / "temp"),                 # the card, as hot as the test says
+               MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
     worker = [None]
 
     def call(method, path, body=None):
@@ -156,6 +158,18 @@ def main():
         assert call("POST", "/api/idol/select?x=2&y=0", PNG)[0] == 400 and call("POST", "/api/idol/select", b"not a picture")[0] == 415
         assert [p for p in root.iterdir() if p.name != image["id"]] == [], list(root.iterdir())
         assert call("GET", "/api/idol/health")[1]["resumable"] is True
+        # 0. The card gets too hot while a job samples: its stage is held (no
+        #    standstill, no error, nothing parked) and goes on once it is cool.
+        (tmp / "temp").write_text("95")
+        h = order()
+        s = wait(h, lambda s: s.get("cooling") is True, "held for the heat")
+        assert s["state"] == "running" and s["stage"] == "Grafikkarte kühlt ab", s
+        time.sleep(4)                                  # longer than the standstill limit of 2 s
+        s = status(h)
+        assert s["state"] == "running" and s["cooling"] is True and s.get("resumed", 0) == 0, s
+        (tmp / "temp").write_text("70")
+        s = wait(h, lambda s: s["state"] == "done", "done after cooling down")
+        assert s["cooling"] is False and (root / h / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
         # 1. The worker restarts while a job samples: the stage keeps running,
         #    the new worker follows it, nothing starts twice.
         a = order()

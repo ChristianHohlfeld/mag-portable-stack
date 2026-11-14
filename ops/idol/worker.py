@@ -104,6 +104,18 @@ GPU_STAGES = ("sample", "shape", "paint", "image", "video")
 GPU_WAIT = "MAG-WAIT"
 jobs = {}
 lock = threading.Lock()
+# The card is cooled passively: under a long stage at its 78 W its junction
+# climbed past 96 °C and the PCIe link to it failed, taking the whole host
+# down (2026-11-14, six times). So the stage that uses the card is held
+# (SIGSTOP of its process group, and of h3d for a video) when the junction or
+# its memory reaches HOT, and goes on (SIGCONT) when both are back at COOL.
+# The job is never parked or ended for it: it only takes longer, and a held
+# stage is no standstill. MAG_GPU_TEMP_FILE names a file to read instead of
+# the card's sensors (the tests).
+HOT = float(os.environ.get("MAG_GPU_HOT_C", "90"))
+COOL = float(os.environ.get("MAG_GPU_COOL_C", "80"))
+TEMP_FILE = os.environ.get("MAG_GPU_TEMP_FILE", "")
+held = {}            # job id -> the pids that were stopped for it
 class Line:
     """The MI50's one line of jobs (3D, pictures, videos). A job's place is
     its "order", kept in its status.json, so the line is the same after a
@@ -133,6 +145,86 @@ class Line:
 
     def task_done(self):
         pass
+
+
+def card_temp():
+    """The hottest of the MI50's junction and memory sensors in °C; None
+    when there is no card to read."""
+    if TEMP_FILE:
+        try:
+            return float(Path(TEMP_FILE).read_text().strip())
+        except (OSError, ValueError):
+            return None
+    hottest = None
+    for dev in Path("/sys/bus/pci/devices").glob("*"):
+        try:
+            if (dev / "vendor").read_text().strip() != "0x1002" or (dev / "device").read_text().strip() != "0x66a1":
+                continue
+        except OSError:
+            continue
+        for label in dev.glob("hwmon/hwmon*/temp*_label"):
+            try:
+                if label.read_text().strip() not in ("junction", "mem"):
+                    continue
+                value = int(Path(str(label)[:-len("_label")] + "_input").read_text()) / 1000
+            except (OSError, ValueError):
+                continue
+            hottest = value if hottest is None else max(hottest, value)
+    return hottest
+
+
+def h3d_pids():
+    """mag-h3d's server: a video's work on the card is done in it."""
+    found = []
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                if Path("/proc", entry, "comm").read_text().strip() == "h3d":
+                    found.append(int(entry))
+            except OSError:
+                pass
+    return found
+
+
+def thermal_guard():
+    """Hold the stage on the card while the card is too hot, then let it go on."""
+    while True:
+        try:
+            temp = card_temp()
+            with lock:
+                running = [dict(item) for item in jobs.values()
+                           if item.get("state") == "running" and item.get("stage_key") in GPU_STAGES and item.get("pid")]
+            for item in running:
+                job_id = item["id"]
+                if temp is not None and temp >= HOT and job_id not in held and stage_alive(item):
+                    pids = [-int(item["pid"])] + (h3d_pids() if item.get("stage_key") == "video" else [])
+                    for pid in pids:
+                        try:
+                            os.kill(pid, signal.SIGSTOP)
+                        except OSError:
+                            pass
+                    held[job_id] = pids
+                    print(f"card at {temp:.0f} °C: stage {item['stage_key']} of {job_id[:8]} held", flush=True)
+                    update(job_id, cooling=True, stage_before=item.get("stage"), stage="Grafikkarte kühlt ab")
+                elif job_id in held and (temp is None or temp <= COOL or not stage_alive(item)):
+                    release(job_id)
+                    print(f"card at {temp if temp is not None else 0:.0f} °C: {job_id[:8]} goes on", flush=True)
+            for job_id in [j for j in list(held) if j not in {i["id"] for i in running}]:
+                release(job_id)                            # cancelled or gone while held
+        except Exception as exc:                           # the guard itself never stops
+            print(f"thermal guard: {type(exc).__name__}", flush=True)
+        time.sleep(1)
+
+
+def release(job_id):
+    for pid in held.pop(job_id, []):
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except OSError:
+            pass
+    with lock:
+        before = (jobs.get(job_id) or {}).get("stage_before")
+    update(job_id, cooling=False, **({"stage": before} if before else {}))
 
 
 def place_of(item):
@@ -262,12 +354,19 @@ def read_exit(path):
 
 def kill_stage(item):
     """End the running stage of a job (its whole process group)."""
+    for other in held.pop(item.get("id"), []):
+        if other > 0:
+            try:
+                os.kill(other, signal.SIGCONT)             # h3d serves the next video
+            except OSError:
+                pass
     pid = item.get("pid")
     for sig, patience in ((signal.SIGTERM, 4), (signal.SIGKILL, 6)):
         if not stage_alive(item):
             return
         try:
             os.killpg(pid, sig)
+            os.killpg(pid, signal.SIGCONT)                 # a stage held for the heat hears it too
         except (ProcessLookupError, PermissionError, OSError):
             return
         end = time.monotonic() + patience
@@ -465,6 +564,8 @@ def follow(job_id, key, on_line):
         if stage_alive(item):
             gone = None
             now = time.monotonic()
+            if job_id in held:                            # held for the heat: waiting, not standing still
+                moved = now
             if now - looked >= min(5.0, STALL / 4):       # it writes nothing: is it working?
                 looked, before, used = now, used, worked(item["pid"])
                 if used != before:
@@ -991,6 +1092,18 @@ def main():
         save(item)
     for item in sorted(resume, key=place_of):
         pending.put_nowait(item["id"])
+        if stage_alive(item):
+            try:
+                os.killpg(int(item["pid"]), signal.SIGCONT)   # held by the worker before this one
+            except OSError:
+                pass
+        item.pop("cooling", None)
+    for pid in h3d_pids():
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except OSError:
+            pass
+    threading.Thread(target=thermal_guard, daemon=True).start()
     threading.Thread(target=execute, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), API)
     server.daemon_threads = True

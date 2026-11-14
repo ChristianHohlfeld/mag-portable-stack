@@ -116,6 +116,8 @@ HOT = float(os.environ.get("MAG_GPU_HOT_C", "90"))
 COOL = float(os.environ.get("MAG_GPU_COOL_C", "80"))
 TEMP_FILE = os.environ.get("MAG_GPU_TEMP_FILE", "")
 held = {}            # job id -> the pids that were stopped for it
+held_at = {}         # job id -> when it was held: a hold lasts HOLD_S at least, so the chat does not flicker
+HOLD_S = float(os.environ.get("MAG_GPU_HOLD_S", "8"))
 class Line:
     """The MI50's one line of jobs (3D, pictures, videos). A job's place is
     its "order", kept in its status.json, so the line is the same after a
@@ -204,9 +206,11 @@ def thermal_guard():
                         except OSError:
                             pass
                     held[job_id] = pids
+                    held_at[job_id] = time.monotonic()
                     print(f"card at {temp:.0f} °C: stage {item['stage_key']} of {job_id[:8]} held", flush=True)
                     update(job_id, cooling=True, stage_before=item.get("stage"), stage="Grafikkarte kühlt ab")
-                elif job_id in held and (temp is None or temp <= COOL or not stage_alive(item)):
+                elif job_id in held and (not stage_alive(item) or (temp is None or temp <= COOL)
+                                         and time.monotonic() - held_at.get(job_id, 0) >= HOLD_S):
                     release(job_id)
                     print(f"card at {temp if temp is not None else 0:.0f} °C: {job_id[:8]} goes on", flush=True)
             for job_id in [j for j in list(held) if j not in {i["id"] for i in running}]:

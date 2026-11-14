@@ -609,7 +609,9 @@ audio, video { max-width: 100%; border-radius: 12px; }
 
 /* a bot's VM, live: its browser as a picture and a real terminal (xterm.js) */
 .live { background: #000; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
-.live .view { position: relative; aspect-ratio: 8 / 5; }
+.live .view { position: relative; aspect-ratio: 8 / 5; overflow: hidden; }
+.live .screen { transform-origin: 0 0; }
+@media (pointer: fine) { .live .url .lens { display: none; } }
 /* one finger is the page's (tap, scroll); two fingers magnify the picture here */
 .live .screen { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: pinch-zoom; user-select: none; -webkit-user-select: none; outline: none; }
 .live .screen:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

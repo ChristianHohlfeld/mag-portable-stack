@@ -47,7 +47,7 @@
       stagedBox.append(el('div', { class: 'staged failed' }, MAG.icon(f.file ? 'image' : 'camera'),
         el('span', { class: 'nm', text: f.why }),
         el('button', { class: 'pill', text: f.file ? 'Erneut senden' : 'Noch einmal', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); f.again(); } }),
-        f.file ? null : el('button', { class: 'pill', text: 'Kamera im Browser', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); shoot(null, true); } }),
+        f.file ? null : el('button', { class: 'pill', text: 'Kamera-App', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); shoot(null, false); } }),
         el('button', { class: 'x', 'aria-label': 'Verwerfen', html: MAG.icons.x, onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); } })));
     if (modeImage) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Format' });
@@ -155,33 +155,62 @@
     chooser.click();
   }
 
-  // A photo from the camera. A phone opens its own camera; a desktop shows the
-  // webcam with a release button. Where neither works, a file is chosen.
-  async function shoot(then, inPage = false) {
-    if ((coarse && !inPage) || !navigator.mediaDevices?.getUserMedia) return pick('image/*', true, then);
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
-    } catch {
-      return pick('image/png,image/jpeg,image/webp', false, then);
-    }
+  // A photo from the camera, taken inside this page on the phone too: the
+  // phone's own camera app takes the page out of view, and Android often
+  // drops a page in the background, the photo with it (Chris, 2026-11-14).
+  // The camera in the page cannot be lost that way. It takes the photo at the
+  // camera's full resolution where the browser can (ImageCapture), else the
+  // picture of the stream. Without a camera or permission the camera app is
+  // the way, and it stays one tap away in the sheet ("Kamera-App").
+  async function shoot(then, inPage = true) {
+    if (!inPage || !navigator.mediaDevices?.getUserMedia) return pick('image/*', true, then);
+    let facing = 'environment', stream = null, closed = false;
     const video = el('video', { autoplay: true, playsinline: true, muted: true });
-    video.srcObject = stream;
+    const note = el('small', { class: 'note' });
+    const open = async () => {
+      stream?.getTracks().forEach((t) => t.stop());
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+        video: { facingMode: facing, width: { ideal: 4096 }, height: { ideal: 3072 } } });
+      if (closed) { stream.getTracks().forEach((t) => t.stop()); return; }
+      video.srcObject = stream;
+    };
+    try { await open(); }
+    catch { return pick('image/*', true, then); }        // no camera here, or no permission: the camera app
+    const take = async () => {
+      const track = stream?.getVideoTracks()[0];
+      let blob = null;
+      if (track && 'ImageCapture' in window) {
+        try { blob = await new ImageCapture(track).takePhoto(); } catch { blob = null; }
+      }
+      if (!blob && video.videoWidth) {
+        const canvas = el('canvas', { width: video.videoWidth, height: video.videoHeight });
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
+      }
+      return blob;
+    };
     const sheet = MAG.sheet('Kamera', (content, _, close) => {
+      const shutter = el('button', { class: 'shutter', 'aria-label': 'Auslösen', onclick: async () => {
+        shutter.disabled = true;
+        note.textContent = 'Foto wird aufgenommen …';
+        const blob = await take();
+        close();
+        if (blob) await addFiles([new File([blob], 'kamera-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jpg', { type: blob.type || 'image/jpeg' })], then);
+        else { failed.push({ file: null, why: 'Das Bild der Kamera ließ sich nicht festhalten.', again: () => shoot(then) }); paintStaged(); }
+        then?.();
+      } });
       content.append(el('div', { class: 'shoot' }, video,
-        el('button', { class: 'pill', onclick: () => {
-          if (!video.videoWidth) return;
-          const canvas = el('canvas', { width: video.videoWidth, height: video.videoHeight });
-          canvas.getContext('2d').drawImage(video, 0, 0);
-          canvas.toBlob(async (blob) => {
-            close();
-            if (blob) await addFiles([new File([blob], 'kamera-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jpg', { type: 'image/jpeg' })], then);
-            else { failed.push({ file: null, why: 'Das Bild der Kamera ließ sich nicht festhalten.', again: () => shoot(then, true) }); paintStaged(); }
-            then?.();
-          }, 'image/jpeg', 0.92);
-        } }, MAG.icon('camera'), el('b', { text: 'Auslösen' }))));
+        el('div', { class: 'shoot-bar' },
+          el('button', { class: 'pill', text: 'Kamera-App', title: 'Mit der Kamera-App des Handys', onclick: () => { close(); pick('image/*', true, then); } }),
+          shutter,
+          el('button', { class: 'pill', text: 'Wechseln', title: 'Vorder- oder Rückkamera', onclick: () => {
+            facing = facing === 'environment' ? 'user' : 'environment';
+            open().catch(() => { note.textContent = 'Diese Kamera lässt sich nicht öffnen.'; });
+          } })),
+        note));
     });
-    sheet.addEventListener('closed', () => stream.getTracks().forEach((t) => t.stop()));
+    sheet.classList.add('camera-sheet');
+    sheet.addEventListener('closed', () => { closed = true; stream?.getTracks().forEach((t) => t.stop()); });
   }
 
   // ---- which object of the photo ------------------------------------------

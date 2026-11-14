@@ -384,8 +384,12 @@
     const wait = el('div', { class: 'wait', text: 'Verbinde mit dem Browser von ' + name + ' …' });
     const status = el('div', { class: 'note' });
     const address = el('input', { type: 'text', inputMode: 'url', enterKeyHint: 'go', placeholder: 'Adresse', 'aria-label': 'Adresse', autocapitalize: 'off', autocomplete: 'off' });
-    const typing = el('input', { type: 'text', enterKeyHint: 'send', placeholder: 'Text an die Seite', 'aria-label': 'Text an die Seite', autocapitalize: 'off', autocomplete: 'off' });
-    for (const input of [address, typing]) input.setAttribute('spellcheck', 'false');
+    // The phone's keyboard types into the page: a tap on a field of the page
+    // focuses this invisible field, and what is typed in it goes on to the
+    // page as it is typed (a word the keyboard puts in or takes back too).
+    const keys = el('input', { type: 'text', class: 'keys', enterKeyHint: 'go', autocapitalize: 'off', autocomplete: 'off', 'aria-label': 'Tastatur für die Seite' });
+    for (const input of [address, keys]) input.setAttribute('spellcheck', 'false');
+    keys.setAttribute('autocorrect', 'off');
     let stopped = false;
 
     // The address follows the page, also while the bot is the one browsing.
@@ -407,12 +411,47 @@
       address.blur();
       act('navigate', { url });
     };
-    // A phone has no keyboard for a picture: text for the page goes through
-    // this field. Enter sends it and presses Enter in the page.
-    const type = (enter) => {
-      if (typing.value) link.send({ kind: 'text', text: typing.value });
-      if (enter) link.send({ kind: 'key', key: 'Enter' });
-      typing.value = '';
+    // What the keyboard changed since the last time, as keys for the page:
+    // a Backspace for every character taken back, then the new text.
+    let typed = '';
+    const passOn = () => {
+      const now = keys.value;
+      let same = 0;
+      while (same < typed.length && same < now.length && typed[same] === now[same]) same++;
+      for (let i = typed.length; i > same; i--) link.send({ kind: 'key', key: 'Backspace' });
+      if (now.length > same) link.send({ kind: 'text', text: now.slice(same) });
+      typed = now;
+    };
+    const clearKeys = () => { keys.value = ''; typed = ''; };
+    keys.addEventListener('input', passOn);
+    keys.addEventListener('compositionend', () => setTimeout(() => { if (typed.length > 200) clearKeys(); }, 0));
+    keys.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;
+      const named = { Enter: 1, Tab: 1, Escape: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 };
+      // Backspace on an empty field changes nothing the field could see: the page gets it.
+      if (named[e.key] || (e.key === 'Backspace' && !keys.value)) {
+        e.preventDefault();
+        link.send({ kind: 'key', key: e.key, shift: e.shiftKey });
+        if (e.key === 'Enter' || e.key === 'Tab') clearKeys();
+      }
+    });
+    keys.addEventListener('blur', clearKeys);
+    // After a tap: if the page now has a field in focus, the keyboard comes up
+    // (within the tap's own moment, which the phone requires); if not, it goes.
+    const keyboardFor = (state) => {
+      shown(state);
+      const field = state && state.editable;
+      if (field) {
+        keys.type = state.secret ? 'password' : 'text';
+        if (document.activeElement !== keys) { clearKeys(); keys.focus({ preventScroll: true }); }
+      } else if (field === false && document.activeElement === keys) keys.blur();
+    };
+    // The tap reaches the page over the realtime link, the question over HTTPS:
+    // asked twice, so a slow tap is not taken for one beside a field.
+    const afterTap = () => {
+      const ask = () => MAG.api('POST', '/api/browser/' + bot + '/state', {});
+      setTimeout(() => ask().then((state) => (state && state.editable ? keyboardFor(state)
+        : new Promise((ok) => setTimeout(ok, 450)).then(ask).then(keyboardFor))).catch(() => {}), 200);
     };
 
     // Where on the 1440 x 900 page a pointer is, whatever size the picture has here.
@@ -461,7 +500,7 @@
         if (e.pointerId !== finger.id) return;
         const tap = !finger.dragged && e.type === 'pointerup';
         finger = null;
-        if (tap) pointer(e, 'tap', { button: 'left' });
+        if (tap) { pointer(e, 'tap', { button: 'left' }); afterTap(); }
         return;
       }
       if (!held) return;
@@ -488,10 +527,9 @@
     node.append(
       el('form', { class: 'url', onsubmit: (e) => { e.preventDefault(); go(); } },
         back, forward, nav('↻', 'Neu laden', 'reload'), address,
+        el('button', { type: 'button', class: 'pill kbd', text: '⌨', title: 'Tastatur', 'aria-label': 'Tastatur', onclick: () => { clearKeys(); keys.focus({ preventScroll: true }); } }),
         el('button', { type: 'button', class: 'pill', 'aria-label': 'Vollbild', title: 'Vollbild', html: fullIcon, onclick: () => full.toggle() })),
-      el('div', { class: 'view' }, canvas, wait),
-      el('form', { class: 'url', onsubmit: (e) => { e.preventDefault(); type(true); } },
-        typing, el('button', { type: 'button', class: 'pill', text: 'Einfügen', title: 'Text einfügen, ohne Enter', onclick: () => type(false) })),
+      el('div', { class: 'view' }, canvas, wait, keys),
       status);
     const screen = { canvas, say: (text) => { status.textContent = text; }, shown: () => { canvas.hidden = false; wait.hidden = true; } };
     link.watch(screen);

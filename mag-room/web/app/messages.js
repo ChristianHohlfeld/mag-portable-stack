@@ -136,6 +136,26 @@
       if (shot && !ask) node.append(el('div', { class: 'body' }, el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' })));
       return node;
     }
+    // A browser step is the browser and nothing more: no raw input or output
+    // (the long address, the list of elements), only a failure in one line.
+    // Open, the newest browser step of the bot is its browser live, to tap and
+    // type in like the card; an older one shows the page as that step left it.
+    if (step.tool.startsWith('browser_')) {
+      node.classList.add('browser-step');
+      const picture = shot ? el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' }) : null;
+      const failed = step.state === 'error' ? el('div', { class: 'fail', text: (step.output || '').split('\n')[0].slice(0, 200) }) : null;
+      const body = el('div', { class: 'body' }, picture, failed);
+      node.append(body);
+      if (picture && S.you.role === 'owner' && step.state !== 'running' && newestBrowser(m.from) === m.id + '-' + index) {
+        const swap = () => {
+          if (node.open && picture.isConnected) picture.replaceWith(liveIn(m.from, 'step-' + m.from));
+          else if (!node.open && !picture.isConnected) body.querySelector('.live')?.replaceWith(picture);
+        };
+        node.addEventListener('toggle', swap);
+        if (node.open) queueMicrotask(swap);
+      }
+      return node;
+    }
     node.append(el('div', { class: 'body' },
       shot ? el('img', { class: 'shot', src: shot, alt: 'Browser nach diesem Schritt', loading: 'lazy' }) : null,
       input ? el('div', { class: 'label', text: step.tool === 'shell' ? 'Befehl' : 'Eingabe' }) : null,
@@ -221,6 +241,16 @@
       note);
   }
 
+  // The newest browser step of a bot in the whole chat ("<message>-<part>"): only that one opens live.
+  function newestBrowser(bot) {
+    let best = '', at = '';
+    for (const m of S.messages.values()) {
+      if (m.from !== bot || m.id <= best) continue;
+      const i = latestShot(m);
+      if (i >= 0) { best = m.id; at = m.id + '-' + i; }
+    }
+    return at;
+  }
   // Only the newest browser picture of an answer stands in its line; the others open with their step.
   const latestShot = (m) => (m.parts || []).reduce((at, p, i) => (p.shot ? i : at), -1);
   const lastLines = (text) => text.replace(/\s+$/, '').split('\n').slice(-3).join('\n');

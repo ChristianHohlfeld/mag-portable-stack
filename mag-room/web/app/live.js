@@ -444,6 +444,11 @@
       if (field) {
         keys.type = state.secret ? 'password' : 'text';
         if (document.activeElement !== keys) { clearKeys(); keys.focus({ preventScroll: true }); }
+        // About 420 px of the page across the view: a form is as large as on the phone itself.
+        if (lastTap && zoom.z < 2) {          // lastTap: a finger's, never a mouse's
+          const r = canvas.parentNode.getBoundingClientRect();
+          zoomTo(Math.max(2, Math.min(4, 1440 / 420)), lastTap.x, lastTap.y, r.width / 2, r.height * 0.3);
+        }
       } else if (field === false && document.activeElement === keys) keys.blur();
     };
     // The tap reaches the page over the realtime link, the question over HTTPS:
@@ -464,6 +469,32 @@
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= g.w || y >= g.h) return null;
       return { x: Math.min(1439, Math.max(0, (x * 1440) / g.w)), y: Math.min(899, Math.max(0, (y * 900) / g.h)) };
     };
+    // On a phone the page is small: it is looked at magnified. A field that
+    // takes the keyboard is brought up large where it was tapped, the
+    // magnifier button zooms in and out, and a finger then moves the view.
+    const zoom = { z: 1, tx: 0, ty: 0 };
+    let lastTap = null;
+    const applyZoom = () => {
+      const view = canvas.parentNode, vw = view?.clientWidth || 0, vh = view?.clientHeight || 0;
+      zoom.tx = Math.min(0, Math.max(vw - vw * zoom.z, zoom.tx));
+      zoom.ty = Math.min(0, Math.max(vh - vh * zoom.z, zoom.ty));
+      canvas.style.transform = zoom.z > 1 ? 'translate(' + zoom.tx + 'px,' + zoom.ty + 'px) scale(' + zoom.z + ')' : '';
+      lens.textContent = zoom.z > 1 ? '－' : '＋';
+    };
+    // Zoom to z with the point (x, y) of the screen at (atX, atY) of the view.
+    const zoomTo = (z, x, y, atX, atY) => {
+      const r = canvas.parentNode.getBoundingClientRect();
+      const cx = (x - r.left - zoom.tx) / zoom.z, cy = (y - r.top - zoom.ty) / zoom.z;
+      zoom.z = z;
+      zoom.tx = (atX ?? x - r.left) - cx * z;
+      zoom.ty = (atY ?? y - r.top) - cy * z;
+      applyZoom();
+    };
+    const lens = el('button', { type: 'button', class: 'pill lens', text: '＋', title: 'Vergrößern', 'aria-label': 'Vergrößern', onclick: () => {
+      if (zoom.z > 1) { zoom.z = 1; zoom.tx = zoom.ty = 0; return applyZoom(); }
+      const r = canvas.parentNode.getBoundingClientRect();
+      zoomTo(2.5, lastTap?.x ?? r.left + r.width / 2, lastTap?.y ?? r.top + r.height / 2, r.width / 2, r.height / 2);
+    } });
     const button = (e) => (e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left');
     let held = false, movedAt = 0, finger = null;
     const pointer = (e, action, extra) => {
@@ -490,8 +521,11 @@
       finger.dragged = true;
       if (performance.now() - movedAt < 30) return;
       movedAt = performance.now();
-      const scale = place().scale || 1;
-      link.send({ kind: 'wheel', dx: -dx / scale, dy: -dy / scale });
+      if (zoom.z > 1) { zoom.tx += dx; zoom.ty += dy; applyZoom(); }
+      else {
+        const scale = place().scale || 1;
+        link.send({ kind: 'wheel', dx: -dx / scale, dy: -dy / scale });
+      }
       finger.x = e.clientX;
       finger.y = e.clientY;
     });
@@ -500,7 +534,7 @@
         if (e.pointerId !== finger.id) return;
         const tap = !finger.dragged && e.type === 'pointerup';
         finger = null;
-        if (tap) { pointer(e, 'tap', { button: 'left' }); afterTap(); }
+        if (tap) { lastTap = { x: e.clientX, y: e.clientY }; pointer(e, 'tap', { button: 'left' }); afterTap(); }
         return;
       }
       if (!held) return;
@@ -527,6 +561,7 @@
     node.append(
       el('form', { class: 'url', onsubmit: (e) => { e.preventDefault(); go(); } },
         back, forward, nav('↻', 'Neu laden', 'reload'), address,
+        lens,
         el('button', { type: 'button', class: 'pill kbd', text: '⌨', title: 'Tastatur', 'aria-label': 'Tastatur', onclick: () => { clearKeys(); keys.focus({ preventScroll: true }); } }),
         el('button', { type: 'button', class: 'pill', 'aria-label': 'Vollbild', title: 'Vollbild', html: fullIcon, onclick: () => full.toggle() })),
       el('div', { class: 'view' }, canvas, wait, keys),

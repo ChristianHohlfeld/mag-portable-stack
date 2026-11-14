@@ -2677,6 +2677,13 @@ private:
         if (reason == "human" && !t.blocked && t.drives < 3 && vm::valid_name(jstr(me, "vm")) && (t.login_wall || (!t.steps && wants_login(content)))) {
           ++t.drives;
           logf("engine: " + b.id + " stopped at a login page; the room has it call browser_login");
+          // What it asked Chris in words (his e-mail, a link to log in himself) is
+          // taken back: the card is how he logs in.
+          if (wants_login(content)) {
+            t.tail.clear();
+            if (t.id.empty()) t.held.clear();
+            else room_.retake_text(t.id, text0, "");
+          }
           Val note = Val::object();
           note["role"] = "user";
           note["content"] = "(Notiz des Raums, nicht von Chris: Die Seite in deinem Browser will eine Anmeldung, ein Passwort oder einen Code. "
@@ -2687,7 +2694,12 @@ private:
           save_wire(b);
           continue;
         }
-        if (reason == "human" && t.steps > 0 && !t.blocked && t.drives < 3 && (!t.last_ok || trim(content).empty() || announces(content))) {
+        // A bot with a computer that only says what it will do, without one
+        // step, is sent on too: an announcement is no answer (Chris waited
+        // for "Ich öffne Amazon …" and nothing came, 2026-11-14).
+        const bool short_of_goal = t.steps > 0 ? (!t.last_ok || trim(content).empty() || announces(content))
+                                               : vm::valid_name(jstr(me, "vm")) && announces(content);
+        if (reason == "human" && !t.blocked && t.drives < 3 && short_of_goal) {
           ++t.drives;
           logf("engine: " + b.id + " stopped short of its goal; the room sends it on (" + std::to_string(t.drives) + ")");
           Val note = Val::object();

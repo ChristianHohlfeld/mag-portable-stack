@@ -360,6 +360,37 @@ class RoomContract(unittest.TestCase):
         self.assertEqual("".join(e["text"] for e in deltas if e["part"] == 0), "Ich merke mir das.")
         self.assertEqual([e["seq"] for e in r.events], sorted(e["seq"] for e in r.events))
 
+    def test_an_announcement_without_a_step_is_sent_on(self):
+        r = self.room
+        script = iter(["Ich öffne jetzt die Seite für dich.",
+                       {"content": "", "tool_calls": [{"name": "remember", "arguments": {"fact": "Chris mag Tee"}}]},
+                       "Erledigt."])
+        r.lena.reply = lambda body: next(script, "")
+        r.say("@Lena merk dir, dass ich Tee mag")
+        r.idle()
+        chats = r.lena.chats()
+        self.assertEqual(len(chats), 3)
+        note = chats[1]["messages"][-1]
+        self.assertEqual(note["role"], "user")
+        self.assertIn("statt es anzukündigen", note["content"])
+        lena = [m for m in r.messages() if m["from"] == "lena"][-1]
+        self.assertIn("step", [p["k"] for p in lena["parts"]])
+        # A plain answer without an announcement is not sent on.
+        r.lena.reply = lambda body: "Gern geschehen."
+        r.say("@Lena danke")
+        r.idle()
+        self.assertEqual(len(r.lena.chats()), 4)
+
+    def test_a_login_asked_for_in_words_is_taken_back_for_the_card(self):
+        r = self.room
+        script = iter(["Bitte schick mir deine E-Mail für die Anmeldung bei Amazon.", "Ich warte auf die Karte."])
+        r.lena.reply = lambda body: next(script, "")
+        r.say("@Lena melde mich bei Amazon an")
+        r.idle()
+        self.assertIn("browser_login", r.lena.chats()[1]["messages"][-1]["content"])
+        said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
+        self.assertNotIn("schick mir", said)
+
     def test_shell_step_shows_real_command_live_output_and_can_be_cancelled(self):
         r = self.room
         script = iter([{"content": "Ich zähle.", "tool_calls": [{"name": "shell", "arguments": {

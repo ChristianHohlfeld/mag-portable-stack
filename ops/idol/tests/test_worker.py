@@ -84,7 +84,7 @@ def main():
                MAG_IDOL_CPUS="", FAKE_DELAY="0.1", MAG_IDOL_STALL_S="2",
                MAG_TRIPOSG_PYTHON=str(tmp / "no-shape-python"),      # the whole shape stage is not installed here
                MAG_GPU_TEMP_FILE=str(tmp / "temp"),                 # the card, as hot as the test says
-               MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
+               MAG_GPU_HOLD_S="1", MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
     worker = [None]
 
     def call(method, path, body=None):

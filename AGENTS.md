@@ -55,7 +55,7 @@ the bot's model checks every token, so it changes speed, never words. No GPU off
 Idol alone and its power cap stays at 78 W (Chris, 2026-11-13; 82 W, 100 W, 85 W,
 78 W and 73 W for a while that day, 72 W before; the card is cooled passively,
 at 85 W its junction was 83 °C of 100; `ops/idol/power-cap.sh` only ever
-lowers it; never add anything that raises it, and nothing above 78 W). `mag-modeld` is the single
+lowers it; never add anything that raises it, and nothing above 78 W). When its junction or memory reaches 90 °C the Idol worker holds the stage on the card (SIGSTOP, h3d too for a video) and lets it go on at 80 °C: a job is never parked or ended for the heat, it only takes longer (2026-11-14: at 96-107 °C the PCIe link to the card failed and took the host down). `mag-modeld` is the single
 owner of the model lifecycle: it checks each GGUF against the Hugging Face
 size, verifies its SHA256 once, starts `mag-model@<bot>.service` and publishes
 `/run/mag-models/status.json`. Do not start, stop or enable model units by

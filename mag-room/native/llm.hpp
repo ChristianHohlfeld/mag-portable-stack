@@ -31,6 +31,9 @@ struct ToolCall {
 
 struct ChatResult {
   std::string content, reasoning, finish, error;
+  // Reasoning and content as the server sent them, before Clean drops tool-call
+  // markup. The chat never sees this; the room may rescue one real call from it.
+  std::string raw;
   std::vector<ToolCall> calls;
   bool cancelled = false;
   // Why the room ended the generation itself: "repeat" (the answer ran in
@@ -407,6 +410,7 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   std::map<int, ToolCall> calls;
   bool done = false;
   Clean clean, clean_thoughts;
+  std::string raw_in;
   size_t checked_content = 0, checked_reasoning = 0;
   // The room ends a generation that lost its way instead of waiting for its
   // tokens to run out: the server stops when the connection closes.
@@ -472,6 +476,7 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       const std::string r = jstr(*delta, key);
       if (r.empty()) continue;
       first();
+      raw_in += r;
       std::string text, thought; // thoughts stay thoughts, whatever markup they carry
       clean_thoughts.feed(r, text, thought);
       take("", text + thought);
@@ -480,6 +485,7 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
     const std::string c = jstr(*delta, "content");
     if (!c.empty()) {
       first();
+      raw_in += c;
       std::string text, thought;
       clean.feed(c, text, thought);
       take(text, thought);
@@ -557,6 +563,7 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       out.error = error_text(shaped);
     } else if (!done && out.finish.empty()) out.error = "Antwort unvollständig (Verbindung beendet)";
   }
+  out.raw = raw_in;
   for (auto &kv : calls) {
     if (kv.second.name.empty()) continue;
     if (kv.second.id.empty()) kv.second.id = "call_" + random_hex(6);

@@ -7,6 +7,8 @@ real VM or the deployed browser work."""
 import base64
 import http.client
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.parse
 import os
 import pathlib
 import shutil
@@ -57,6 +59,110 @@ def placed(parts, name):
         if image["type"] == "image_url" and text["type"] == "text" and text["text"].startswith("[Bild " + name + " ("):
             return image["image_url"]["url"]
     return None
+
+
+class FakeBrowser:
+    """The VM browser the room calls when MAG_ROOM_BROWSER_ADDR is set."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.url = "about:blank"
+        self.title = "leer"
+        self.text = ""
+        self.scroll = 0
+        self.password = False
+        self.blocked = False
+        self.clicks = []
+        self.scroll_texts = []
+        self.scroll_i = 0
+        self.elements = []
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def _send(self, code, body, kind):
+                data = body if isinstance(body, bytes) else body.encode()
+                self.send_response(code)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def _json(self, value):
+                self._send(200, json.dumps(value), "application/json")
+
+            def _page(self):
+                with fake.lock:
+                    els = []
+                    for e in fake.elements:
+                        row = dict(e)
+                        if fake.password and row.get("n") == 1:
+                            row["password"] = True
+                            row["kind"] = "password"
+                        els.append(row)
+                    return {"url": fake.url, "title": fake.title, "text": fake.text, "scroll": fake.scroll,
+                            "height": 4000, "vh": 900, "blocked": fake.blocked, "elements": els}
+
+            def _read(self):
+                n = int(self.headers.get("Content-Length", "0") or 0)
+                return self.rfile.read(n) if n else b""
+
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/screenshot.jpg":
+                    return self._send(200, JPEG, "image/jpeg")
+                if parsed.path == "/navigate":
+                    url = urllib.parse.parse_qs(parsed.query).get("url", ["about:blank"])[0]
+                    with fake.lock:
+                        fake.url = url
+                        if fake.password:
+                            fake.title = "Anmelden"
+                            fake.text = "Bitte melde dich an"
+                        elif "amazon" in url:
+                            fake.title = "Amazon.de"
+                            fake.text = "Suche Schrumpfschlauch transparent"
+                            fake._amazon()
+                    return self._json({"ok": True})
+                if parsed.path in ("/elements", "/read", "/state", "/back", "/key"):
+                    if parsed.path == "/key":
+                        return self._json({"ok": True})
+                    return self._json(self._page())
+                self._json({"error": "no such path"})
+
+            def do_POST(self):
+                parsed = urllib.parse.urlparse(self.path)
+                raw = self._read()
+                body = json.loads(raw or b"{}")
+                with fake.lock:
+                    if parsed.path == "/click":
+                        fake.clicks.append(body.get("n"))
+                    elif parsed.path == "/scroll":
+                        fake.scroll += int(body.get("dy") or 0)
+                        if fake.scroll_i < len(fake.scroll_texts):
+                            fake.text = fake.scroll_texts[fake.scroll_i]
+                            fake.scroll_i += 1
+                self._json({"ok": True})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def _amazon(self):
+        self.elements = []
+        for n in range(1, 41):
+            self.elements.append({"n": n, "kind": "link", "label": "Treffer %d" % n, "x": 100, "y": 20 * n})
+        self.elements[0] = {"n": 1, "kind": "search", "label": "Suche", "x": 400, "y": 40}
+        self.elements[27] = {"n": 28, "kind": "link", "label": "Schrumpfschlauch transparent 2s",
+                             "price": "4,20 €", "href": "https://www.amazon.de/dp/B00SEEN", "x": 200, "y": 360}
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
 
 
 class Room:
@@ -1855,6 +1961,194 @@ class RoomContract(unittest.TestCase):
                 (16).to_bytes(2, "little") + b"data" + len(audio).to_bytes(4, "little") + audio
             code, out = r.api("POST", "/api/stt", raw=wav)
             self.assertEqual((code, out.get("text")), (200, "w1 w2 w3. w4 w5"), out)
+
+    def test_a_browser_goal_survives_a_lost_click_and_a_compact(self):
+        """The 15.11 trace: a click written into the thoughts is done once, the
+        goal and the page survive a 21k-token compact, and a plan is not a result."""
+        browser = FakeBrowser()
+        browser.scroll_texts = ["OLDDUMPzzzz " + ("alt " * 800), "MIDPAGE " + ("mitte " * 200), "LASTPAGEZZ " + ("neu " * 200)]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port, MAG_ROOM_VISION="lena")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        r.lena.reply = lambda body: "Hallo Chris."
+        r.say("@Lena hallo")
+        r.idle()
+        self.assertNotIn("tool_choice", r.lena.chats()[-1])
+        seen = []
+        fix = {"go": False}
+
+        def reply(body):
+            i = len(seen)
+            if i == 3:
+                end = time.time() + 10
+                while not fix["go"] and time.time() < end:
+                    time.sleep(0.02)
+            seen.append(body)
+            if i == 0:
+                return {"content": "", "tool_calls": [{"name": "browser_open", "arguments": {"url": "https://www.amazon.de/s?k=schrumpfschlauch"}}]}
+            if i == 1:
+                return {"content": "", "reasoning": "<|tool_call>call:browser_click{n:28}<tool_call|>"}
+            if i < 5:
+                out = {"content": "", "tool_calls": [{"name": "browser_scroll", "arguments": {"dy": 700}}]}
+                if i == 4:
+                    out["prompt_tokens"] = 21000
+                return out
+            if i == 5:
+                return "Ich tippe den Suchbegriff ein."
+            if i == 6:
+                return {"content": "", "tool_calls": [{"name": "browser_type", "arguments": {"text": "schrumpfschlauch 2s", "n": 1}}]}
+            if i == 7:
+                return "Step 1: Scroll down to the results.\nStep 2: Identify the transparent tube."
+            if i == 8:
+                return "Step 1: Scroll down to the results.\nStep 2: Identify the transparent tube."
+            seen.append("extra")
+            return "Das darf nicht das Ergebnis sein."
+
+        r.lena.reply = reply
+        r.say("@Lena Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de 18650")
+        r.wait(lambda: len(seen) >= 3, "opened and clicked")
+        r.say("Nicht 2 Stueck sondern 2s")
+        fix["go"] = True
+        r.wait(lambda: len(seen) >= 6, "compacted request")
+        compact = seen[5]
+        blob = json.dumps(compact["messages"], ensure_ascii=False)
+        self.assertEqual(compact.get("tool_choice"), "required")
+        self.assertIs(compact.get("parallel_tool_calls"), False)
+        self.assertAlmostEqual(compact.get("temperature"), 0.3, places=2)
+        self.assertAlmostEqual(compact.get("top_p"), 0.9, places=2)
+        self.assertEqual(compact.get("top_k"), 40)
+        self.assertIn("Schrumpfschlauch", blob)
+        self.assertIn("Nicht 2 Stueck sondern 2s", blob)
+        self.assertIn("amazon.de", blob.lower())
+        self.assertIn("LASTPAGEZZ", blob)
+        self.assertNotIn("OLDDUMPzzzz", blob)
+        self.assertGreater(len(compact["messages"]), 2)
+        self.assertIn("image_url", json.dumps(seen[1]))
+        self.assertNotIn("image_url", json.dumps(seen[3]))
+        r.idle()
+        self.assertEqual(browser.clicks, [28])
+        self.assertLess(len(seen), 12)  # the repeated plan stalled instead of looping
+        said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
+        self.assertIn("hänge", said)
+        self.assertEqual(r.noah.chats(), [])
+        goal_path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
+        goal = json.loads(goal_path.read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertIn("Amazon.de", goal["text"])
+        self.assertIn("2s", " ".join(goal["corrections"]))
+        # The goal is not part of the prompt log: a restart of the room keeps it.
+        r.lena.reply = lambda body: "PASS"
+        r.noah.reply = lambda body: "PASS"
+        r.stop()
+        r.start()
+        goal = json.loads(goal_path.read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertIn("Schrumpfschlauch", goal["text"])
+        # A status question does not replace the goal. An unseen link is refused; a seen one finishes it.
+        fin = {"n": 0}
+
+        def finish(body):
+            fin["n"] += 1
+            fin["last"] = body
+            if fin["n"] == 1:
+                return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
+                    "summary": "Zwei Stück.", "items": [{"name": "X", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
+            if fin["n"] == 2:
+                return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
+                    "summary": "Zwei transparente Schrumpfschläuche.",
+                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"}]}}]}
+            return "Ich habe zwei transparente Schrumpfschläuche 2s gefunden."
+
+        r.lena.reply = finish
+        r.say("Done?")
+        r.idle()
+        self.assertEqual(fin["last"].get("tool_choice"), None)
+        self.assertIn("required", [body.get("tool_choice") for body in r.lena.chats()[-3:-1]])
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step" and p["tool"] == "goal_finish"]
+        self.assertEqual([s["state"] for s in steps], ["error", "ok"])
+        self.assertIn("gesehenen Seite", steps[0]["output"])
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertIn("Amazon.de", goal["text"])
+        self.assertIn("Schrumpfschläuche", " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena"))
+        # A plain chat afterwards does not force a tool.
+        r.lena.reply = lambda body: "Gern."
+        r.say("@Lena danke")
+        r.idle()
+        self.assertNotIn("tool_choice", r.lena.chats()[-1])
+
+    def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):
+        browser = FakeBrowser()
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port, MAG_ROOM_VISION="lena")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        n = {"i": 0}
+
+        def work(body):
+            i = n["i"]
+            n["i"] += 1
+            if i == 0:
+                return {"content": "", "tool_calls": [{"name": "browser_open", "arguments": {"url": "https://www.amazon.de"}}]}
+            return "Ich tippe weiter, Satz %d." % i
+
+        r.lena.reply = work
+        r.noah.reply = lambda body: "Darf ich das kaufen?"
+        r.say("@Lena Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertIn("hänge", " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena"))
+        before = len(r.noah.chats())
+        r.say("Und?")
+        r.idle()
+        r.say("Noah du nicht")
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), before)
+        self.assertEqual(json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())["state"], "active")
+        # Explicit chat to Noah is not the task: his acting tool is refused, and no consent card.
+        r.noah.reply = lambda body: {"content": "Darf ich das kaufen und bestellen?", "tool_calls": [{"name": "shell", "arguments": {"command": "echo nein"}}]}
+        r.say("@Noah was meinst du?")
+        r.idle()
+        noah_steps = [p for m in r.messages() if m["from"] == "noah" for p in m.get("parts") or [] if p["k"] == "step"]
+        self.assertTrue(noah_steps and "erledigt diese Aufgabe schon" in noah_steps[-1]["output"])
+        self.assertFalse(any(p.get("approval") for p in noah_steps))
+        # An explicit new task for him still runs.
+        r.noah.reply = lambda body: {"content": "", "tool_calls": [{"name": "browser_open", "arguments": {"url": "https://example.com"}}]}
+        r.say("@Noah öffne https://example.com")
+        r.idle()
+        opened = [p for m in r.messages() if m["from"] == "noah" for p in m.get("parts") or [] if p["k"] == "step" and p["tool"] == "browser_open"]
+        self.assertTrue(opened)
+        self.assertNotIn("erledigt diese Aufgabe schon", opened[-1]["output"])
+        self.assertIn("keine eigene VM", opened[-1]["output"])
+        # A login wall ends only through goal_blocked and the card, not a made-up result.
+        browser.password = True
+
+        def blocked(body):
+            return {"content": "", "tool_calls": [{"name": "goal_blocked", "arguments": {"reason": "Die Seite will eine Anmeldung.", "kind": "login"}}]}
+
+        r.lena.reply = blocked
+        r.say("@Lena melde mich bei Amazon an")
+
+        def card():
+            for m in r.messages():
+                for p in m.get("parts") or []:
+                    if p.get("approval"):
+                        return p["approval"]
+            return None
+
+        r.wait(lambda: card(), "login card")
+        self.assertEqual(card()["action"], "login")
+        self.assertEqual(r.api("POST", "/api/approval/" + card()["id"], {"decision": "cancel"})[0], 200)
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "blocked")
+        said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
+        self.assertNotIn("bestellt", said)
+        # Trash ends it.
+        self.assertEqual(r.api("POST", "/api/room/clear", {})[0], 200)
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertNotEqual(goal["state"], "active")
 
     def test_whois_and_csrf_guard(self):
         r = self.room

@@ -237,6 +237,13 @@ public:
                              const std::string &body = "", int timeout_s = 60, const Cancel *cancel = nullptr) {
     http::ClientResult res;
     std::string error;
+    // Tests point the browser tools at a local stand-in (host or host:port).
+    const std::string forced = env("MAG_ROOM_BROWSER_ADDR");
+    if (!forced.empty()) {
+      std::string host = forced;
+      if (host.find(':') == std::string::npos) host += ":9225";
+      return browser_raw(host, vm, method, path, body, timeout_s, cancel);
+    }
     const std::string addr = ensure_browser(vm, error);
     if (addr.empty()) { res.error = error; return res; }
     return browser_raw(addr, vm, method, path, body, timeout_s, cancel);
@@ -346,7 +353,8 @@ private:
     opt.cancel = cancel;
     opt.headers.push_back({"Authorization", "Bearer " + token(vm)});
     if (method == "POST") opt.headers.push_back({"Content-Type", "application/json"});
-    return http::fetch("http://" + addr + ":9225" + path, opt);
+    const std::string host = addr.find(':') == std::string::npos ? addr + ":9225" : addr;
+    return http::fetch("http://" + host + path, opt);
   }
   // Guest trust store and proxy settings of the audit web proxy; once per
   // room process and VM, never fatal.

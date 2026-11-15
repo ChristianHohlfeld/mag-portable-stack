@@ -642,23 +642,46 @@ be named.
 
 ### Goal driver
 
-`Engine::lead_` is the bot that carries out Chris's current request: the
-first to call an acting tool (shell, files, browser, media, phone, plugins)
-after his message. Another bot's acting tool gets "<lead> erledigt
-diese Aufgabe schon", nothing runs, its turn ends there and its message is
-marked `yielded` and not shown. A turn of Chris's (or a routine's)
-that used tools and ends after a failed step, without text or with an
-announcement of what the bot will do next (`announces`) gets a room note
-with the goal (Chris's last request) and is continued, three times a turn
-at most. A turn that ends while its browser shows a login, password or
-code page (the last browser result has a password field or such a title)
-is told to call `browser_login` instead of asking in words, and so is an
-answer without tools that asks Chris for a login, password or code.
-`consent` and `routine` do not make a bot the lead. A bot whose
-running turn for Chris already acted stays the lead when Chris writes
-again. A consent, login or pay card that ended without a yes, and a
-refused acting tool, are blockers and end the turn as it is. After a
-failed browser action the tool result already holds the page as it is now.
+A browser task Chris gives a bot (a shop, a search, a page to open, or a
+task he addresses to that bot) is a `BrowserGoal` in
+`STATE/goals/<bot>.json`, outside the prompt log. It keeps the task text,
+corrections, what "done" means, the last page (url, title, scroll, the full
+element list and its version), candidates and the last error. It survives a
+restart of the room. Trash and Stop end it. "Nicht … sondern …" updates the
+text. "Done?", "Und?" and "Hallo" do not replace it.
+
+While it is open the request ends with a short tail (task, success, page so
+far) that is not part of the stored prefix. `tool_choice` is `required`,
+`parallel_tool_calls` is false, and the sample is temperature 0.3, top_p
+0.9, top_k 40 (`MAG_ROOM_GOAL_TEMP`, `MAG_ROOM_GOAL_TOP_P`,
+`MAG_ROOM_GOAL_TOP_K`). A stop without a tool call is an unfinished step:
+the room asks for the next tool, and the same stall twice (or four tries)
+becomes one line, "Ich hänge bei …". Only `goal_finish` (a summary; a shop
+or a search also needs items whose URLs were on a page the bot actually
+saw) and `goal_blocked` (login, captcha, consent) end it. A login wall is
+the login card, not a made-up result. `[[MAG:WEITER]]` is not required.
+The next human message continues the same goal and the current page.
+
+The model sees about 2500 characters of page text and up to 40 numbered
+elements (a product line keeps name, price and link). Element numbers
+belong to that page version. The full snapshot stays in the goal. When the
+bot's vision projector is loaded, a half-size JPEG of the page after an
+open, a click, Back or Enter goes to the model as `image_url`
+(`MAG_ROOM_GOAL_EYES=0` turns that off). A tool call written into the
+thoughts as `<|tool_call>call:NAME{…}<tool_call|>` is executed when it is
+the only complete call, the tool is offered and the arguments match;
+otherwise the open goal is retried. That markup is never shown.
+
+Compaction while a goal is open estimates tokens (about four characters
+each), drops older page dumps first, and always keeps the task, the
+corrections, the latest page and the last two tool pairs. It does not
+shrink the log to the system line plus a nudge.
+
+`lead_` is the addressed bot as soon as the task is given. While the goal
+is open the other bot gets no automatic turn, no acting tool and no consent
+nudge. An explicit new task to that other bot still runs. "Noah du nicht"
+stops only Noah. Without a browser goal, a turn that only announces the
+next step is still sent on, three times at most.
 
 ### Bot sites
 

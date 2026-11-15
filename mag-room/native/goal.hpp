@@ -127,12 +127,21 @@ inline void begin(Val &g, const std::string &owner, const std::string &text) {
   const std::string body = trim(text);
   Val next = Val::object();
   next["owner"] = owner;
+  next["id"] = random_hex(8); // new task, even when the same words are used again
+  next["revision"] = 0;
+  next["progress"] = "running";
   next["state"] = "active";
   next["text"] = body;
   next["corrections"] = Val::array();
   next["shopping"] = needs_items(body);
-  next["done"] = needs_items(body) ? "Die konkreten Artikel, jeder mit Namen und einem Link, der auf einer gesehenen Seite stand."
-                                   : "Das, worum Chris gebeten hat, ist erledigt und in einem Satz gesagt.";
+  // A request for two recommendations must never succeed with only one link.
+  // Other shopping tasks retain the old one-item minimum.
+  const std::string low = lower(body);
+  const int needed = needs_items(body) && (stem(low, "zwei") || stem(low, "two") || low.find("2 produkte") != std::string::npos) ? 2 : 1;
+  next["min_items"] = needs_items(body) ? needed : 0;
+  next["done"] = needs_items(body) ? "Mindestens " + std::to_string(needed) +
+       " unterschiedliche konkrete Artikel, jeder mit Namen und einem Link, der auf einer gesehenen Seite stand."
+       : "Das, worum Chris gebeten hat, ist erledigt und in einem Satz gesagt.";
   next["version"] = 0;
   next["page"] = Val::object();
   next["candidates"] = Val::array();
@@ -147,6 +156,8 @@ inline void correct(Val &g, const std::string &text) {
   const std::string line = trim(text);
   if (line.empty()) return;
   g["corrections"].push(line);
+  g["revision"] = jnum(g, "revision") + 1;
+  g["progress"] = "running";
   g["text"] = jstr(g, "text") + "\nKorrektur: " + line;
   if (needs_items(line)) g["shopping"] = true;
 }
@@ -154,6 +165,7 @@ inline void correct(Val &g, const std::string &text) {
 inline void end(Val &g, const std::string &state) {
   if (!g.isObj()) g = Val::object();
   g["state"] = state; // "done", "blocked" or "ended"
+  g["progress"] = state;
 }
 
 // ---- raw tool-call markup ---------------------------------------------------

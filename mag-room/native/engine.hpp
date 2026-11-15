@@ -3260,11 +3260,24 @@ private:
                   }
                 }
                 if (result.text.empty()) {
+                  // The verified answer is server-owned: no extra CPU model pass
+                  // that could forget the links or spend minutes pre-filling.
+                  std::string final_text = summary;
+                  if (const Val *items = args.find("items"); items && items->isArr()) {
+                    b.goal["results"] = *items;
+                    int row = 0;
+                    for (auto &it : items->asArr()) {
+                      final_text += "\n" + std::to_string(++row) + ". " + clip(jstr(it, "name"), 160) +
+                                    " — " + clip(jstr(it, "url"), 500);
+                      if (!jstr(it, "price").empty()) final_text += " (" + clip(jstr(it, "price"), 40) + ")";
+                    }
+                  }
                   b.goal["summary"] = summary;
                   goal::end(b.goal, "done");
                   save_goal(b);
-                  t.wrap = true;
-                  result = tools::told("Auftrag abgeschlossen. Schreib Chris jetzt ein bis zwei Sätze auf Deutsch mit dem Ergebnis, ohne neues Werkzeug.", summary);
+                  emit_text(b, t, "\n" + final_text, name, reason, true);
+                  t.stop_after = true;
+                  result = tools::told("Auftrag abgeschlossen, überprüfte Ergebnisse gespeichert.", "Ergebnis mit Links steht im Chat.");
                 }
               } else {
                 const std::string why = trim(jstr(args, "reason"));
@@ -3380,7 +3393,7 @@ private:
           goal::absorb(b.goal, result.snapshot, look_version);
         if (!result.ok && goal::active(b.goal)) b.goal["error"] = clip(result.text, 400);
         if (b.goal.isObj() && !jstr(b.goal, "state").empty()) save_goal(b);
-        if (c.name == "goal_finish" && result.ok && jstr(b.goal, "state") == "done") t.wrap = true;
+        // goal_finish already posted the verified links; no second model call.
         Val tr = Val::object();
         tr["role"] = "tool";
         tr["tool_call_id"] = c.id;

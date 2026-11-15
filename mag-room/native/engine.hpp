@@ -23,6 +23,7 @@
 
 #include <ctime>
 #include <regex>
+#include <stdexcept>
 #include <thread>
 
 namespace mag {
@@ -189,9 +190,26 @@ public:
       b.end_goal = true;
       b.goal_arm = false;
       b.goal_on = false;
+      b.goal_cmd = 0;
+      b.goal_text.clear();
+      b.goal_fix.clear();
+      unlink(goal_pending_file(b).c_str()); // Stop wins over any queued start
       std::error_code ec;
       std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
       write_atomic(room_.cfg.state_dir + "/goals/" + b.id + ".json.end", "end\n", 0600);
+    };
+    // on_human runs on the HTTP thread: persist the intent BEFORE signalling
+    // the worker. A deploy can otherwise lose goal_cmd/goal_arm in RAM.
+    auto queue_goal = [&](Bot &b, const Val &pending) {
+      std::error_code ec;
+      std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
+      if (!ec && write_json(goal_pending_file(b), pending, 0600)) return true;
+      Val notice = Val::object();
+      notice["bot"] = b.id;
+      notice["text"] = "Browser-Auftrag konnte nicht gespeichert werden; er wird nicht ausgeführt.";
+      room_.bus.publish("notice", notice);
+      logf("engine: " + b.id + " cannot persist pending browser goal");
+      return false;
     };
     if (hush_only) {
       for (auto &b : bots_) {
@@ -227,13 +245,31 @@ public:
       b->reason = "human";
       if (!b->want) continue;
       if (how.kind == goal::Kind::Task && std::find(owners.begin(), owners.end(), b->id) != owners.end()) {
+        Val pending = Val::object();
+        pending["kind"] = "begin";
+        pending["id"] = jstr(message, "id", random_hex(8));
+        pending["text"] = said;
+        pending["corrections"] = Val::array();
+        if (!queue_goal(*b, pending)) { b->want = false; continue; }
         b->end_goal = false;
         unlink((room_.cfg.state_dir + "/goals/" + b->id + ".json.end").c_str());
         b->goal_cmd = 1;
         b->goal_text = said;
         b->goal_fix.clear();
         b->goal_arm = true;
+        b->goal_public["state"] = "pending";
+        b->goal_public["text"] = clip(said, 200);
       } else if (how.kind == goal::Kind::Correction && (b->goal_on || b->goal_arm)) {
+        Val pending = read_json(goal_pending_file(*b));
+        if (!pending.isObj()) {
+          pending = Val::object();
+          pending["kind"] = "correct";
+          pending["id"] = random_hex(8);
+          pending["corrections"] = Val::array();
+        }
+        if (!pending["corrections"].isArr()) pending["corrections"] = Val::array();
+        pending["corrections"].push(said);
+        if (!queue_goal(*b, pending)) { b->want = false; continue; }
         b->goal_fix = b->goal_fix.empty() ? said : b->goal_fix + "\n" + said;
       }
     }
@@ -252,6 +288,10 @@ public:
       b->end_goal = true;
       b->goal_arm = false;
       b->goal_on = false;
+      b->goal_cmd = 0;
+      b->goal_text.clear();
+      b->goal_fix.clear();
+      unlink(goal_pending_file(*b).c_str());
       std::error_code ec;
       std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
       write_atomic(room_.cfg.state_dir + "/goals/" + b->id + ".json.end", "end\n", 0600);
@@ -278,6 +318,10 @@ public:
         b->end_goal = true;
         b->goal_arm = false;
         b->goal_on = false;
+        b->goal_cmd = 0;
+        b->goal_text.clear();
+        b->goal_fix.clear();
+        unlink(goal_pending_file(*b).c_str());
       }
       lead_.clear();
       silenced_.clear();
@@ -1042,6 +1086,7 @@ private:
     ensure_wire(b, me, true);
     b.last_tool_sig.clear();
     goal::end(b.goal, "ended");
+    unlink(goal_pending_file(b).c_str());
     save_goal(b);
     {
       std::lock_guard<std::mutex> lk(mu_);
@@ -1911,6 +1956,7 @@ private:
     ensure_wire(b, me, true);
     b.last_tool_sig.clear();
     goal::end(b.goal, "ended");
+    unlink(goal_pending_file(b).c_str());
     save_goal(b);
     {
       std::lock_guard<std::mutex> lk(mu_);
@@ -2160,8 +2206,10 @@ private:
 
   std::string goal_file(const Bot &b) const { return room_.cfg.state_dir + "/goals/" + b.id + ".json"; }
   std::string goal_mark(const Bot &b) const { return goal_file(b) + ".end"; }
-  void save_goal(Bot &b) {
-    if (b.end_goal.load() || exists(goal_mark(b))) goal::end(b.goal, jstr(b.goal, "state") == "done" || jstr(b.goal, "state") == "blocked" ? jstr(b.goal, "state") : "ended");
+  std::string goal_pending_file(const Bot &b) const { return goal_file(b) + ".pending"; }
+  bool save_goal(Bot &b) {
+    const bool stopped = b.end_goal.load() || exists(goal_mark(b));
+    if (stopped) goal::end(b.goal, jstr(b.goal, "state") == "done" || jstr(b.goal, "state") == "blocked" ? jstr(b.goal, "state") : "ended");
     {
       std::lock_guard<std::mutex> lk(mu_);
       b.goal_on = goal::active(b.goal);
@@ -2171,19 +2219,38 @@ private:
       status_goal["text"] = clip(jstr(b.goal, "text"), 200);
       status_goal["url"] = jstr(b.goal["page"], "url");
       status_goal["error"] = clip(jstr(b.goal, "error"), 200);
+      const Val queued = read_json(goal_pending_file(b));
+      if (queued.isObj() && jstr(queued, "kind") == "begin" && !exists(goal_mark(b))) {
+        status_goal["state"] = "pending";
+        status_goal["text"] = clip(jstr(queued, "text"), 200);
+      }
       b.goal_public = status_goal;
-      if (!b.goal_on) b.goal_arm = false;
+      if (!b.goal_on) b.goal_arm = queued.isObj() && !exists(goal_mark(b));
       if (!goal::active(b.goal)) b.end_goal = false;
     }
     std::error_code ec;
     std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
-    write_json(goal_file(b), b.goal.isObj() ? b.goal : Val::object(), 0600);
-    if (!b.end_goal.load()) unlink(goal_mark(b).c_str());
+    if (ec || !write_json(goal_file(b), b.goal.isObj() ? b.goal : Val::object(), 0600)) {
+      logf("engine: " + b.id + " cannot persist browser goal");
+      Val notice = Val::object();
+      notice["bot"] = b.id;
+      notice["text"] = "Browser-Auftrag konnte nicht gespeichert werden; bitte erneut versuchen.";
+      room_.bus.publish("notice", notice);
+      return false;
+    }
+    if (!stopped) unlink(goal_mark(b).c_str());
+    return true;
   }
   void load_goal(Bot &b) {
     b.goal = read_json(goal_file(b));
     if (!b.goal.isObj()) b.goal = Val::object();
-    if (exists(goal_mark(b)) && jstr(b.goal, "state") != "done" && jstr(b.goal, "state") != "blocked") goal::end(b.goal, "ended");
+    if (exists(goal_mark(b)) && jstr(b.goal, "state") != "done" && jstr(b.goal, "state") != "blocked") {
+      goal::end(b.goal, "ended");
+      if (!write_json(goal_file(b), b.goal, 0600))
+        logf("engine: " + b.id + " could not persist ended goal during load");
+    }
+    const Val pending = read_json(goal_pending_file(b));
+    const bool queued = pending.isObj() && !exists(goal_mark(b));
     std::lock_guard<std::mutex> lk(mu_);
     b.goal_on = goal::active(b.goal);
     Val status_goal = Val::object();
@@ -2192,16 +2259,30 @@ private:
     status_goal["text"] = clip(jstr(b.goal, "text"), 200);
     status_goal["url"] = jstr(b.goal["page"], "url");
     status_goal["error"] = clip(jstr(b.goal, "error"), 200);
+    if (queued && jstr(pending, "kind") == "begin") {
+      status_goal["state"] = "pending";
+      status_goal["text"] = clip(jstr(pending, "text"), 200);
+    } else if (queued && !b.goal_on) {
+      status_goal["state"] = "missing";
+      status_goal["error"] = "Korrektur ohne aktiven Browser-Auftrag; bitte Auftrag erneut senden.";
+    } else if (!queued && jstr(b.goal, "state").empty() &&
+               starts_with(jstr(b.wire, "goal_prompt_stamp"), "active:") && !exists(goal_mark(b))) {
+      status_goal["state"] = "missing";
+      status_goal["error"] = "Der Browser-Auftrag ist im Prompt, aber nicht im persistenten Goal-Zustand. Bitte Auftrag neu senden.";
+    }
     b.goal_public = status_goal;
-    b.goal_arm = false;
+    b.goal_arm = queued;
   }
   // Queued from the HTTP thread. The worker is the only one that edits b.goal.
+  // The pending journal is replayable after a deploy, and idempotent if a
+  // crash happened after save_goal but before removing the journal.
   void apply_goal_cmd(Bot &b) {
     int cmd = 0;
     std::string text, fix;
-    const bool stop = b.end_goal.load() || exists(goal_mark(b));
+    Val pending;
     {
       std::lock_guard<std::mutex> lk(mu_);
+      pending = read_json(goal_pending_file(b));
       cmd = b.goal_cmd;
       text = b.goal_text;
       fix = b.goal_fix;
@@ -2209,11 +2290,63 @@ private:
       b.goal_text.clear();
       b.goal_fix.clear();
     }
+    const bool stop = b.end_goal.load() || exists(goal_mark(b));
+    if (stop) {
+      if (goal::active(b.goal)) {
+        goal::end(b.goal, "ended");
+        if (!save_goal(b)) throw std::runtime_error("Browser-Auftrag konnte nicht beendet werden");
+      }
+      std::lock_guard<std::mutex> lk(mu_);
+      if (b.end_goal.load() || exists(goal_mark(b))) unlink(goal_pending_file(b).c_str());
+      return;
+    }
     bool changed = false;
-    if (stop && goal::active(b.goal)) { goal::end(b.goal, "ended"); changed = true; }
-    else if (cmd == 1) { goal::begin(b.goal, b.id, text); changed = true; }
-    if (!fix.empty() && goal::active(b.goal)) { goal::correct(b.goal, fix); changed = true; }
-    if (changed || stop) save_goal(b);
+    if (pending.isObj()) {
+      const std::string kind = jstr(pending, "kind"), serial = jstr(pending, "id");
+      if (serial.empty() || (kind != "begin" && kind != "correct") ||
+          (kind == "begin" && trim(jstr(pending, "text")).empty()))
+        throw std::runtime_error("Ungültiger persistierter Browser-Auftrag");
+      if (kind == "begin" && jstr(b.goal, "pending_serial") != serial) {
+        goal::begin(b.goal, b.id, jstr(pending, "text"));
+        b.goal["pending_serial"] = serial;
+        b.goal["pending_applied"] = 0;
+        changed = true;
+      }
+      if (goal::active(b.goal)) {
+        const Val *corrections = pending.find("corrections");
+        if (corrections && corrections->isArr()) {
+          const size_t start = jstr(b.goal, "pending_serial") == serial
+              ? (size_t)jnum(b.goal, "pending_applied") : 0;
+          for (size_t i = start; i < corrections->asArr().size(); ++i) {
+            goal::correct(b.goal, corrections->asArr()[i].asStr());
+            changed = true;
+          }
+          if (changed || start != corrections->asArr().size()) {
+            b.goal["pending_serial"] = serial;
+            b.goal["pending_applied"] = (double)corrections->asArr().size();
+          }
+        }
+      } else if (kind == "correct") {
+        Val notice = Val::object();
+        notice["bot"] = b.id;
+        notice["text"] = "Korrektur ohne aktiven Browser-Auftrag. Bitte den Auftrag erneut senden.";
+        room_.bus.publish("notice", notice);
+        throw std::runtime_error("Korrektur ohne aktiven Browser-Auftrag");
+      }
+    } else {
+      // Compatibility with a turn queued by an older room process.
+      if (cmd == 1) { goal::begin(b.goal, b.id, text); changed = true; }
+      if (!fix.empty() && goal::active(b.goal)) { goal::correct(b.goal, fix); changed = true; }
+    }
+    if (changed && !save_goal(b))
+      throw std::runtime_error("Browser-Auftrag konnte nicht gespeichert werden; LLM-Aufruf abgebrochen");
+    if (pending.isObj()) {
+      std::lock_guard<std::mutex> lk(mu_);
+      // A new correction may have arrived while the worker saved the goal:
+      // never unlink a journal whose contents have changed meanwhile.
+      if (mj::dump(read_json(goal_pending_file(b))) == mj::dump(pending))
+        unlink(goal_pending_file(b).c_str());
+    }
   }
   bool goal_live(const Bot &b) const {
     if (b.end_goal.load() || exists(goal_mark(b))) return false;
@@ -2811,6 +2944,22 @@ private:
       const bool closing = t.wrap;
       t.wrap = false;
       const bool driving = goal_live(b) && !closing;
+      // A lost state must not silently become an optional-tool chat.
+      // Never reconstruct an old task automatically: it may have been stopped
+      // or completed before the deploy (replaying actions would be unsafe).
+      if (!driving && !closing && !exists(goal_mark(b)) &&
+          (exists(goal_pending_file(b)) ||
+           (jstr(b.goal, "state").empty() &&
+            starts_with(jstr(b.wire, "goal_prompt_stamp"), "active:")))) {
+        Val notice = Val::object();
+        notice["bot"] = b.id;
+        notice["text"] = "Browser-Auftrag ohne gültigen Zustand. Bitte den Auftrag erneut senden; keine Aktion wurde gestartet.";
+        room_.bus.publish("notice", notice);
+        logf("engine: " + b.id + " goal missing/pending; refusing LLM request without required tools");
+        break;
+      }
+      logf("engine: " + b.id + " goal_state=" + jstr(b.goal, "state", "none") +
+           " tool_choice=" + (driving ? "required" : "auto") + " reason=" + reason);
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
       if (!tools.asArr().empty()) body["tools"] = tools;

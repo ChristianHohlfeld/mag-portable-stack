@@ -1964,6 +1964,61 @@ class RoomContract(unittest.TestCase):
             code, out = r.api("POST", "/api/stt", raw=wav)
             self.assertEqual((code, out.get("text")), (200, "w1 w2 w3. w4 w5"), out)
 
+    def test_pending_browser_goal_and_correction_survive_room_restart(self):
+        r = Room()
+        self.addCleanup(r.close)
+        r.lena.reply = lambda body: "Ich scrolle nach unten."
+        r.noah.reply = lambda body: "PASS"
+        r.stop()
+        pending_path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json.pending"
+        pending_path.parent.mkdir(parents=True, exist_ok=True)
+        pending_path.write_text(json.dumps({
+            "kind": "begin", "id": "queued-from-before-restart",
+            "text": "@Lena Suche 2 Schrumpfschläuche auf Amazon.de für 18650",
+            "corrections": ["transparent, 2S nebeneinander"]}))
+        r.start()
+        queued = next(b for b in r.state()["bots"] if b["id"] == "lena")
+        self.assertEqual(queued["goal"]["state"], "pending")
+        before = len(r.lena.chats())
+        r.say("Und?")
+        r.idle()
+        calls = r.lena.chats()[before:]
+        self.assertTrue(calls)
+        self.assertTrue(all(c.get("tool_choice") == "required" for c in calls))
+        goal = json.loads((pending_path.parent / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertIn("transparent, 2S", goal["text"])
+        self.assertEqual(len(goal["corrections"]), 1)
+        self.assertFalse(pending_path.exists())
+        # The next room restart must not reapply the same correction.
+        r.stop()
+        r.start()
+        goal = json.loads((pending_path.parent / "lena.json").read_text())
+        self.assertEqual(len(goal["corrections"]), 1)
+
+    def test_ended_goal_never_replays_a_queued_begin(self):
+        r = Room()
+        self.addCleanup(r.close)
+        r.stop()
+        goals = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals"
+        goals.mkdir(parents=True, exist_ok=True)
+        (goals / "lena.json.pending").write_text(json.dumps({
+            "kind": "begin", "id": "stopped-start", "text": "@Lena Suche Amazon.de",
+            "corrections": []}))
+        (goals / "lena.json.end").write_text("end\n")
+        (goals / "lena.json").write_text(json.dumps({
+            "id": "previous-goal", "owner": "lena", "state": "active",
+            "text": "@Lena Suche Amazon.de", "corrections": []}))
+        r.start()
+        r.lena.reply = lambda body: "Hallo."
+        r.say("@Lena hallo")
+        r.idle()
+        self.assertFalse((goals / "lena.json.pending").exists())
+        self.assertEqual(json.loads((goals / "lena.json").read_text())["state"], "ended")
+        self.assertTrue((goals / "lena.json.end").exists())
+        self.assertNotEqual(next(b for b in r.state()["bots"] if b["id"] == "lena").get("goal", {}).get("state"), "active")
+        self.assertNotIn("required", [x.get("tool_choice") for x in r.lena.chats()])
+
     def test_a_browser_goal_survives_a_lost_click_and_a_compact(self):
         """The 15.11 trace: a click written into the thoughts is done once, the
         goal and the page survive a 21k-token compact, and a plan is not a result."""

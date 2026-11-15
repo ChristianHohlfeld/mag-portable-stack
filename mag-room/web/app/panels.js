@@ -211,8 +211,9 @@
         }
         const goal = b.goal;
         if (goal?.state) {
-          const state = { active: 'läuft', done: 'abgeschlossen', blocked: 'blockiert',
-                          ended: 'beendet' }[goal.state] || goal.state;
+          const state = { active: 'läuft', pending: 'wartet auf Ausführung',
+                          missing: 'Zustand fehlt', done: 'abgeschlossen',
+                          blocked: 'blockiert', ended: 'beendet' }[goal.state] || goal.state;
           add('Browser-Auftrag', state + (goal.progress === 'stalled' ? ' · hängt, noch offen' : ''));
           if (goal.text) add('Ziel', goal.text);
           if (goal.url && goal.state === 'active') add('Letzte Seite', goal.url);

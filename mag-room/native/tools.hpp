@@ -8,6 +8,7 @@
 #include "site.hpp"
 #include "vm.hpp"
 
+#include <algorithm>
 #include <regex>
 #include <set>
 
@@ -34,6 +35,8 @@ struct Ctx {
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
   std::function<void(const std::string &)> shot;         // a picture of the browser (JPEG) for this step
+  std::string goal;                                      // the open task, so a look can prefer its elements
+  int page_version = 0;                                  // element numbers belong to this look
 };
 
 struct Result {
@@ -41,6 +44,9 @@ struct Result {
   bool ok = true;
   bool blocker = false; // Chris said no, or the work is done as far as it may go: the goal driver does not send the bot on
   std::string shown = {}; // what the step shows in the chat, where the text is meant for the bot alone (empty: the text)
+  std::string image;       // JPEG of the page, for the model after a navigation or a click
+  bool navigated = false;  // open, click, back, Enter: the picture may go to the model
+  Val snapshot;            // the full /elements document; the model sees a short form
 };
 // A result whose text tells the bot what to do next; Chris reads in the step what happened.
 inline Result told(std::string bot, std::string chat, bool ok = true, bool blocker = false) {
@@ -119,6 +125,15 @@ inline Val schemas(bool has_vm, bool phone = false) {
     list.push(fn("browser_scroll", "Scroll the page vertically; positive dy scrolls down.",
                  R"({"type":"object","properties":{"dy":{"type":"integer"}}})"));
     list.push(fn("browser_back", "Go back one page.", R"({"type":"object","properties":{}})"));
+    list.push(fn("goal_finish",
+                 "End the open task. Call this only when it is actually done. summary is one or two German sentences for Chris. "
+                 "A shopping or search task also needs items: each name and the url as it stood on a page you looked at. "
+                 "A url you did not see is rejected and the task stays open. Do not invent products or links.",
+                 R"({"type":"object","properties":{"summary":{"type":"string","description":"the result, in German, one or two sentences"},"items":{"type":"array","description":"shopping or search: the concrete items from pages you actually saw","items":{"type":"object","properties":{"name":{"type":"string"},"url":{"type":"string"},"price":{"type":"string"}},"required":["name","url"]}}},"required":["summary"]})"));
+    list.push(fn("goal_blocked",
+                 "End the open task because it cannot go on: a login, a captcha, or something that needs Chris (consent). "
+                 "Say why in German. This is the only other way to stop; a plan in the text does not end the task.",
+                 R"({"type":"object","properties":{"reason":{"type":"string","description":"why, in German, one or two sentences"},"kind":{"type":"string","enum":["login","captcha","consent","other"]}},"required":["reason"]})"));
     list.push(fn("share_file", "Post a file from your VM in the chat so Chris can open or download it.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path"]})"));
   }
@@ -287,6 +302,8 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "browser_wait") return "Wartet" + (jstr(args, "text").empty() ? std::string() : " auf " + one(jstr(args, "text"), 60));
   if (name == "browser_scroll") return "Scrollt";
   if (name == "browser_back") return "Zurück";
+  if (name == "goal_finish") return "Schließt den Auftrag ab";
+  if (name == "goal_blocked") return "Auftrag blockiert: " + one(jstr(args, "reason"), 80);
   if (name == "share_file") return "Teilt " + one(jstr(args, "path"), 100);
   if (name == "web_search") return "Sucht: " + one(jstr(args, "query"), 120);
   if (name == "read_image") return "Liest Bild " + one(jstr(args, "name"), 80);
@@ -331,31 +348,77 @@ inline Result fail(const std::string &text) { return {"Fehler: " + text, false};
 
 inline Result browser_result(const http::ClientResult &r, size_t budget = 6000);
 
-// The browser as a person sees it: where it is, the start of its text, every
-// element to act on with its number and point; the picture goes to the step.
+// Up to 40 elements, the ones that matter for the open task first, then in
+// number order. The full list stays on the result for the room.
+inline std::string page_for_model(const Val &v, const std::string &goal, int version) {
+  const std::string goal_low = lower(goal);
+  struct Row { long n; int score; const Val *e; };
+  std::vector<Row> rows;
+  if (const Val *els = v.find("elements"); els && els->isArr())
+    for (auto &e : els->asArr()) {
+      const std::string label = lower(jstr(e, "label")), href = lower(jstr(e, "href")), kind = lower(jstr(e, "kind"));
+      int score = 0;
+      if (jbool(e, "password")) score += 8;
+      if (kind == "search" || kind == "text" || kind == "textarea" || kind == "email") score += 5;
+      if (!jstr(e, "price").empty() || label.find("€") != std::string::npos || label.find("eur") != std::string::npos) score += 4;
+      if (!href.empty()) score += 2;
+      if (kind == "button" || kind == "submit") score += 2;
+      std::string word;
+      for (char c : goal_low + " ") {
+        if (std::isalnum((unsigned char)c) || (unsigned char)c >= 0x80) word += c;
+        else {
+          if (word.size() >= 4 && (label.find(word) != std::string::npos || href.find(word) != std::string::npos)) score += 3;
+          word.clear();
+        }
+      }
+      if (jnum(e, "y") < 500) score += 1;
+      rows.push_back({(long)jnum(e, "n"), score, &e});
+    }
+  std::vector<Row> ranked = rows;
+  std::sort(ranked.begin(), ranked.end(), [](const Row &a, const Row &b) { return a.score != b.score ? a.score > b.score : a.n < b.n; });
+  if (ranked.size() > 40) ranked.resize(40);
+  std::sort(ranked.begin(), ranked.end(), [](const Row &a, const Row &b) { return a.n < b.n; });
+  std::string out = "Seite-Version: " + std::to_string(version) + "\nSeite: " + jstr(v, "title") + "\nURL: " + jstr(v, "url") + "\n";
+  if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; goal_blocked oder browser_login.\n";
+  const double height = jnum(v, "height"), vh = jnum(v, "vh", 900), scroll = jnum(v, "scroll");
+  if (height > vh) out += "Gescrollt " + std::to_string((long)scroll) + " von " + std::to_string((long)(height - vh)) + " px\n";
+  out += "Elemente (Nummer gilt nur für Version " + std::to_string(version) + "):\n";
+  for (auto &row : ranked) {
+    const Val &e = *row.e;
+    const std::string href = jstr(e, "href"), price = jstr(e, "price");
+    const bool product = !price.empty() || href.find("/dp/") != std::string::npos || href.find("/gp/") != std::string::npos;
+    out += std::to_string(row.n) + " " + jstr(e, "kind") + " \"" + jstr(e, "label") + "\"";
+    if (product) {
+      if (!price.empty()) out += " " + price;
+      if (!href.empty()) out += " " + href;
+    }
+    out += " (" + std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
+    if (jbool(e, "password")) out += " Passwortfeld";
+    if (jbool(e, "checked")) out += " an";
+    out += "\n";
+  }
+  if (rows.size() > ranked.size()) out += "… " + std::to_string(rows.size() - ranked.size()) + " weitere Elemente, nicht gezeigt\n";
+  out += "Text (Anfang):\n" + clip(jstr(v, "text"), 2500, "\n…[gekürzt]");
+  return out;
+}
+
+// The browser as a person sees it. The model gets a short page; the full
+// document stays on the result. The picture goes to the step, and along for
+// the model when the caller asks.
 inline Result look(Ctx &ctx, const std::string &vm) {
   const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
   if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
-  if (ctx.shot) {
-    const auto pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
-    if (pic.status == 200 && pic.body.size() > 100) ctx.shot(pic.body);
-  }
+  const auto pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
   const Val v = jparse(r.body);
-  std::string out = "Seite: " + jstr(v, "title") + "\nURL: " + jstr(v, "url") + "\n";
-  if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; bitte Chris mit browser_login um Hilfe.\n";
-  const double height = jnum(v, "height"), vh = jnum(v, "vh", 900), scroll = jnum(v, "scroll");
-  if (height > vh) out += "Gescrollt " + std::to_string((long)scroll) + " von " + std::to_string((long)(height - vh)) + " px\n";
-  out += "Elemente (Nummer, Art, Beschriftung, Punkt):\n";
-  if (const Val *els = v.find("elements"); els && els->isArr())
-    for (auto &e : els->asArr()) {
-      out += std::to_string((long)jnum(e, "n")) + " " + jstr(e, "kind") + " \"" + jstr(e, "label") + "\" (" +
-             std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
-      if (jbool(e, "password")) out += " Passwortfeld";
-      if (jbool(e, "checked")) out += " an";
-      out += "\n";
-    }
-  out += "Text (Anfang):\n" + jstr(v, "text");
-  return {clip(out, 9000, "\n…[gekürzt]"), true};
+  Result out;
+  out.ok = true;
+  out.snapshot = v;
+  out.text = page_for_model(v, ctx.goal, ctx.page_version > 0 ? ctx.page_version : 1);
+  if (pic.status == 200 && pic.body.size() > 100) {
+    if (ctx.shot) ctx.shot(pic.body);
+    out.image = pic.body;
+  }
+  return out;
 }
 
 inline Result browser_result(const http::ClientResult &r, size_t budget) {
@@ -553,17 +616,18 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
         }
         return miss;
       }
-      usleep(350000); // what the click or key set off
+      if (env("MAG_ROOM_BROWSER_ADDR").empty()) usleep(350000); // what the click or key set off
       return look(ctx, vm);
     };
+    auto nav = [&](Result r) { r.navigated = true; return r; };
     if (name == "browser_open") {
       const std::string url = jstr(args, "url");
       if (url.empty()) return fail("url fehlt.");
-      return acted(ctx.guests.browser(vm, "GET", "/navigate?url=" + url_encode(url), "", 60, ctx.cancel));
+      return nav(acted(ctx.guests.browser(vm, "GET", "/navigate?url=" + url_encode(url), "", 60, ctx.cancel)));
     }
     if (name == "browser_look") return look(ctx, vm);
     if (name == "browser_read") return browser_result(ctx.guests.browser(vm, "GET", "/read", "", 30, ctx.cancel), 9000);
-    if (name == "browser_back") return acted(ctx.guests.browser(vm, "GET", "/back", "", 30, ctx.cancel));
+    if (name == "browser_back") return nav(acted(ctx.guests.browser(vm, "GET", "/back", "", 30, ctx.cancel)));
     if (name == "browser_click") {
       Val body = Val::object();
       if (args.find("n")) body["n"] = jnum(args, "n");
@@ -571,7 +635,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       else if (!jstr(args, "text").empty()) body["text"] = jstr(args, "text");
       else if (!jstr(args, "selector").empty()) body["selector"] = jstr(args, "selector");
       else return fail("n, x/y, text oder selector ist nötig.");
-      return acted(ctx.guests.browser(vm, "POST", "/click", mj::dump(body), 45, ctx.cancel));
+      return nav(acted(ctx.guests.browser(vm, "POST", "/click", mj::dump(body), 45, ctx.cancel)));
     }
     if (name == "browser_type") {
       Val body = Val::object();
@@ -585,7 +649,9 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       const std::string key = jstr(args, "key");
       static const std::set<std::string> keys = {"Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Backspace", "Home", "End", "Space"};
       if (!keys.count(key)) return fail("Taste: Enter, Tab, Escape, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, PageDown, PageUp, Backspace, Home, End oder Space.");
-      return acted(ctx.guests.browser(vm, "GET", "/key?key=" + url_encode(key == "Space" ? " " : key), "", 30, ctx.cancel));
+      Result pressed = acted(ctx.guests.browser(vm, "GET", "/key?key=" + url_encode(key == "Space" ? " " : key), "", 30, ctx.cancel));
+      if (key == "Enter") pressed.navigated = true;
+      return pressed;
     }
     if (name == "browser_wait") {
       Val body = Val::object();

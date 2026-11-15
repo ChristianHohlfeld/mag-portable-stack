@@ -44,7 +44,12 @@ What a deploy does not do:
 
 A turn the restart cut off: if nothing of the answer could be seen yet, the
 bot answers after the restart; an answer that was cut off in view stays as it
-is ("Gestoppt").
+is ("Gestoppt"). An open browser goal (`goals/<bot>.json`) is kept across
+that restart; Trash and Stop end it. While it is open the model is sampled
+at temperature 0.3 (`MAG_ROOM_GOAL_TEMP`, `MAG_ROOM_GOAL_TOP_P`,
+`MAG_ROOM_GOAL_TOP_K`). A half-size page picture after a navigation or a
+click is sent to a bot whose vision projector is loaded
+(`MAG_ROOM_GOAL_EYES=0` leaves it out).
 
 Release pruning keeps the new release and one fallback.
 
@@ -289,7 +294,7 @@ secret ever reaches it, `ops/security/secrets-scan.sh` finds where and
 
 | Path | Content | In the restic backup |
 | --- | --- | --- |
-| `/var/lib/magbot/room` | messages, files, prompt logs, bots, settings, skills, plugins, `access.json` | yes |
+| `/var/lib/magbot/room` | messages, files, prompt logs, bots, settings, skills, plugins, `access.json`, `goals/<bot>.json` (an open browser task, outside the prompt log) | yes |
 | `/var/lib/mag-models` | verification stamps, control verbs, prefix slot files | no |
 | `/home/chris/models` | GGUF model files | no, never deleted |
 | `/var/lib/mag-idol/jobs` | MI50 jobs, one folder each | no |

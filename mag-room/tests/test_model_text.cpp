@@ -3,6 +3,7 @@
 // round, and the arguments of a tool call are a JSON object or marked.
 #include <unistd.h>
 #include "../native/llm.hpp"
+#include "../native/goal.hpp"
 #include <cstdio>
 using namespace mag;
 using namespace mag::llm;
@@ -140,6 +141,75 @@ int main() {
   const std::string other = short_error("Something broke:\\nline two\n<|channel>thought\\n<channel|>" + times("und so weiter ", 100));
   CHECK(other == "Something broke: line two");
   CHECK(short_error(times("ä", 400)).size() <= 244 && find_tag(short_error(times("x<channel|>", 9))) == std::string::npos);
+
+  // A raw Gemma tool call in the thoughts is one real call; the chat text stays clean.
+  {
+    const std::string raw = "<|tool_call>call:browser_click{n:28}<tool_call|>";
+    Clean c;
+    std::string text, thought;
+    c.feed(raw, text, thought);
+    c.flush(text, thought);
+    CHECK(text.empty() && thought.empty());
+    const goal::Rescue got = goal::rescue(raw);
+    CHECK(got.markup && got.calls.size() == 1 && got.calls[0].name == "browser_click");
+    CHECK(jnum(jparse(got.calls[0].arguments), "n") == 28);
+    const goal::Rescue quoted = goal::rescue("<|tool_call>call:browser_type{\"text\":\"2s\",\"n\":1}<tool_call|>");
+    CHECK(quoted.calls.size() == 1 && jstr(jparse(quoted.calls[0].arguments), "text") == "2s");
+    const goal::Rescue two = goal::rescue("<|tool_call>call:browser_click{n:1}<tool_call|><|tool_call>call:browser_click{n:2}<tool_call|>");
+    CHECK(two.calls.size() == 2);
+    const goal::Rescue cut = goal::rescue("<|tool_call>call:browser_click{n:28");
+    CHECK(cut.markup && cut.calls.empty());
+  }
+  // Status questions are not a new task; a shop request and a correction are.
+  {
+    std::vector<std::pair<std::string, std::string>> bots = {{"lena", "Lena"}, {"noah", "Noah"}};
+    CHECK(goal::classify("Done?", bots).kind == goal::Kind::Status);
+    CHECK(goal::classify("Und?", bots).kind == goal::Kind::Status);
+    CHECK(goal::classify("Hallo", bots).kind == goal::Kind::Status);
+    CHECK(goal::classify("@Lena Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de 18650", bots).kind == goal::Kind::Task);
+    CHECK(goal::classify("Nicht 2 Stueck sondern 2s", bots).kind == goal::Kind::Correction);
+    CHECK(goal::classify("Noah du nicht", bots).hush.size() == 1 && goal::classify("Noah du nicht", bots).hush[0] == "noah");
+    CHECK(goal::needs_items("Schrumpfschlauch auf Amazon.de"));
+  }
+  // Compact keeps the goal, the correction and the latest page, and drops an older page dump.
+  {
+    Val msgs = Val::array();
+    Val sys = Val::object();
+    sys["role"] = "system";
+    sys["content"] = "system";
+    msgs.push(sys);
+    Val user = Val::object();
+    user["role"] = "user";
+    user["content"] = "Chris: @Lena Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de";
+    msgs.push(user);
+    auto dump = [](const std::string &marker) {
+      Val a = Val::object(), t = Val::object();
+      a["role"] = "assistant";
+      a["content"] = "";
+      a["tool_calls"] = Val::array();
+      t["role"] = "tool";
+      t["content"] = "Seite-Version: 1\nURL: https://www.amazon.de/s?k=schlauch\nElemente\n" + marker + std::string(3000, 'x');
+      return std::pair<Val, Val>{a, t};
+    };
+    for (const char *m : {"OLDDUMPzzzz", "MIDPAGE", "LASTPAGEZZ"}) {
+      auto p = dump(m);
+      msgs.push(p.first);
+      msgs.push(p.second);
+    }
+    Val fix = Val::object();
+    fix["role"] = "user";
+    fix["content"] = "Nicht 2 Stueck sondern 2s";
+    msgs.push(fix);
+    Val goal = Val::object();
+    goal::begin(goal, "lena", "Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de");
+    goal::correct(goal, "Nicht 2 Stueck sondern 2s");
+    CHECK(goal::shrink(msgs, goal, 400) > 0);
+    const std::string flat = mj::dump(msgs);
+    CHECK(flat.find("Schrumpfschlauch") != std::string::npos);
+    CHECK(flat.find("Nicht 2 Stueck sondern 2s") != std::string::npos);
+    CHECK(flat.find("LASTPAGEZZ") != std::string::npos);
+    CHECK(flat.find("OLDDUMPzzzz") == std::string::npos);
+  }
 
   if (fails) return 1;
   std::printf("model text ok\n");

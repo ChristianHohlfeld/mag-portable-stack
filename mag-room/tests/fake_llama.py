@@ -131,9 +131,10 @@ class FakeLlama:
                             emit({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": index, "function": {"arguments": call["arguments"][at:at + 40]}}]}}]})
                             fake.pieces += 1
                     calls = calls + raw
+                    n_prompt = int(answer.get("prompt_tokens", 105)) if isinstance(answer, dict) else 105
                     emit({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}],
-                          "timings": {"prompt_n": 5, "cache_n": 100, "predicted_n": len(pieces), "predicted_per_second": 20.0}})
-                    emit({"choices": [], "usage": {"prompt_tokens": 105, "completion_tokens": len(pieces)}})
+                          "timings": {"prompt_n": n_prompt, "cache_n": 0, "predicted_n": len(pieces), "predicted_per_second": 20.0}})
+                    emit({"choices": [], "usage": {"prompt_tokens": n_prompt, "completion_tokens": len(pieces)}})
                     emit("[DONE]")
                     self.wfile.write(b"0\r\n\r\n")
                     self.close_connection = True

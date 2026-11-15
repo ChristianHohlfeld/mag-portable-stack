@@ -214,11 +214,16 @@ page (fields of the page by their names, a provider's frame by the field
 the bot named and Tab). Cards are sealed in `STATE/pay/cards.enc`
 (AES-256-GCM, key `STATE/pay/vault.key`, 0600); the security code is never
 stored; the page and the bots see brand and last four digits only.
-The room drives a bot to its goal: one bot carries out a request (the first
-to act on it; the other's acting tools are refused with who does it), and a
-bot that worked with tools and stops after a failed step, without a word or
-announcing what it will do is sent on by a room note, three times a turn at
-most; a card that ended without a yes is a real blocker and ends the work.
+The room drives a browser task as a goal kept outside the prompt log
+(`STATE/goals/<bot>.json`): the addressed bot is the lead as soon as the
+task is given, and while it is open the other bot gets no automatic turn,
+no acting tool and no consent nudge. An explicit new task to that other bot
+still runs; "Noah du nicht" stops only him. The goal stays across a restart
+and across "Done?" / "Und?" / "Hallo"; a correction updates its text; Trash
+and Stop end it. It ends only with `goal_finish` or `goal_blocked`. A stop
+without a tool call is another step, not a result. A card that ended
+without a yes is a real blocker. Without a browser goal, a bot that only
+announces the next step is still sent on, three times a turn at most.
 The bots read the whole chat: text files inline, 3D orders and their
 results, images and documents. A document is read for them once: the text of
 a PDF (OCR on the first pages of a scan), a Word, OpenDocument or PowerPoint
@@ -431,7 +436,9 @@ Code in an answer longer than 12 lines is folded like a step (its first lines
 as a preview, Kopieren in its head).
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct
-progress and [[MAG:WEITER]]; otherwise remain idle.
+progress and [[MAG:WEITER]]; otherwise remain idle. An open browser goal does
+not need that marker: the next human message continues it, and inside the
+turn a missing tool call is another step.
 Never fake tool results or treat a site access restriction as a cookie issue
 without supporting evidence. After identical errors, diagnose rather than
 retry blindly. Keep the existing per-agent KVM and browser ownership; do not

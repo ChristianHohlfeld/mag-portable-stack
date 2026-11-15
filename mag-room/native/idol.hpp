@@ -343,6 +343,11 @@ public:
     for (const char *key : {"x", "z"}) out[key] = within(jnum(*s, key), -30, 30);
     out["tall"] = within(jnum(*s, "tall"), 0.02, 10);
     out["lift"] = within(jnum(*s, "lift"), 0, 5);
+    // The photo is the first frame of a video of the chat (its stored name): the scene plays what it shows.
+    const std::string video = jstr(*s, "video");
+    if (!video.empty() && video.size() <= 200 && video[0] != '.' && video.find_first_not_of(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == std::string::npos && video.find("..") == std::string::npos)
+      out["video"] = video;
     if (const Val *r = s->find("room"); r && r->isObj()) {
       Val room = Val::object();
       room["left"] = within(jnum(*r, "left"), -30, 0);

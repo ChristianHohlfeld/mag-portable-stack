@@ -243,9 +243,11 @@
   }
   // The sheet: tap an object and see what was understood, or have every
   // object found and take those that are wanted, each as a model of its own.
-  function choose(photo, scene = false) {
+  // `video`: the photo is the first frame of this video of the chat (its file): the scene's
+  // figures then do what the people in the video do.
+  function choose(photo, scene = false, video = '') {
     const base = (photo.att.name || 'foto').replace(/\.[a-z0-9]+$/i, '');
-    MAG.sheet(scene ? 'Ganze Szene' : 'Objekt wählen', async (content, _, close) => {
+    MAG.sheet(video ? 'Szene aus dem Video' : scene ? 'Ganze Szene' : 'Objekt wählen', async (content, _, close) => {
       const view = el('div', { class: 'choose' }), img = el('img', { src: photo.url, alt: '' }), over = el('div', { class: 'cut' });
       const hint = el('p', { class: 'hint', text: 'Tippe auf das Objekt, aus dem das Modell werden soll, oder nenne es.' });
       const bar = el('div', { class: 'row' }), list = el('div', { class: 'objects' });
@@ -312,7 +314,8 @@
           const b = el('button', { class: 'object on', onclick: () => { o.on = !o.on; b.classList.toggle('on', o.on); paint(); } }, el('img', { src: o.canvas.toDataURL(), alt: '' }));
           return b;
         }));
-        say(room ? 'Aus jedem markierten Objekt wird ein Modell, und alle zusammen werden der Raum aus dem Foto: jedes dort, wo es stand, einzeln beweglich. Tippe ab, was nicht dazugehört.'
+        say(room && video ? 'Aus jedem markierten Objekt wird ein Modell, und alle zusammen werden die Szene des Videos: jedes dort, wo es am Anfang stand, und wer im Video auf zwei Beinen steht, bewegt sich wie dort. Tippe ab, was nicht dazugehört.'
+          : room ? 'Aus jedem markierten Objekt wird ein Modell, und alle zusammen werden der Raum aus dem Foto: jedes dort, wo es stand, einzeln beweglich. Tippe ab, was nicht dazugehört.'
           : 'Aus jedem markierten Objekt wird ein eigenes Modell. Tippe ab, was nicht gebraucht wird.');
         paint();
       }
@@ -334,7 +337,7 @@
           for (const o of wanted) {
             const cut = await uploadCut(o.canvas, base + '-objekt-' + (++n) + '.png');
             const order = { text: '', attachments: [cut.att.file], mode: '3d', quality, client_id: crypto.randomUUID?.() || String(Math.random()) };
-            if (room && o.place) order.scene = Object.assign({ group, index: n - 1, count: wanted.length, room }, o.place);
+            if (room && o.place) order.scene = Object.assign({ group, index: n - 1, count: wanted.length, room }, o.place, video ? { video } : {});
             await MAG.api('POST', '/api/message', order);
           }
           staged = staged.filter((s) => s !== photo);
@@ -348,6 +351,25 @@
       if (scene) all(true);        // straight to the room's objects, each to be ticked off
     });
   }
+
+  // A video of the chat as a 3D scene: its first frame is the photo whose
+  // objects become the models, each where it stood; the room puts them
+  // together and its figures do what the people in the video do.
+  MAG.sceneFromVideo = async (a) => {
+    try {
+      const v = el('video', { muted: true, playsInline: true, preload: 'auto', src: '/api/file/' + encodeURIComponent(a.file) });
+      await new Promise((done, fail) => {
+        v.addEventListener('loadeddata', () => { v.currentTime = 0; }, { once: true });
+        v.addEventListener('seeked', done, { once: true });
+        v.addEventListener('error', () => fail(new Error('Das Video lässt sich nicht lesen')), { once: true });
+      });
+      const c = el('canvas', { width: v.videoWidth, height: v.videoHeight });
+      c.getContext('2d').drawImage(v, 0, 0);
+      const base = (a.name || 'video').replace(/\.[a-z0-9]+$/i, '');
+      const still = await uploadCut(c, base + '-anfang.png');
+      choose(still, true, a.file);
+    } catch (err) { MAG.toast(err.message, true); }
+  };
 
   async function send() {
     if (sendBtn.disabled) return;

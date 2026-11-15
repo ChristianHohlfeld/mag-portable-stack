@@ -31,6 +31,7 @@ import animal  # noqa: E402  (how an animal on four legs moves)
 import face  # noqa: E402  (a face that moves: jaw, mouth, lids, brows)
 import motion  # noqa: E402  (how a figure on two legs moves)
 import rig  # noqa: E402  (what a figure is, and its skeleton)
+import video  # noqa: E402  (what the people of a video do)
 
 FPS = 24
 MAX_ACTORS, MAX_SECONDS = 8, 30
@@ -614,6 +615,36 @@ class Actor:
         return angle
 
 
+def followed(spec, wanted, actors, library):
+    """The figures of a scene made from a video that are people in it: each
+    plays what that person does there (video.py), as a motion of its own, from
+    where and as it stood in the first frame. Returns their actions."""
+    path = spec.get("video")
+    if not path or library is None:
+        return []
+    try:
+        seen = video.load(path)
+    except (OSError, ValueError, KeyError) as exc:
+        print("MAG-NOTE the video's people were not read (%s)" % type(exc).__name__, flush=True)
+        return []
+    found = video.people(seen)
+    standing = {}
+    for entry in wanted:
+        actor, at = actors[entry["name"]], pair(entry.get("at"))
+        if at and at[0] > 0.1 and isinstance(actor.performer, motion.Performer):
+            standing[actor.name] = (at[0], -at[1] / at[0] * video.FILM)   # how far, and where across the first frame
+    pairs = video.match(found, [(name, across) for name, (_, across) in standing.items()])
+    out = []
+    for index, name in sorted(pairs.items()):
+        clip, heading, _ = video.clip_of(seen, index, standing[name][0], "video-%d" % index)
+        library.clips[clip.name] = clip
+        library.labels[clip.name] = "video"
+        actors[name].notes.append("bewegt sich wie im Video")
+        out.append({"actor": name, "do": "video", "clip": clip.name, "heading": heading, "start": 0.0})
+    print("MAG-NOTE video: %d people, %d figures follow them" % (len(found), len(out)), flush=True)
+    return out
+
+
 def stage(actor, library, fps, seed):
     """Somebody on two legs moves as people do (motion.py), an animal as
     animals do (animal.py): from now on the figure is somewhere and does
@@ -804,7 +835,21 @@ def perform(actor, action, actors, fps, start):
         actor.placed = True
 
     beast = isinstance(p, animal.Animal)
-    if kind in ("walk_to", "run_to", "sneak_to", "hop_to"):
+    if kind == "video" and not beast:
+        # What the person in the video does, as it was seen, from where and as it stood then.
+        name = action.get("clip")
+        if name not in p.lib or not str(name).startswith("video-"):
+            fail("Diese Bewegung aus dem Video gibt es hier nicht.")
+        clip = p.lib[name]
+        if not p.frames:
+            p.heading = float(action["heading"]) if isinstance(action.get("heading"), (int, float)) else p.heading
+            at = motion.turn2(p.heading, p.body.mid[:2])
+            p.xy = np.array([actor.pos.x + at[0], actor.pos.y + at[1]])
+        p.change(name, at=0.0, span=0.15)
+        for _ in range(max(1, int(round(clip.seconds * fps)))):
+            p.tick()
+        end = len(p.frames)
+    elif kind in ("walk_to", "run_to", "sneak_to", "hop_to"):
         goal, room = target_point()
         if (goal - actor.pos).length < 1e-6:
             fail(actor.name + " steht schon am Ziel.")
@@ -2327,10 +2372,12 @@ def build(spec_path, out):
         stage(actor, library, fps, seed)
     for actor in actors.values():
         actor.key(0)
+    # A scene of a video: who stands on two legs in it does what the person there does, from the start.
+    actions = followed(spec, wanted, actors, library) + list(spec.get("actions") or [])
     # The actions are a story: one after the other in the order given, unless
     # an action says that it starts together with the one before it (or when).
     last, clock, began, spans = 0, 0.3, 0.3, []
-    for action in spec.get("actions") or []:
+    for action in actions:
         actor = find(actors, action.get("actor"))
         if not actor:
             fail("Aktion für unbekannten Darsteller: " + str(action.get("actor")) + ". Darsteller sind: " + ", ".join(actors))
@@ -2538,10 +2585,13 @@ def main():
     elif len(args) == 3 and args[0] == "build":
         bpy.ops.wm.read_factory_settings(use_empty=True)
         build(args[1], args[2])
+    elif len(args) == 3 and args[0] == "track":
+        people = video.track(args[1], args[2])
+        print("MAG-TRACK %d" % people, flush=True)
     elif len(args) == 2 and args[0] == "render":
         render(args[1])
     else:
-        fail("usage: scene.py -- parts model.glb out.json | build spec.json outdir | render outdir")
+        fail("usage: scene.py -- parts model.glb out.json | build spec.json outdir | track video out.npz | render outdir")
 
 
 try:

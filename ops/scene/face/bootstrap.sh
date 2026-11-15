@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# MediaPipe's face landmarker for the faces of the scenes (ops/scene/face.py),
+# MediaPipe's face landmarker for the faces of the scenes (ops/scene/face.py)
+# and its pose landmarker for the people of a video (ops/scene/video.py),
 # fetched once: the wheels and the model named in face.lock (SHA256 and URL
 # each; MediaPipe and its model are Apache-2.0), checked, and installed for
 # the pinned Blender's Python (3.11) into
-#   ~/.cache/mag-stack/face/site and ~/.cache/mag-stack/face/face_landmarker.task
+#   ~/.cache/mag-stack/face/site and ~/.cache/mag-stack/face/*_landmarker*.task
 # Run as the user that owns that path (chris on MAG); ops/scene/install.sh
 # copies a verified set to /opt/mag-scene/face. Without it a face is found
 # from the shape of the head alone. Idempotent; one writer (a lock).
@@ -39,5 +40,6 @@ python3 -m pip install --quiet --no-deps --no-index --target "$fresh" --python-v
 rm -rf -- "$CACHE/site"
 mv "$fresh" "$CACHE/site"
 cp -f "$CACHE/files/face_landmarker.task" "$CACHE/face_landmarker.task"
+cp -f "$CACHE/files/pose_landmarker_heavy.task" "$CACHE/pose_landmarker_heavy.task"
 printf '%s\n' "$want" > "$CACHE/.mag-verified"
 echo "face: installed in $CACHE"

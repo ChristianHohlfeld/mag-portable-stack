@@ -34,7 +34,7 @@ face_sum=$(sha256sum "$SOURCE/ops/scene/face/face.lock" | cut -d' ' -f1)
 if [[ "$(cat /opt/mag-scene/face/.mag-verified 2>/dev/null)" != "$face_sum" && "$(cat "$FACE/.mag-verified" 2>/dev/null)" == "$face_sum" ]]; then
   rm -rf -- /opt/mag-scene/.face.next
   install -d -m 0755 /opt/mag-scene/.face.next
-  cp -a --no-preserve=ownership "$FACE/site" "$FACE/face_landmarker.task" "$FACE/.mag-verified" /opt/mag-scene/.face.next/
+  cp -a --no-preserve=ownership "$FACE/site" "$FACE/face_landmarker.task" "$FACE/pose_landmarker_heavy.task" "$FACE/.mag-verified" /opt/mag-scene/.face.next/
   chown -R root:root /opt/mag-scene/.face.next
   chmod -R go-w,a+rX /opt/mag-scene/.face.next
   rm -rf -- /opt/mag-scene/face

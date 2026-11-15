@@ -82,10 +82,18 @@ public:
     }
     const Val told = recipe_of(spec);
     spec["film"] = false; // its film is rendered when Chris asks for it
+    // A scene of a video: the worker follows its people first (minutes on the CPU).
+    const std::string video = jstr(spec, "video");
+    if (!video.empty()) {
+      struct stat st {};
+      const std::string path = room_.file_path(video);
+      if (path.empty() || stat(path.c_str(), &st) != 0)
+        spec.obj->erase(std::remove_if(spec.obj->begin(), spec.obj->end(), [](const auto &kv) { return kv.first == "video"; }), spec.obj->end());
+    }
     http::ClientOptions opt = options("POST");
     opt.body = mj::dump(spec);
     opt.headers.push_back({"Content-Type", "application/json"});
-    opt.timeout_s = 240;
+    opt.timeout_s = spec.find("video") ? 1500 : 240;
     opt.cancel = cancel;
     const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs", opt);
     const Val job = jparse(res.body);
@@ -267,7 +275,7 @@ private:
   // A scene as its bot described it, without what the room added for the worker.
   static Val recipe_of(const Val &spec) {
     Val out = Val::object();
-    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds", "room", "camera"})
+    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds", "room", "camera", "video"})
       if (const Val *v = spec.find(key); v && v->type != Val::NUL) out[key] = *v;
     if (Val *actors = out.find("actors"); actors && actors->isArr())
       for (auto &actor : *actors->arr)

@@ -831,6 +831,8 @@
     const shareable = files.length || (words && !m.model3d);
     if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
       shareable ? { icon: 'share', label: 'Teilen', run: () => MAG.share(files, files.length ? '' : m.text) } : null,
+      // A video goes back to a 3D scene whose figures do what the video shows.
+      files.find((a) => a.kind === 'video') && MAG.sceneFromVideo ? { icon: 'cube', label: '3D-Szene aus dem Video', run: () => MAG.sceneFromVideo(files.find((a) => a.kind === 'video')) } : null,
       { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
     ]); }));
     return row.children.length ? row : null;

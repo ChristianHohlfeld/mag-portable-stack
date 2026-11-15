@@ -735,6 +735,7 @@ private:
     if (group.empty()) return;
     std::lock_guard<std::mutex> lk(assemble_mu_);
     Val actors = Val::array(), walls;
+    std::string video; // the photo was the first frame of this video: its figures do what it shows
     int unnamed = 0;
     for (auto &m : room_.all()) {
       const Val *m3 = m.find("model3d");
@@ -766,6 +767,7 @@ private:
       if (const Val *seen = m3->find("seen_from")) actor["seen_from"] = *seen;
       actors.push(actor);
       if (const Val *r = part->find("room")) walls = *r;
+      if (video.empty()) video = jstr(*part, "video");
     }
     if (actors.asArr().empty()) return;
     // Its figures are called what they are: a cut-out nobody has described
@@ -790,12 +792,13 @@ private:
     }
     naming_.erase(group);
     Val spec = Val::object();
-    spec["title"] = "Raum aus dem Foto";
+    spec["title"] = video.empty() ? "Raum aus dem Foto" : "Szene aus dem Video";
     spec["actors"] = actors;
     spec["light"] = "studio";
     spec["seconds"] = 4;
     spec["group"] = group;
     if (walls.isObj()) spec["room"] = walls;
+    if (!video.empty()) spec["video"] = video;
     bool ok = false;
     const std::string said = scenes_.start(spec, "idol", ok);
     if (ok) return;

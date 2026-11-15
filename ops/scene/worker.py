@@ -14,6 +14,7 @@ CPU only: the MI50 belongs to photo-to-3D.
 """
 import base64
 import binascii
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -408,6 +409,35 @@ def run_blender(args, folder, log_name, timeout=BUILD_TIMEOUT):
     return text
 
 
+TRACK_TIMEOUT = 1200
+tracking = threading.Lock()   # one video is followed at a time
+
+
+def track_of(stored):
+    """What the people of a video of the chat do (video.py: MediaPipe's pose
+    landmarker on the CPU), followed once per video: the path of its npz."""
+    source = room_file(stored)
+    if source.suffix.lower() not in (".mp4", ".webm", ".mov", ".mkv"):
+        raise Refused("Das ist kein Video.")
+    cache = ROOT.parent / "tracks"
+    cache.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with open(source, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    out = cache / (digest.hexdigest()[:32] + ".npz")
+    with tracking:
+        if not out.is_file():
+            scratch = cache / ("tmp-" + uuid4().hex)
+            scratch.mkdir()
+            try:
+                run_blender(["track", str(source), str(scratch / "track.npz")], scratch, "track.log", timeout=TRACK_TIMEOUT)
+                os.replace(scratch / "track.npz", out)
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
+    return out
+
+
 def parts_of(stored):
     """The figures of a model, found once per file."""
     source = room_file(stored)
@@ -486,6 +516,8 @@ def create(spec):
              "actions": [a for a in (spec.get("actions") or []) if isinstance(a, dict)][:40],
              "ground": spec.get("ground"), "light": spec.get("light"), "seconds": spec.get("seconds"),
              "room": spec.get("room") if isinstance(spec.get("room"), dict) else None, "camera": spec.get("camera")}
+    if spec.get("video"):              # its figures do what the people in this video do
+        clean["video"] = str(track_of(spec["video"]))
     at_once = spec.get("film") is not False
     with lock:
         if at_once and pending.qsize() >= MAX_PENDING:

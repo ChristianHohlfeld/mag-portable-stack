@@ -253,6 +253,16 @@ one scene, each as tall as it was, where it stood, turned as the photo saw
 it, with the floor and the walls around them. Each stays a figure of its
 own there, called what a seeing bot said it is, so the bots can move it like
 any figure of a scene.
+A video of the chat goes back to a scene ("3D-Szene aus dem Video" in its ⋯
+menu): its first frame is the photo of "Ganze Szene" (the same sheet, the
+same models, each where it stood), and when the room puts them together the
+scene worker follows the people of the video once (`ops/scene/video.py`:
+MediaPipe's pose landmarker, Apache-2.0, pinned in `ops/scene/face`, on the
+CPU in Blender's Python, cached per video): each figure on two legs that
+stood where a person stood plays what that person does as a motion of its
+own (seen from the body like the recorded motions, its way from where and
+how large it is in the picture), from the first frame on. Animals and things
+stand where they stood.
 Pictures are painted from words on the MI50 (FLUX.2 klein 4B, Apache-2.0):
 "Bild erzeugen" in the plus menu or a bot's `image_generate`; a job of Idol's
 one queue, never beside a 3D job, and the result is an ordinary image.

@@ -206,6 +206,17 @@
         if (m.state === 'ready') {
           add('Kontext', b.ctx_tokens ? b.ctx_tokens.toLocaleString('de-DE') + ' von ' + b.ctx_budget.toLocaleString('de-DE') + ' Tokens' : 'leer');
           if (b.tps) add('Tempo', b.tps.toFixed(1).replace('.', ',') + ' Tokens/s');
+          if (b.cache_tokens > 0) add('KV-Cache', b.cache_tokens.toLocaleString('de-DE') + ' wiederverwendete Tokens');
+          if (b.prompt_ms > 0) add('Prompt-Lesen', (b.prompt_ms / 1000).toFixed(1).replace('.', ',') + ' s');
+        }
+        const goal = b.goal;
+        if (goal?.state) {
+          const state = { active: 'läuft', done: 'abgeschlossen', blocked: 'blockiert',
+                          ended: 'beendet' }[goal.state] || goal.state;
+          add('Browser-Auftrag', state + (goal.progress === 'stalled' ? ' · hängt, noch offen' : ''));
+          if (goal.text) add('Ziel', goal.text);
+          if (goal.url && goal.state === 'active') add('Letzte Seite', goal.url);
+          if (goal.error) add('Auftrags-Hinweis', goal.error);
         }
         if (m.numa !== undefined) add('Rechner', 'NUMA ' + m.numa + ' · nur CPU');
         add('VM', b.vm_note === 'creating' ? 'wird erstellt …' : b.vm || 'keine (nur Chat)');

@@ -278,7 +278,10 @@ secret ever reaches it, `ops/security/secrets-scan.sh` finds where and
 - Start any ad hoc heavy command with `taskset -c 28-55`.
 - The MI50 belongs to `mag-idol` alone. Its power cap stays at 78 W:
   `ops/idol/power-cap.sh` only lowers it. Nothing may raise it, and no bot
-  model and no scene uses the card.
+  model and no scene uses the card. Heat is handled by the clocks
+  (`ops/idol/gpu-clock.sh`): sclk levels 0-2 from 82 °C, only the lowest
+  from 88 °C, `auto` again after a minute at or under 78 °C. That path
+  never writes the power cap. The stage is held only from 90 °C.
 - Anything that would use the card takes `/var/lib/mag-idol/gpu.lock`
   first.
 

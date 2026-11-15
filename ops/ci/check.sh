@@ -41,8 +41,15 @@ if command -v perl >/dev/null; then
            for my $unit ("mag-model\@noah.service", "mag-120.service", "mag-idol.service", "mag-scene.service", "mag-stt.service") {
              grep { $unit =~ $_ } @{$nrconf{blacklist_rc}} or die "needrestart rule misses $unit\n" }'
 fi
-# The MI50 power cap may only ever be lowered.
+# The MI50 power cap may only ever be lowered, and the clock helper never
+# opens that file (or any other clock file than the sclk mask).
 grep -Fq 'if (( now > LIMIT )); then' ops/idol/power-cap.sh
+if grep -nE 'power1_cap|pp_dpm_mclk|pp_od_clk' ops/idol/gpu-clock.sh ops/idol/worker.py; then
+  echo 'clock throttle must not touch the power cap' >&2
+  exit 1
+fi
+grep -Fq 'printf '"'"'auto\n'"'"' > "$level"' ops/idol/gpu-clock.sh
+grep -Fq 'printf '"'"'0 1 2\n'"'"' > "$sclk"' ops/idol/gpu-clock.sh
 # The page loads nothing from outside the release, and every script parses.
 # The one exception is the reading-aloud worker: it runs in the client alone
 # and fetches its runtime and voices from jsDelivr and Hugging Face, every

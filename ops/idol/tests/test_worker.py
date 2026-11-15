@@ -80,12 +80,23 @@ def main():
     stage.write_text(STAGE)
     stage.chmod(0o755)
     port = free_port()
+    card = tmp / "card"
+    (card / "hwmon" / "hwmon0").mkdir(parents=True)
+    (card / "power_dpm_force_performance_level").write_text("manual\n")
+    (card / "pp_dpm_sclk").write_text("0\n")
+    cap = card / "hwmon" / "hwmon0" / "power1_cap"
+    cap.write_text("78000000\n")
+    cap_mtime = cap.stat().st_mtime_ns
+    (tmp / "temp").write_text("70")
     env = dict(os.environ, MAG_IDOL_JOB_ROOT=str(root), MAG_IDOL_PORT=str(port), MAG_IDOL_PYTHON=str(stage),
                MAG_IDOL_CPUS="", FAKE_DELAY="0.1", MAG_IDOL_STALL_S="2",
                MAG_TRIPOSG_PYTHON=str(tmp / "no-shape-python"),      # the whole shape stage is not installed here
                MAG_GPU_TEMP_FILE=str(tmp / "temp"),                 # the card, as hot as the test says
-               MAG_GPU_HOLD_S="1", MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
-    worker = [None]
+               MAG_GPU_SYSFS=str(card),                             # its clock files, and not the real card
+               MAG_GPU_HOLD_S="1", MAG_GPU_PLATEAU_S="2", MAG_GPU_PLATEAU_WINDOW_S="1",
+               MAG_GPU_HOLD_MAX_S="8", MAG_GPU_THROTTLE_RESTORE_S="2",
+               MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
+    worker, wlog = [None], [None]
 
     def call(method, path, body=None):
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=body, method=method,
@@ -98,7 +109,11 @@ def main():
                 return err.code, json.loads(err.read() or b"{}")
 
     def start():
-        worker[0] = subprocess.Popen([sys.executable, "-I", str(WORKER)], env=env)
+        if wlog[0] is not None:
+            wlog[0].close()
+        wlog[0] = open(tmp / "worker.out", "a")
+        worker[0] = subprocess.Popen([sys.executable, "-I", str(WORKER)], env=env,
+                                     stdout=wlog[0], stderr=subprocess.STDOUT)
         end = time.time() + 10
         while time.time() < end:
             try:
@@ -107,6 +122,26 @@ def main():
             except OSError:
                 time.sleep(0.05)
         raise AssertionError("worker did not start")
+
+    def clocks():
+        return ((card / "power_dpm_force_performance_level").read_text().strip(),
+                (card / "pp_dpm_sclk").read_text().strip(),
+                cap.read_text())
+
+    def wait_clocks(test, what, seconds=10):
+        end = time.time() + seconds
+        while time.time() < end:
+            got = clocks()
+            if test(got):
+                return got
+            time.sleep(0.05)
+        raise AssertionError("timeout: %s; clocks %s" % (what, clocks()))
+
+    def said(job):
+        if wlog[0]:
+            wlog[0].flush()
+        text = (tmp / "worker.out").read_text(errors="replace") if (tmp / "worker.out").exists() else ""
+        return [ln for ln in text.splitlines() if job[:8] in ln]
 
     def stop():
         worker[0].terminate()   # what systemd does with KillMode=process: the worker only
@@ -137,7 +172,20 @@ def main():
         return job["id"]
 
     try:
+        helper = WORKER.parent / "gpu-clock.sh"
+        def run_clock(mode):
+            return subprocess.run([str(helper), mode], env=dict(os.environ, MAG_GPU_SYSFS=str(card)),
+                                  capture_output=True, text=True)
+        assert run_clock("low").returncode == 0 and clocks()[:2] == ("manual", "0 1 2"), clocks()
+        assert run_clock("lowest").returncode == 0 and clocks()[1] == "0", clocks()
+        assert run_clock("auto").returncode == 0 and clocks()[0] == "auto", clocks()
+        assert run_clock("high").returncode != 0 and clocks()[0] == "auto"
+        assert cap.read_text() == "78000000\n" and cap.stat().st_mtime_ns == cap_mtime
+        # A worker that died while throttled: the next one puts the clocks back.
+        (card / "power_dpm_force_performance_level").write_text("manual\n")
+        (card / "pp_dpm_sclk").write_text("0\n")
         start()
+        assert clocks()[0] == "auto" and cap.read_text() == "78000000\n" and cap.stat().st_mtime_ns == cap_mtime
         # A picture from words is a job of the same queue, with its own result.
         code, image = call("POST", "/api/idol/images", json.dumps({"prompt": "ein Fuchs im Schnee", "width": 768, "height": 512}).encode())
         assert code == 202 and image["kind"] == "image", image
@@ -158,18 +206,93 @@ def main():
         assert call("POST", "/api/idol/select?x=2&y=0", PNG)[0] == 400 and call("POST", "/api/idol/select", b"not a picture")[0] == 415
         assert [p for p in root.iterdir() if p.name != image["id"]] == [], list(root.iterdir())
         assert call("GET", "/api/idol/health")[1]["resumable"] is True
+        # Clocks first. 83 °C keeps the three lowest sclk levels, 89 °C only the
+        # lowest, and a job is not held for that. The way back is one step, then
+        # auto after the card has stayed cool. The power cap file is never written.
+        (tmp / "temp").write_text("83")
+        assert wait_clocks(lambda c: c[:2] == ("manual", "0 1 2"), "low sclk levels")[2] == "78000000\n"
+        warm = order()
+        s = wait(warm, lambda s: s["state"] == "done", "done while the clocks are low")
+        assert s.get("cooling") is not True and clocks()[:2] == ("manual", "0 1 2"), (s, clocks())
+        (tmp / "temp").write_text("89")
+        assert wait_clocks(lambda c: c[:2] == ("manual", "0"), "lowest sclk level")[2] == "78000000\n"
+        (tmp / "temp").write_text("84")
+        assert wait_clocks(lambda c: c[:2] == ("manual", "0 1 2"), "one step back from the lowest level")
+        (tmp / "temp").write_text("76")
+        time.sleep(0.4)                                 # the cool minute (here, 2 s) has not elapsed
+        assert clocks()[0] == "manual", clocks()
+        assert wait_clocks(lambda c: c[0] == "auto", "auto after it stayed cool")[2] == "78000000\n"
+        (tmp / "temp").write_text("89")
+        wait_clocks(lambda c: c[1] == "0", "lowest again, to prove a stop restores auto")
+        stop()
+        assert clocks()[0] == "auto" and cap.stat().st_mtime_ns == cap_mtime, clocks()
+        (tmp / "temp").write_text("70")
+        start()
+        assert clocks()[0] == "auto", clocks()
         # 0. The card gets too hot while a job samples: its stage is held (no
         #    standstill, no error, nothing parked) and goes on once it is cool.
         (tmp / "temp").write_text("95")
         h = order()
         s = wait(h, lambda s: s.get("cooling") is True, "held for the heat")
         assert s["state"] == "running" and s["stage"] == "Grafikkarte kühlt ab", s
+        assert clocks()[:2] == ("manual", "0"), clocks()    # 95 °C is also the lowest sclk level
         time.sleep(4)                                  # longer than the standstill limit of 2 s
         s = status(h)
         assert s["state"] == "running" and s["cooling"] is True and s.get("resumed", 0) == 0, s
         (tmp / "temp").write_text("70")
         s = wait(h, lambda s: s["state"] == "done", "done after cooling down")
         assert s["cooling"] is False and (root / h / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
+        assert wait_clocks(lambda c: c[0] == "auto", "auto after the hold")[2] == "78000000\n"
+        # 0b. The card stops falling while still warm: the hold is not what is
+        #     cooling it, so the stage goes on. 81 °C is under the danger line.
+        (tmp / "temp").write_text("95")
+        p = order()
+        wait(p, lambda s: s.get("cooling") is True, "held before the plateau")
+        (tmp / "temp").write_text("81")
+        s = wait(p, lambda s: s["state"] == "done", "done after a flat plateau")
+        assert s.get("cooling") is False and (root / p / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
+        assert any("hold ineffective" in ln for ln in said(p)), said(p)
+        # 0c. At 86 °C the plateau must not let go. That is still the danger zone.
+        (tmp / "temp").write_text("95")
+        z = order()
+        wait(z, lambda s: s.get("cooling") is True, "held at 86 must not be a plateau")
+        (tmp / "temp").write_text("86")
+        time.sleep(4)                                  # long enough for the plateau, short of the hold limit
+        s = status(z)
+        assert s["state"] == "running" and s["cooling"] is True, s
+        assert not any("goes on" in ln for ln in said(z)), said(z)
+        (tmp / "temp").write_text("70")
+        s = wait(z, lambda s: s["state"] == "done", "done after it really cooled")
+        assert s.get("cooling") is False, s
+        # 0d. A hold has a limit. Under 90 °C it goes on after MAG_GPU_HOLD_MAX_S,
+        #     and the stall watchdog applies again: the stage then finishes.
+        (tmp / "temp").write_text("95")
+        m = order()
+        wait(m, lambda s: s.get("cooling") is True, "held for the limit")
+        (tmp / "temp").write_text("86")
+        s = wait(m, lambda s: s.get("cooling") is False, "released by the hold limit", 30)
+        assert any("hold timed out" in ln for ln in said(m)), said(m)
+        assert not any("hold ineffective" in ln for ln in said(m)), said(m)
+        s = wait(m, lambda s: s["state"] == "done", "done after the hold timed out")
+        assert s.get("cooling") is False and (root / m / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
+        # 0e. A restart while a stage is held continues it and restores its stage.
+        (tmp / "temp").write_text("95")
+        r = order()
+        s = wait(r, lambda s: s.get("cooling") is True and s.get("stage_before"), "held across a restart")
+        before, pid = s["stage_before"], s["pid"]
+        assert s["stage"] == "Grafikkarte kühlt ab" and before, s
+        stop()
+        assert alive(pid) and clocks()[0] == "auto", clocks()
+        (tmp / "temp").write_text("70")
+        start()
+        s = status(r)
+        assert s["state"] == "running" and s["pid"] == pid and not s.get("cooling"), s
+        assert "stage_before" not in s and s["stage"] != "Grafikkarte kühlt ab", s
+        disk = json.loads((root / r / "status.json").read_text())
+        assert "cooling" not in disk and "stage_before" not in disk, disk
+        assert disk["stage"] != "Grafikkarte kühlt ab", disk
+        s = wait(r, lambda s: s["state"] == "done", "done after a restart cleared the hold")
+        assert (root / r / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
         # 1. The worker restarts while a job samples: the stage keeps running,
         #    the new worker follows it, nothing starts twice.
         a = order()
@@ -296,7 +419,12 @@ def main():
             time.sleep(0.05)
         s = status(job["id"])
         assert (s["state"], s["error"]) == ("error", "Das Foto ist unvollständig angekommen: unten fehlen etwa 40 % des Bildes."), s
+        assert cap.read_text() == "78000000\n" and cap.stat().st_mtime_ns == cap_mtime
         print("ok")
+    except Exception:
+        if (tmp / "worker.out").exists():
+            sys.stderr.write((tmp / "worker.out").read_text(errors="replace")[-6000:])
+        raise
     finally:
         if worker[0] and worker[0].poll() is None:
             worker[0].kill()

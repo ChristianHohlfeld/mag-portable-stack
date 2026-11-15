@@ -12,6 +12,11 @@ SupplementaryGroups=render video
 WorkingDirectory=/home/chris/idol-mi50
 # Root, lower-only: keeps the MI50 at or below its 78 W cap (never raises it).
 ExecStartPre=+/usr/local/lib/mag-idol/power-cap.sh
+# Root: clocks back to auto, and the two clock files become the service user's.
+# The worker throttles from there. It has NoNewPrivileges, so it cannot sudo,
+# and this does not make the power cap writable.
+ExecStartPre=+/usr/local/lib/mag-idol/gpu-clock.sh prepare
+ExecStop=+/usr/local/lib/mag-idol/gpu-clock.sh auto
 ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/idol/worker.py
 Environment=MAG_IDOL_JOB_ROOT=/var/lib/mag-idol/jobs
 Environment=MIOPEN_USER_DB_PATH=/var/lib/mag-idol/miopen

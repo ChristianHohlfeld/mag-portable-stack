@@ -97,6 +97,10 @@ mag_render /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf > /etc/tmpfile
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf
 install -d -o root -g root -m 0755 /usr/local/lib/mag-idol
 install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/power-cap.sh /usr/local/lib/mag-idol/power-cap.sh
+install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/gpu-clock.sh /usr/local/lib/mag-idol/gpu-clock.sh
+install -o root -g root -m 0644 /opt/mag-stack/current/ops/idol/99-mag-mi50-clock.rules /etc/udev/rules.d/99-mag-mi50-clock.rules
+udevadm control --reload-rules || true
+/usr/local/lib/mag-idol/gpu-clock.sh prepare || true
 # The GPU lease that paused Lena is gone (both bots are CPU-only), and the
 # MIOpen cache paths of the first hotfix drop-in are part of the unit file.
 rm -f /usr/local/lib/mag-idol/gpu-lease.sh /etc/sudoers.d/mag-idol
@@ -133,7 +137,7 @@ fi
 # follows it again, so a deploy never costs a photo-to-3D job. The one
 # exception is a job that a worker from before this design started: it dies
 # with that worker, so then the restart waits until the job is done.
-rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh,paint,h3gen}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
+rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh,paint,h3gen}.py /opt/mag-stack/current/ops/idol/gpu-clock.sh /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
 if [[ $(cat /run/mag-idol.rev 2>/dev/null) != "$rev" ]] || ! systemctl is-active --quiet mag-idol.service; then
   active() { grep -lE '"state": *"(running|queued)"' /var/lib/mag-idol/jobs/*/status.json >/dev/null 2>&1; }
   health=$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8793/api/idol/health 2>/dev/null || :)

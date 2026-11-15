@@ -15,9 +15,11 @@ processor for ten minutes), and then it is started again. A job that failed or w
 cancelled is taken up again when it is asked for (retry), at the first stage
 whose result is missing: sampling that is done is not done again.
 """
+import atexit
 import base64
 import json
 import os
+import sys
 from pathlib import Path
 import re
 import shutil
@@ -106,18 +108,43 @@ jobs = {}
 lock = threading.Lock()
 # The card is cooled passively: under a long stage at its 78 W its junction
 # climbed past 96 °C and the PCIe link to it failed, taking the whole host
-# down (2026-11-14, six times). So the stage that uses the card is held
-# (SIGSTOP of its process group, and of h3d for a video) when the junction or
-# its memory reaches HOT, and goes on (SIGCONT) when both are back at COOL.
-# The job is never parked or ended for it: it only takes longer, and a held
-# stage is no standstill. MAG_GPU_TEMP_FILE names a file to read instead of
-# the card's sensors (the tests).
+# down (2026-11-14, six times). The first answer is the card's own clocks
+# (manual, sclk levels 0-2 from THROTTLE_C, only the lowest from
+# THROTTLE_LOW_C, and auto again after RESTORE_S at or under RESTORE_C).
+# The power cap is a different file and is never written here. SIGSTOP of the
+# stage (and of h3d, for a video) is only the last resort, at HOT. SIGSTOP
+# does not drain work the card has already queued, so a hold that stops
+# cooling the card is given up rather than leaving the job stopped and the
+# stall watchdog off: after PLATEAU_S, while the card is under HOT - 5 and
+# has fallen less than 1 °C over the last PLATEAU_WINDOW_S, or after
+# HOLD_MAX_S while it is still under HOT. It is held again at HOT. The job
+# is never parked or ended for the heat: it only takes longer, and a held
+# stage is no standstill. Once the stage runs again the stall watchdog
+# applies as for any other stage. MAG_GPU_TEMP_FILE names a file to read
+# instead of the card's sensors, MAG_GPU_SYSFS one fake device (the tests).
 HOT = float(os.environ.get("MAG_GPU_HOT_C", "90"))
 COOL = float(os.environ.get("MAG_GPU_COOL_C", "80"))
 TEMP_FILE = os.environ.get("MAG_GPU_TEMP_FILE", "")
+SYSFS = os.environ.get("MAG_GPU_SYSFS", "")
+THROTTLE_C = float(os.environ.get("MAG_GPU_THROTTLE_C", "82"))
+THROTTLE_LOW_C = float(os.environ.get("MAG_GPU_THROTTLE_LOW_C", "88"))
+RESTORE_C = float(os.environ.get("MAG_GPU_THROTTLE_RESTORE_C", "78"))
+RESTORE_S = float(os.environ.get("MAG_GPU_THROTTLE_RESTORE_S", "60"))
+SCLK_LOW, SCLK_LOWEST = "0 1 2", "0"
+clock_mode = None        # None until this process has written the files; then auto, low or lowest
+clock_lock = threading.Lock()
+clocks_open = True       # cleared on the way out, so a last tick cannot throttle again
+cool_since = None        # when the card first stayed at or under RESTORE_C during this throttle
+clock_warned = None
 held = {}            # job id -> the pids that were stopped for it
 held_at = {}         # job id -> when it was held: a hold lasts HOLD_S at least, so the chat does not flicker
+held_hist = {}       # job id -> [(monotonic time, °C), ...] since this hold
+busy_high = {}       # job id -> how many recent reads found the card still busy
+busy_warned = set()  # job ids already warned for this hold
 HOLD_S = float(os.environ.get("MAG_GPU_HOLD_S", "8"))
+PLATEAU_S = float(os.environ.get("MAG_GPU_PLATEAU_S", "120"))
+PLATEAU_WINDOW_S = float(os.environ.get("MAG_GPU_PLATEAU_WINDOW_S", "60"))
+HOLD_MAX_S = float(os.environ.get("MAG_GPU_HOLD_MAX_S", "900"))
 class Line:
     """The MI50's one line of jobs (3D, pictures, videos). A job's place is
     its "order", kept in its status.json, so the line is the same after a
@@ -175,6 +202,107 @@ def card_temp():
     return hottest
 
 
+def mi50_devices():
+    """The MI50, found the same way as the temperature: PCI id 1002:66a1.
+    MAG_GPU_SYSFS is one fake device directory (the tests)."""
+    if SYSFS:
+        return [Path(SYSFS)]
+    found = []
+    for dev in Path("/sys/bus/pci/devices").glob("*"):
+        try:
+            if (dev / "vendor").read_text().strip() == "0x1002" and (dev / "device").read_text().strip() == "0x66a1":
+                found.append(dev)
+        except OSError:
+            continue
+    return found
+
+
+def gpu_busy_percent():
+    """How busy the MI50 is, 0-100, or None when the driver does not say.
+    amdgpu publishes gpu_busy_percent on the card. A held stage can leave the
+    card busy (work already queued), which this only reports."""
+    for dev in mi50_devices():
+        try:
+            return float((dev / "gpu_busy_percent").read_text().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def set_clocks(mode):
+    """manual and a low sclk mask, or auto. The power cap is not a file this
+    writes. The two clock files are owned by the service user (gpu-clock.sh
+    prepare); this process has no new privileges, so a write that is refused
+    is logged once and the hold at HOT remains the last resort."""
+    global clock_mode, clock_warned
+    if mode not in ("auto", "low", "lowest"):
+        return False
+    with clock_lock:
+        if not clocks_open and mode != "auto":
+            return False
+        if mode == clock_mode:
+            return True
+        devs = mi50_devices()
+        if not devs:
+            return False
+        try:
+            for dev in devs:
+                level = dev / "power_dpm_force_performance_level"
+                level.write_text("auto\n" if mode == "auto" else "manual\n")
+                if mode == "low":
+                    (dev / "pp_dpm_sclk").write_text(SCLK_LOW + "\n")
+                elif mode == "lowest":
+                    (dev / "pp_dpm_sclk").write_text(SCLK_LOWEST + "\n")
+        except OSError as exc:
+            if clock_warned != mode:
+                clock_warned = mode
+                print(f"clocks {mode}: {type(exc).__name__}", flush=True)
+            return False
+        clock_mode = mode
+        clock_warned = None
+        print(f"clocks {mode}", flush=True)
+        return True
+
+
+def govern_clocks(temp, now):
+    """Step the sclk ceiling with the temperature. One step at a time on the
+    way back: lowest, then the low levels, then auto after RESTORE_S at or
+    under RESTORE_C. A warmer reading cancels that wait."""
+    global cool_since
+    if temp is None or not clocks_open:
+        return
+    if temp >= THROTTLE_LOW_C:
+        cool_since = None
+        set_clocks("lowest")
+    elif temp >= THROTTLE_C:
+        cool_since = None
+        set_clocks("low")
+    elif clock_mode == "lowest":
+        cool_since = None
+        set_clocks("low")
+    elif clock_mode not in (None, "auto") and temp <= RESTORE_C:
+        if cool_since is None:
+            cool_since = now
+        elif now - cool_since >= RESTORE_S:
+            set_clocks("auto")
+            cool_since = None
+    else:
+        cool_since = None
+
+
+def restore_clocks():
+    """auto, and no further throttle. A stop, a crash's atexit, and the
+    start of the next worker all come through here or through set_clocks."""
+    global clocks_open
+    clocks_open = False
+    set_clocks("auto")
+
+
+def _on_stop(signum, _frame):
+    restore_clocks()
+    sys.exit(0)
+
+
 def h3d_pids():
     """mag-h3d's server: a video's work on the card is done in it."""
     found = []
@@ -188,14 +316,85 @@ def h3d_pids():
     return found
 
 
+def remember_temp(job_id, now, temp):
+    """One sample of this hold. Samples older than the plateau window go,
+    except the newest one at its start: that is what 'fell over the window'
+    is measured from."""
+    hist = held_hist.setdefault(job_id, [])
+    hist.append((now, temp))
+    cutoff = now - PLATEAU_WINDOW_S
+    keep = 0
+    for i, (ts, _) in enumerate(hist):
+        if ts <= cutoff:
+            keep = i
+    if keep:
+        del hist[:keep]
+
+
+def plateau_ready(job_id, temp, now):
+    """The hold is not cooling the card: long enough, flat, and under HOT - 5.
+    At or above that line the card is still in the danger zone and stays held."""
+    if temp is None or temp >= HOT - 5:
+        return False
+    if now - held_at.get(job_id, now) < PLATEAU_S:
+        return False
+    then = None
+    for ts, value in held_hist.get(job_id) or []:
+        if ts <= now - PLATEAU_WINDOW_S:
+            then = value
+    if then is None:
+        return False
+    return then - temp < 1.0
+
+
+def release_reason(job_id, item, temp, now):
+    """Why a held stage should run again, or None to keep holding.
+    A dead stage, or a card that is cool, is the ordinary end of a hold.
+    A flat temperature under HOT - 5 means SIGSTOP is not what is cooling
+    the card. A hold that has lasted HOLD_MAX_S while the card is under HOT
+    ends so the stall watchdog cannot stay off for good. At HOT it stays held."""
+    held_for = now - held_at.get(job_id, now)
+    if not stage_alive(item) or ((temp is None or temp <= COOL) and held_for >= HOLD_S):
+        return "cool"
+    if plateau_ready(job_id, temp, now):
+        return "plateau"
+    if temp is not None and temp < HOT and held_for >= HOLD_MAX_S:
+        return "timeout"
+    return None
+
+
+def note_busy(job_id, temp, busy):
+    """Warn once per hold when the card stays busy after the stage was stopped."""
+    if busy is None or temp is None or job_id in busy_warned:
+        return
+    if busy < 50:
+        busy_high[job_id] = 0
+        return
+    busy_high[job_id] = busy_high.get(job_id, 0) + 1
+    if busy_high[job_id] >= 3:
+        busy_warned.add(job_id)
+        print(f"card at {temp:.0f} °C still {busy:.0f}% busy while {job_id[:8]} is held", flush=True)
+
+
+def forget_hold(job_id):
+    held_at.pop(job_id, None)
+    held_hist.pop(job_id, None)
+    busy_high.pop(job_id, None)
+    busy_warned.discard(job_id)
+
+
 def thermal_guard():
     """Hold the stage on the card while the card is too hot, then let it go on."""
     while True:
         try:
             temp = card_temp()
+            busy = gpu_busy_percent()
+            now = time.monotonic()
+            govern_clocks(temp, now)
             with lock:
                 running = [dict(item) for item in jobs.values()
                            if item.get("state") == "running" and item.get("stage_key") in GPU_STAGES and item.get("pid")]
+            running_ids = {item["id"] for item in running}
             for item in running:
                 job_id = item["id"]
                 if temp is not None and temp >= HOT and job_id not in held and stage_alive(item):
@@ -206,29 +405,55 @@ def thermal_guard():
                         except OSError:
                             pass
                     held[job_id] = pids
-                    held_at[job_id] = time.monotonic()
+                    held_at[job_id] = now
+                    held_hist[job_id] = [(now, temp)]
+                    busy_high.pop(job_id, None)
+                    busy_warned.discard(job_id)
                     print(f"card at {temp:.0f} °C: stage {item['stage_key']} of {job_id[:8]} held", flush=True)
                     update(job_id, cooling=True, stage_before=item.get("stage"), stage="Grafikkarte kühlt ab")
-                elif job_id in held and (not stage_alive(item) or (temp is None or temp <= COOL)
-                                         and time.monotonic() - held_at.get(job_id, 0) >= HOLD_S):
-                    release(job_id)
-                    print(f"card at {temp if temp is not None else 0:.0f} °C: {job_id[:8]} goes on", flush=True)
-            for job_id in [j for j in list(held) if j not in {i["id"] for i in running}]:
+                elif job_id in held:
+                    if temp is not None:
+                        remember_temp(job_id, now, temp)
+                    note_busy(job_id, temp, busy)
+                    reason = release_reason(job_id, item, temp, now)
+                    if reason:
+                        release(job_id)
+                        if reason == "plateau":
+                            print(f"card at {temp:.0f} °C, not falling for {int(PLATEAU_WINDOW_S)} s: "
+                                  f"{job_id[:8]} goes on (hold ineffective)", flush=True)
+                        elif reason == "timeout":
+                            print(f"card at {temp:.0f} °C, held for {int(HOLD_MAX_S)} s: "
+                                  f"{job_id[:8]} goes on (hold timed out)", flush=True)
+                        else:
+                            print(f"card at {temp if temp is not None else 0:.0f} °C: {job_id[:8]} goes on", flush=True)
+            for job_id in [j for j in list(held) if j not in running_ids]:
                 release(job_id)                            # cancelled or gone while held
+            for job_id in [j for j in list(held_hist) if j not in held]:
+                forget_hold(job_id)
         except Exception as exc:                           # the guard itself never stops
             print(f"thermal guard: {type(exc).__name__}", flush=True)
         time.sleep(1)
 
 
 def release(job_id):
+    """Continue a held stage. Dropping it from `held` is what arms the stall
+    watchdog again: follow() only ignores a standstill while the job is held."""
     for pid in held.pop(job_id, []):
         try:
             os.kill(pid, signal.SIGCONT)
         except OSError:
             pass
+    forget_hold(job_id)
     with lock:
-        before = (jobs.get(job_id) or {}).get("stage_before")
-    update(job_id, cooling=False, **({"stage": before} if before else {}))
+        item = jobs.get(job_id)
+        if item is None or item["state"] in ("cancelled", "error", "done"):
+            return
+        before = item.pop("stage_before", None)
+        item["cooling"] = False
+        if before:
+            item["stage"] = before
+        if (ROOT / job_id).is_dir():
+            save(item)
 
 
 def place_of(item):
@@ -568,8 +793,8 @@ def follow(job_id, key, on_line):
         if stage_alive(item):
             gone = None
             now = time.monotonic()
-            if job_id in held:                            # held for the heat: waiting, not standing still
-                moved = now
+            if job_id in held:                            # held for the heat: waiting, not standing still.
+                moved = now                               # release() drops the hold, so this limit applies again
             if now - looked >= min(5.0, STALL / 4):       # it writes nothing: is it working?
                 looked, before, used = now, used, worked(item["pid"])
                 if used != before:
@@ -1061,6 +1286,10 @@ class API(BaseHTTPRequestHandler):
             pass
 
 def main():
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+    atexit.register(restore_clocks)
+    set_clocks("auto")                                 # a previous worker may have stopped mid-throttle
     ROOT.mkdir(parents=True, exist_ok=True)
     resume = []
     for path in ROOT.glob("*/status.json"):
@@ -1101,7 +1330,14 @@ def main():
                 os.killpg(int(item["pid"]), signal.SIGCONT)   # held by the worker before this one
             except OSError:
                 pass
-        item.pop("cooling", None)
+        # A hold does not survive the worker: the stage was continued above,
+        # and the chat shows the stage it was in, not "kühlt ab".
+        if item.get("cooling") or "stage_before" in item:
+            before = item.pop("stage_before", None)
+            if before:
+                item["stage"] = before
+            item.pop("cooling", None)
+            save(item)
     for pid in h3d_pids():
         try:
             os.kill(pid, signal.SIGCONT)

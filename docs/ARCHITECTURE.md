@@ -147,6 +147,24 @@ is 78 W: `ops/idol/power-cap.sh` runs as `ExecStartPre` of `mag-idol` and
 only ever lowers the cap to 78 W, never raises it. Every stage that uses
 the card holds the flock `/var/lib/mag-idol/gpu.lock`.
 
+Heat is answered by the card's clocks before anything is paused. At 82 °C
+the worker sets `power_dpm_force_performance_level` to `manual` and limits
+`pp_dpm_sclk` to levels 0-2; at 88 °C only level 0 remains. The mask steps
+back as the card cools, and the level returns to `auto` only after the
+junction and the memory have stayed at or under 78 °C for a minute. The
+power cap is a different file and is never written on this path.
+`mag-idol` runs as the owner with `NoNewPrivileges`, so it cannot sudo:
+`ops/idol/gpu-clock.sh prepare` (ExecStartPre, and a udev rule on device
+add) puts the clocks back on auto and gives those two files to the service
+user. ExecStop and the worker's own stop handler do the same. SIGSTOP of
+the stage, and of h3d for a video, is only the last resort, at 90 °C. The
+hold ends at 80 °C, or, once it has lasted two minutes, when the card is
+under 85 °C and has fallen less than 1 °C over the last minute (queued work
+can keep the card busy after SIGSTOP, so the hold is not what is cooling
+it), or after 15 minutes while the card is under 90 °C. It is held again at 90 °C. The stall
+watchdog ignores a stage only while that hold lasts. A restart continues a
+held stage, restores the stage name, and puts the clocks back on auto.
+
 ## The room (`mag-room/native`, C++17, one process)
 
 | File | Responsibility |
@@ -723,7 +741,9 @@ Resumability:
   then the line as it was; up to 32 wait;
 - no stage has a time limit; a stage that stands still for ten minutes (no
   log output, no CPU) is started again, and after three standstills the job
-  fails in words;
+  fails in words. A stage held because the card is at 90 °C is not a
+  standstill; the hold is bounded (see the clocks above) and the watchdog
+  applies again as soon as the stage runs;
 - a job that failed or was cancelled keeps its folder; "Noch einmal"
   (`POST /api/3d/<id>/retry`) queues it again at its first missing stage.
   Chris moves a waiting job with "Nach vorn"/"Nach hinten"

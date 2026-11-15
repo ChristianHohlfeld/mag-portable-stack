@@ -779,17 +779,102 @@ class RoomContract(unittest.TestCase):
 
     def test_a_picture_from_words_becomes_an_ordinary_image_of_the_chat(self):
         r = self.room
+        # A picture or a video ordered here is for the worker. It asks the bots nothing,
+        # the way a 3D order does, so they do not answer and do not order it again.
+        before = len(r.lena.chats()) + len(r.noah.chats())
         sent = r.api("POST", "/api/message", {"text": "ein Fuchs mit Laterne im Schnee, Aquarell", "mode": "image", "shape": "wide"})[1]
         self.assertEqual((sent["message"]["text"], sent["message"].get("silent")), ("ein Fuchs mit Laterne im Schnee, Aquarell", True))
         made = lambda: [m for m in r.messages() if m["id"] == sent["model3d"]][0]
         r.wait(lambda: made()["state"] == "done", "picture made")
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
         m = made()
         self.assertEqual((m["model3d"]["kind"], m["text"], [a["kind"] for a in m["attachments"]], m["attachments"][0]["name"][-4:]),
                          ("image", "Bild: ein Fuchs mit Laterne im Schnee, Aquarell", ["image"], ".png"))
         self.assertEqual((r.idol.images[-1]["prompt"], r.idol.images[-1]["width"], r.idol.images[-1]["height"]), ("ein Fuchs mit Laterne im Schnee, Aquarell", 1344, 768))
+        self.assertEqual(len(r.idol.images), 1)
         # Nothing to paint is said in words, and nothing is ordered.
         r.api("POST", "/api/message", {"text": "", "mode": "image"})
+        time.sleep(0.5)
+        self.assertEqual((len(r.idol.images), len(r.lena.chats()) + len(r.noah.chats())), (1, before))
+        # A video from words is the same: one order, and the bots are not asked.
+        r.api("POST", "/api/message", {"text": "ein Fuchs läuft durch den Schnee", "mode": "video"})
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
         self.assertEqual(len(r.idol.images), 1)
+
+    def test_a_tool_call_written_as_action_json_is_taken_out_of_the_text(self):
+        """{"action": "<tool>", ...} written into the answer is not a call.
+
+        In a normal chat the text is stored without it and the bot is told to
+        call the tool for real. JSON inside a sentence, and an action that is
+        not a tool, stay. An order for a picture or a video does not start a
+        turn, so that written call never becomes another image job."""
+        r = self.room
+        exact = '{\n  "action": "image_generate",\n  "prompt": "a red fox in the snow"\n}'
+
+        def noah(body):
+            last = text_of(body["messages"][-1]["content"])
+            if "als JSON in deinen Text geschrieben" in last:
+                return "PASS"
+            if "unbekannt" in last:
+                return '{\n  "action": "not_a_tool",\n  "prompt": "bleibt"\n}'
+            if "im Satz" in last:
+                return 'Die Zahl ist {"ok": true} und das bleibt so.'
+            if "male" in last:
+                return exact
+            return "PASS"
+        r.noah.reply = noah
+        r.lena.reply = lambda body: "PASS"
+
+        r.say("@Noah male einen Fuchs")
+        r.idle()
+        stored = [m for m in r.messages() if m["from"] == "noah"]
+        self.assertTrue(stored, r.messages())
+        self.assertEqual((stored[-1].get("text") or "").strip(), "")
+        self.assertNotIn("image_generate", json.dumps(stored[-1], ensure_ascii=False))
+        notes = [text_of(m.get("content")) for c in r.noah.chats() for m in c["messages"]]
+        self.assertTrue(any("image_generate" in n and "als JSON in deinen Text geschrieben" in n for n in notes), notes[-1][:500])
+        self.assertEqual(r.idol.images, [])  # the written JSON was not executed
+
+        r.say("@Noah steht das im Satz?")
+        r.idle()
+        self.assertIn('{"ok": true}', r.texts("noah")[-1])
+        self.assertEqual(r.idol.images, [])
+
+        before = len(r.noah.chats())
+        r.say("@Noah unbekannt bitte")
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), before + 1)  # no nudge: the action is not a tool
+        self.assertIn("not_a_tool", r.texts("noah")[-1])
+        self.assertIn("bleibt", r.texts("noah")[-1])
+
+        # The same payload after a real order still nudges in the next question,
+        # and the order itself never wakes the bots or starts a second image.
+        def eager(body):
+            last = text_of(body["messages"][-1]["content"])
+            if "als JSON in deinen Text geschrieben" in last:
+                return {"tool_calls": [{"name": "image_generate", "arguments": {"prompt": "a third picture"}}]}
+            return exact
+        r.lena.reply = eager
+        r.noah.reply = eager
+        before = len(r.lena.chats()) + len(r.noah.chats())
+        sent = r.api("POST", "/api/message", {"text": "ein Fuchs im Schnee", "mode": "image"})[1]
+        r.wait(lambda: [m for m in r.messages() if m["id"] == sent["model3d"]][0]["state"] == "done", "picture made")
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
+        self.assertEqual(len(r.idol.images), 1)
+        r.api("POST", "/api/message", {"text": "ein Fuchs läuft durch den Schnee", "mode": "video"})
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
+        self.assertEqual(len(r.idol.images), 1)
+
+        r.noah.reply = noah
+        r.say("@Noah male noch einen")
+        r.idle()
+        notes = [text_of(m.get("content")) for c in r.noah.chats() for m in c["messages"]]
+        self.assertTrue(any("als JSON in deinen Text geschrieben" in n for n in notes))
+        self.assertEqual(len(r.idol.images), 1)  # the order's picture, not a third job from the written call
 
     def test_a_failed_3d_job_is_taken_up_again_where_it_stopped(self):
         r = self.room
@@ -1520,8 +1605,14 @@ class RoomContract(unittest.TestCase):
         self.assertIn("[Bild figur.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", told)
         self.assertIn("Foto zu 3D: 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
         # A picture painted from words is an ordinary image for them, with the words it was painted from.
+        # It asks the bots nothing, the same as the 3D order above.
+        before = len(r.lena.chats()) + len(r.noah.chats())
+        images = len(r.idol.images)
         out = r.api("POST", "/api/message", {"text": "ein Fuchs im Schnee", "mode": "image"})[1]
         r.wait(lambda: [m for m in r.messages() if m["id"] == out["model3d"]][0]["state"] == "done", "picture made")
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
+        self.assertEqual(len(r.idol.images), images + 1)
         r.say("@Noah und jetzt?")
         r.idle()
         chat = [c["messages"] for c in r.noah.chats() if "und jetzt?" in text_of(c["messages"][-1]["content"])][0]
@@ -1529,6 +1620,11 @@ class RoomContract(unittest.TestCase):
         self.assertIn("Auftrag an Bild erzeugen, kein Auftrag an die Bots", told)
         self.assertIn('Bild erzeugen: Bild, gemalt aus den Worten "ein Fuchs im Schnee" (FLUX.2 klein):\n[Bild bild-', told)
         self.assertNotIn("3D-Modell aus dem Foto  ", told)
+        # A video ordered from words asks the bots nothing either.
+        before = len(r.lena.chats()) + len(r.noah.chats())
+        r.api("POST", "/api/message", {"text": "der Fuchs läuft weiter", "mode": "video"})
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
         # A bot that thinks before every answer answers first and describes afterwards
         # (describing would cost it a whole thinking pass per image up front).
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"thinking": True})[0], 200)

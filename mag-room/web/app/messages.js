@@ -903,6 +903,30 @@
     text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n```/g, (all, inner) => {
       try { const v = JSON.parse(inner); return v && typeof v === 'object' && (v.action || v.name || v.arguments || v.tool) ? '' : all; } catch { return all; }
     });
+    // The same call without a fence, written over several lines: from a line
+    // that starts with { to a line that ends with }, when the object names a
+    // tool (action, name, tool) or carries arguments.
+    {
+      const lines = text.split('\n');
+      const drop = new Array(lines.length).fill(false);
+      let fence = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (/^\s*```/.test(lines[i])) { fence = !fence; continue; }
+        if (fence || drop[i] || !/^\s*\{/.test(lines[i])) continue;
+        for (let j = i; j < lines.length; j++) {
+          if (j > i && /^\s*```/.test(lines[j])) break;
+          if (!/\}\s*$/.test(lines[j])) continue;
+          let v;
+          try { v = JSON.parse(lines.slice(i, j + 1).join('\n')); } catch { continue; }
+          if (v && typeof v === 'object' && !Array.isArray(v) && (v.action || v.name || v.tool || v.arguments)) {
+            for (let k = i; k <= j; k++) drop[k] = true;
+            i = j;
+          }
+          break;
+        }
+      }
+      text = lines.filter((_, i) => !drop[i]).join('\n');
+    }
     const lines = text.split('\n');
     const lang = (line) => {
       const words = line.toLowerCase().match(/[a-zäöüß']+/g) || [];

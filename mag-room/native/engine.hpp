@@ -3278,6 +3278,14 @@ private:
                     else if (low.find("freigab") != std::string::npos || low.find("zustimm") != std::string::npos) kind = "consent";
                     else kind = "other";
                   }
+                  // Do not let the model invent a blocker to escape an open goal.
+                  // A login/captcha requires a page snapshot; "other"/consent
+                  // requires a preceding failed tool or denied approval.
+                  if ((kind == "login" || kind == "captcha") && !goal::login_page(b.goal))
+                    result = tools::fail("Keine Anmeldung oder Captcha auf einer gesehenen Seite belegt. Rufe browser_look auf.");
+                  else if ((kind == "other" || kind == "consent") && jstr(b.goal, "error").empty() && !t.blocked)
+                    result = tools::fail("Kein echter Blocker nachgewiesen. Prüfe die Seite oder das letzte Werkzeugergebnis.");
+                  else {
                   b.goal["error"] = why;
                   goal::end(b.goal, "blocked");
                   save_goal(b);
@@ -3304,6 +3312,7 @@ private:
                   } else {
                     result = tools::told("Auftrag blockiert: " + why + " Sag Chris in einem Satz, was fehlt.", why, true, true);
                   }
+                  } // verified blocker
                 }
               }
             } else if ((c.name == "consent" || c.name == "routine") && !assist) {

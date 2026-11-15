@@ -452,8 +452,15 @@
       }
     });
     keys.addEventListener('blur', clearKeys);
-    // After a tap: if the page now has a field in focus, the keyboard comes up
-    // (within the tap's own moment, which the phone requires); if not, it goes.
+    // The phone only opens its keyboard for a focus() inside the tap itself
+    // (touchend or click). That focus is optimistic; the guest then says
+    // whether the spot was a field. A non-field closes it. A field keeps it
+    // and is brought up large.
+    const openKeyboard = () => {
+      if (document.activeElement === keys) return;
+      clearKeys();
+      keys.focus({ preventScroll: true });
+    };
     const keyboardFor = (state) => {
       shown(state);
       const field = state && state.editable;
@@ -481,7 +488,8 @@
       } else if (field === false && document.activeElement === keys) keys.blur();
     };
     // The tap reaches the page over the realtime link, the question over HTTPS:
-    // asked twice, so a slow tap is not taken for one beside a field.
+    // asked twice, so a slow tap is not taken for one beside a field. The
+    // keyboard is already up from the tap; this only keeps or closes it.
     const afterTap = () => {
       const ask = () => MAG.api('POST', '/api/browser/' + bot + '/state', {});
       setTimeout(() => ask().then((state) => (state && state.editable ? keyboardFor(state)
@@ -529,7 +537,7 @@
       applyZoom();
     };
     const button = (e) => (e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left');
-    let held = false, movedAt = 0, finger = null;
+    let held = false, movedAt = 0, finger = null, touchTap = false;
     const pts = new Map();
     let pinch = null;
     const pointer = (e, action, extra) => {
@@ -555,6 +563,7 @@
         };
         finger = null;
         held = false;
+        touchTap = false;
         for (const id of pts.keys()) { try { canvas.releasePointerCapture(id); } catch {} }
         e.stopPropagation();
         e.preventDefault();
@@ -612,7 +621,7 @@
       if (e.pointerType !== 'touch') { try { canvas.setPointerCapture(e.pointerId); } catch {} }
       // A finger taps to click. Its drag pans the picture only while magnified.
       // A mouse presses, moves and releases.
-      if (e.pointerType === 'touch') { finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false }; return; }
+      if (e.pointerType === 'touch') { touchTap = true; finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false }; return; }
       held = true;
       pointer(e, 'down', { button: button(e) });
     });
@@ -623,6 +632,7 @@
       const dx = e.clientX - finger.x, dy = e.clientY - finger.y;
       if (!finger.dragged && Math.hypot(dx, dy) < 9) return;
       finger.dragged = true;
+      touchTap = false;
       try { canvas.setPointerCapture(finger.id); } catch {}
       finger.x = e.clientX;
       finger.y = e.clientY;
@@ -637,7 +647,12 @@
         if (e.pointerId !== finger.id) return;
         const tap = !finger.dragged && e.type === 'pointerup';
         finger = null;
-        if (tap) { lastTap = { x: e.clientX, y: e.clientY }; pointer(e, 'tap', { button: 'left' }); afterTap(); }
+        if (tap) {
+          lastTap = { x: e.clientX, y: e.clientY };
+          pointer(e, 'tap', { button: 'left' });
+          if (e.pointerType === 'touch') openKeyboard();
+          afterTap();
+        }
         return;
       }
       if (!held) return;
@@ -646,6 +661,17 @@
     };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', release);
+    // The keyboard must be opened in the tap's own touchend or click. A focus
+    // later, after the guest has answered, does not open it.
+    const keyboardIfTap = (e) => {
+      if (!touchTap) return;
+      if (e.touches && (e.touches.length || e.changedTouches.length !== 1)) return;
+      if (e.pointerType === 'mouse') return;
+      openKeyboard();
+    };
+    canvas.addEventListener('touchend', keyboardIfTap);
+    canvas.addEventListener('click', (e) => { keyboardIfTap(e); touchTap = false; });
+    canvas.addEventListener('pointercancel', () => { touchTap = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();

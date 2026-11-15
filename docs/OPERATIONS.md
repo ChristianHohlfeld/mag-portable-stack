@@ -47,9 +47,21 @@ bot answers after the restart; an answer that was cut off in view stays as it
 is ("Gestoppt"). An open browser goal (`goals/<bot>.json`) is kept across
 that restart; Trash and Stop end it. While it is open the model is sampled
 at temperature 0.3 (`MAG_ROOM_GOAL_TEMP`, `MAG_ROOM_GOAL_TOP_P`,
-`MAG_ROOM_GOAL_TOP_K`). A half-size page picture after a navigation or a
-click is sent to a bot whose vision projector is loaded
-(`MAG_ROOM_GOAL_EYES=0` leaves it out).
+`MAG_ROOM_GOAL_TOP_K`). On this **CPU-only dual-Xeon host**, browser
+images are **not** sent to the LLM by default: the screenshot stays on the
+chat step card. `MAG_ROOM_GOAL_EYES=1` opts into slower BF16 mmproj image
+prefill and keeps each image once in the prompt log. Goal reminders are
+persisted once per task revision, not reinserted as an ephemeral tail;
+`cache_prompt=true`, one slot and NUMA pinning remain unchanged.
+
+To verify the cache regression, check the bot details (KV-Cache, Prompt-Lesen,
+Browser-Auftrag) and `journalctl -u mag-120 -f` for
+`engine: lena prefill prompt=N cached=M ms=T goal=active eyes=off`.
+The cache counts depend on what the llama-server version reports. Compare
+at least three consecutive tool calls: prompt processing should no longer
+re-read the full history on every call. `MAG_ROOM_GOAL_COMPACT_TOKENS=3500`
+is the CPU-oriented default retention target when the goal's context budget
+is exceeded. Do not restart model servers merely to disable browser images.
 
 Release pruning keeps the new release and one fallback.
 

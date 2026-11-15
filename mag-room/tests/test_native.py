@@ -2133,7 +2133,12 @@ class RoomContract(unittest.TestCase):
         # A login wall ends only through goal_blocked and the card, not a made-up result.
         browser.password = True
 
+        checks = {"n": 0}
+
         def blocked(body):
+            checks["n"] += 1
+            if checks["n"] == 2:
+                return {"content": "", "tool_calls": [{"name": "browser_look", "arguments": {}}]}
             return {"content": "", "tool_calls": [{"name": "goal_blocked", "arguments": {"reason": "Die Seite will eine Anmeldung.", "kind": "login"}}]}
 
         r.lena.reply = blocked
@@ -2147,6 +2152,10 @@ class RoomContract(unittest.TestCase):
             return None
 
         r.wait(lambda: card(), "login card")
+        blocked_steps = [p for m in r.messages() if m["from"] == "lena" for p in m.get("parts") or [] if p["k"] == "step" and p["tool"] == "goal_blocked"]
+        self.assertGreaterEqual(len(blocked_steps), 2)
+        self.assertEqual(blocked_steps[0]["state"], "error")
+        self.assertIn("gesehenen Seite", blocked_steps[0]["output"])
         self.assertEqual(card()["action"], "login")
         self.assertEqual(r.api("POST", "/api/approval/" + card()["id"], {"decision": "cancel"})[0], 200)
         r.idle()

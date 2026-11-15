@@ -41,6 +41,8 @@ struct ChatResult {
   // "call" (a tool call ran away into raw model markup).
   std::string guard;
   long prompt_tokens = 0, completion_tokens = 0, cached_tokens = 0;
+  long timings_prompt_n = -1, timings_cache_n = -1;
+  long progress_cached = -1;
   double prompt_ms = 0, gen_ms = 0, tps = 0;
   int64_t first_token_ms = 0; // wall time until the first generated token
   bool ok() const { return error.empty() && !cancelled; }
@@ -449,8 +451,12 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       out.error = e->type == Val::STR ? e->str : jstr(*e, "message", "Modellfehler");
       return;
     }
-    if (const Val *pp = ev.find("prompt_progress"); pp && pp->isObj() && cb.on_progress)
-      cb.on_progress((long)jnum(*pp, "processed"), (long)jnum(*pp, "total"), (long)jnum(*pp, "cache"));
+    if (const Val *pp = ev.find("prompt_progress"); pp && pp->isObj()) {
+      const long cache = (long)jnum(*pp, "cache", jnum(*pp, "cached", -1));
+      out.progress_cached = cache;
+      if (cb.on_progress)
+        cb.on_progress((long)jnum(*pp, "processed"), (long)jnum(*pp, "total"), cache);
+    }
     if (const Val *u = ev.find("usage"); u && u->isObj()) {
       out.prompt_tokens = (long)jnum(*u, "prompt_tokens");
       out.completion_tokens = (long)jnum(*u, "completion_tokens");
@@ -458,6 +464,8 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
         out.cached_tokens = (long)jnum(*d, "cached_tokens");
     }
     if (const Val *t = ev.find("timings"); t && t->isObj()) {
+      out.timings_prompt_n = (long)jnum(*t, "prompt_n", -1);
+      out.timings_cache_n = (long)jnum(*t, "cache_n", -1);
       out.prompt_ms = jnum(*t, "prompt_ms");
       out.gen_ms = jnum(*t, "predicted_ms");
       out.tps = jnum(*t, "predicted_per_second");

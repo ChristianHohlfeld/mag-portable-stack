@@ -412,8 +412,9 @@ inline bool login_page(const Val &g) {
   return false;
 }
 
-// The lines appended at the end of a request. Not part of the stored log.
-inline std::string tail(const Val &g, bool closing) {
+// One goal checkpoint, stored as an append-only user message in the wire log.
+// Never rewrite a previously evaluated message: the CPU KV cache needs it.
+inline std::string tail(const Val &g, bool closing, bool checkpoint = false) {
   if (closing)
     return "(Notiz des Raums, nicht von Chris: Der Auftrag ist abgeschlossen. Schreib Chris jetzt ein bis zwei Sätze auf Deutsch mit dem Ergebnis. "
            "Kein Werkzeug, keine neuen Angaben.)";
@@ -423,7 +424,7 @@ inline std::string tail(const Val &g, bool closing) {
     s += "BISHER: Seite-Version " + std::to_string((long)jnum(*page, "version")) + ", " + jstr(*page, "title") + ", " + jstr(*page, "url");
     if (jnum(*page, "scroll") > 0) s += ", gescrollt " + std::to_string((long)jnum(*page, "scroll")) + " px";
     s += "\n";
-    if (const Val *els = page->find("elements"); els && els->isArr()) {
+    if (const Val *els = page->find("elements"); checkpoint && els && els->isArr()) {
       int n = 0;
       for (auto &e : els->asArr()) {
         if (n++ >= 40) break;
@@ -447,76 +448,35 @@ inline std::string tail(const Val &g, bool closing) {
 }
 
 // ---- compact ----------------------------------------------------------------
-// Token estimate, not bytes. Older page dumps go first. The goal text, every
-// correction and the last two tool pairs stay. Never only the system line and a nudge.
+// Drop one complete old prefix, never edit historical tool outputs in place.
+// The next append-only goal checkpoint restores task/page/corrections.
 inline size_t tokens_of(const Val &m) { return mj::dump(m).size() / 4 + 1; }
 
-inline int shrink(Val &msgs, const Val &g, size_t budget) {
+inline int shrink(Val &msgs, const Val &, size_t budget) {
   if (!msgs.isArr() || msgs.arr->size() < 4) return 0;
   auto &a = *msgs.arr;
-  std::vector<size_t> pairs;
-  for (size_t i = 1; i < a.size(); ++i)
-    if (jstr(a[i], "role") == "assistant" && a[i].find("tool_calls") && a[i].find("tool_calls")->isArr()) pairs.push_back(i);
-  size_t tail_from = a.size();
-  if (!pairs.empty()) tail_from = pairs.size() >= 2 ? pairs[pairs.size() - 2] : pairs.back();
-  auto anchored = [&](const Val &m) {
-    const std::string c = jstr(m, "content");
-    std::string text = jstr(g, "text");
-    const auto nl = text.find('\n');
-    if (nl != std::string::npos) text = text.substr(0, nl);
-    const size_t n = std::min(text.size(), (size_t)80);
-    if (n >= 16 && c.find(text.substr(0, n)) != std::string::npos) return true;
-    if (const Val *cs = g.find("corrections"))
-      for (auto &x : cs->asArr())
-        if (x.asStr().size() >= 8 && c.find(x.asStr()) != std::string::npos) return true;
-    return false;
-  };
-  auto page_dump = [](const std::string &c) {
-    return c.size() >= 400 && (c.find("Seite-Version:") != std::string::npos || (c.find("URL:") != std::string::npos && c.find("Elemente") != std::string::npos));
-  };
-  int changed = 0;
-  for (size_t i = 1; i < tail_from && i < a.size(); ++i) {
-    if (jstr(a[i], "role") != "tool") continue;
-    const std::string c = jstr(a[i], "content");
-    if (!page_dump(c)) continue;
-    a[i]["content"] = "Ältere Seite, verworfen. Es gilt die letzte Seite im Auftrag.";
-    ++changed;
-  }
-  auto shielded = [&](size_t i) {
-    if (i == 0 || i >= a.size()) return true;
-    if (i >= tail_from) return true;
-    return anchored(a[i]);
-  };
-  auto total = [&] {
-    size_t t = 0;
-    for (auto &m : a) t += tokens_of(m);
-    return t;
-  };
-  while (a.size() > 3 && total() > budget) {
-    size_t i = 1;
-    while (i < a.size() && shielded(i)) ++i;
-    if (i >= a.size()) break;
-    size_t end = i + 1;
-    if (jstr(a[i], "role") == "assistant" && a[i].find("tool_calls")) {
-      while (end < a.size() && jstr(a[end], "role") == "tool") ++end;
-      bool hit = false;
-      for (size_t k = i; k < end; ++k)
-        if (shielded(k)) hit = true;
-      if (hit) break;
+  size_t remaining = 0;
+  for (const auto &m : a) remaining += tokens_of(m);
+  if (remaining <= budget) return 0;
+  // Keep the last two complete assistant-call/tool-result pairs.
+  size_t protect = a.size() - 1;
+  int pairs = 0;
+  for (size_t i = a.size(); i-- > 1;) {
+    if (jstr(a[i], "role") == "assistant" && a[i].find("tool_calls") && a[i].find("tool_calls")->isArr()) {
+      protect = i;
+      if (++pairs == 2) break;
     }
-    int real = 0;
-    for (size_t k = 1; k < a.size(); ++k) {
-      if (k >= i && k < end) continue;
-      if (jstr(a[k], "content").find("(Notiz des Raums") == 0) continue;
-      ++real;
-    }
-    if (real < 1) break;
-    a.erase(a.begin() + (long)i, a.begin() + (long)end);
-    changed += (int)(end - i);
-    if (tail_from >= end) tail_from -= end - i;
-    else if (tail_from > i) tail_from = i;
   }
-  return changed;
+  size_t cut = 1;
+  for (size_t i = 2; i <= protect; ++i) {
+    remaining -= tokens_of(a[i - 1]);
+    if (jstr(a[i], "role") == "tool") continue; // never leave an orphan tool result
+    cut = i;
+    if (remaining <= budget) break;
+  }
+  if (cut <= 1) return 0;
+  a.erase(a.begin() + 1, a.begin() + (long)cut);
+  return (int)cut - 1;
 }
 
 } // namespace mag::goal

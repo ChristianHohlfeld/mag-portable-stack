@@ -685,6 +685,7 @@ private:
     // --- owned by the worker thread ---
     Val wire;                    // {prefix, cursor, pending[], pushed[], messages[], model_since}
     Val goal;                    // browser goal, outside the prompt log
+    bool goal_checkpoint = false; // append a complete page snapshot after compact/restart only
     std::string last_tool_sig;
   };
 
@@ -2171,6 +2172,7 @@ private:
     b.goal = read_json(goal_file(b));
     if (!b.goal.isObj()) b.goal = Val::object();
     if (exists(goal_mark(b)) && jstr(b.goal, "state") != "done" && jstr(b.goal, "state") != "blocked") goal::end(b.goal, "ended");
+    b.goal_checkpoint = goal::active(b.goal); // restart: one full checkpoint without touching old messages
     std::lock_guard<std::mutex> lk(mu_);
     b.goal_on = goal::active(b.goal);
     b.goal_arm = false;
@@ -2205,59 +2207,45 @@ private:
       if (o.get() != &self && (o->goal_on || o->goal_arm) && !o->end_goal.load()) return true;
     return false;
   }
-  // The request the model sees: the log, then the open task at the end (not in the log).
-  Val request_with_goal(Bot &b, bool closing) {
-    Val msgs = request_messages(b, b.wire["messages"]);
-    std::string shot;
-    if (!closing && goal::envd("MAG_ROOM_GOAL_EYES", 1) != 0 && sees(b.id) && b.wire["messages"].isArr()) {
-      const auto &a = *b.wire["messages"].arr;
-      for (size_t i = a.size(); i-- > 0;) {
-        if (jstr(a[i], "role") != "tool") continue;
-        if (jbool(a[i], "_nav")) shot = jstr(a[i], "_shot");
-        break;
-      }
-    }
-    const std::string extra = goal::tail(b.goal, closing);
-    if (extra.empty() && shot.empty()) return msgs;
-    std::string bytes;
-    const bool image = !shot.empty() && read_file(shot, bytes, 400000) && bytes.size() > 100;
-    if (!image && !msgs.arr->empty() && jstr(msgs.arr->back(), "role") == "user" && msgs.arr->back()["content"].type == Val::STR) {
-      msgs.arr->back()["content"] = jstr(msgs.arr->back(), "content") + "\n\n" + extra;
-      return msgs;
-    }
-    Val user = Val::object();
-    user["role"] = "user";
-    if (image) {
-      Val parts = Val::array(), url = Val::object(), part = Val::object();
-      url["url"] = "data:image/jpeg;base64," + b64_encode(bytes);
-      part["type"] = "image_url";
-      part["image_url"] = url;
-      parts.push(part);
-      parts.push(text_part(extra.empty() ? "(Bild der Seite nach dem letzten Öffnen oder Klick.)" : extra));
-      user["content"] = parts;
-    } else {
-      user["content"] = extra;
-    }
-    msgs.push(user);
-    return msgs;
+  // Persist goal checkpoints exactly as the model sees them. The next request
+  // contains the previous request byte-for-byte as a prefix, plus new messages.
+  void append_goal_note(Bot &b, bool closing) {
+    const std::string note = goal::tail(b.goal, closing, b.goal_checkpoint);
+    b.goal_checkpoint = false;
+    if (note.empty()) return;
+    Val &msgs = b.wire["messages"];
+    if (!msgs.isArr()) return;
+    if (!msgs.arr->empty() && jbool(msgs.arr->back(), "_goal_note") && jstr(msgs.arr->back(), "content") == note) return;
+    Val msg = Val::object();
+    msg["role"] = "user";
+    msg["content"] = note;
+    msg["_goal_note"] = true;
+    msgs.push(msg);
+    save_wire(b); // survives a room restart, including after a compact
   }
 
   // Drops the oldest turns once the log exceeds its token budget. Cuts only
   // in front of a user message, so a tool call never loses its result.
-  // An open browser goal is cut by a token estimate instead: the task, every
-  // correction and the last two tool pairs stay, and older page dumps go first.
-  void compact(Bot &b, double keep_fraction) {
+  // An open browser goal discards an old prefix once; it never rewrites older
+  // messages. A fresh goal checkpoint is appended after this operation.
+  void compact(Bot &b, double keep_fraction, long room_budget = 0) {
     Val &msgs = b.wire["messages"];
     if (goal_live(b)) {
       if (!msgs.isArr() || msgs.arr->size() < 4) return;
       size_t total = 0;
-      for (size_t i = 1; i < msgs.arr->size(); ++i) total += goal::tokens_of((*msgs.arr)[i]);
-      size_t target = (size_t)((double)total * keep_fraction);
-      if (target < 800) target = 800;
+      for (const auto &m : *msgs.arr) total += goal::tokens_of(m);
+      // b.ctx_tokens is the actual previous llama.cpp request size, including
+      // system and tool schemas. Subtract that overage from the same wire-token
+      // estimate used by goal::shrink. Keep 1024 tokens of headroom.
+      const size_t over = room_budget > 0 && b.ctx_tokens > room_budget ? (size_t)(b.ctx_tokens - room_budget) : 0;
+      size_t target = total > over + 1024 ? total - over - 1024 : 800;
+      if (keep_fraction < 0.5) target = std::min(target, (size_t)(total * keep_fraction));
+      target = std::max<size_t>(800, target);
       const int n = goal::shrink(msgs, b.goal, target);
       if (n) {
         save_wire(b);
-        logf("engine: " + b.id + " context compacted for the open goal (" + std::to_string(n) + ")");
+        logf("engine: " + b.id + " context compacted for the open goal, dropped=" + std::to_string(n) +
+             " target=" + std::to_string(target) + " wire_est=" + std::to_string(total));
       }
       return;
     }
@@ -2770,12 +2758,13 @@ private:
         describe_images(b, me);
         apply_goal_cmd(b); // a correction Chris wrote while the bot was working
       }
-      if (b.ctx_tokens > budget) compact(b, 0.55);
+      if (b.ctx_tokens > budget) compact(b, 0.55, budget);
       const bool closing = t.wrap;
       t.wrap = false;
       const bool driving = goal_live(b) && !closing;
+      append_goal_note(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
       Val body = Val::object();
-      body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
+      body["messages"] = request_messages(b, b.wire["messages"]);
       if (!tools.asArr().empty()) body["tools"] = tools;
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = room_.cfg.max_tokens;
@@ -2814,6 +2803,13 @@ private:
       const size_t thought0 = t.reasoning.size();
       const bool shown0 = t.visible;
       llm::ChatResult res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
+      const long eval = res.timings_prompt_n >= 0 ? res.timings_prompt_n : std::max<long>(0, res.prompt_tokens - res.cached_tokens);
+      logf("engine: " + b.id + " kv prompt=" + std::to_string(res.prompt_tokens) +
+           " cached=" + std::to_string(res.cached_tokens) + " eval=" + std::to_string(eval) +
+           " prompt_ms=" + std::to_string(res.prompt_ms) +
+           " timings.cache_n=" + std::to_string(res.timings_cache_n) +
+           " timings.prompt_n=" + std::to_string(res.timings_prompt_n) +
+           " progress_cache=" + std::to_string(res.progress_cached));
       t.last = res;
       t.completion += res.completion_tokens;
       {
@@ -2826,7 +2822,7 @@ private:
         const std::string low = lower(res.error);
         if (!retried && (low.find("context") != std::string::npos || low.find("exceed") != std::string::npos)) {
           retried = true;
-          compact(b, 0.4);
+          compact(b, 0.4, budget);
           --step;
           continue;
         }
@@ -3320,16 +3316,6 @@ private:
         tr["name"] = c.name;
         tr["content"] = result.text;
         tr["_turn"] = t.token;
-        if (result.navigated && !result.image.empty() && goal::envd("MAG_ROOM_GOAL_EYES", 1) != 0) {
-          const std::string dir = room_.cfg.state_dir + "/goal-shots";
-          std::error_code ec;
-          std::filesystem::create_directories(dir, ec);
-          const std::string path = dir + "/" + b.id + "-" + std::to_string(look_version) + ".jpg";
-          if (write_atomic(path, result.image, 0640)) {
-            tr["_shot"] = path;
-            tr["_nav"] = true;
-          }
-        }
         b.wire["messages"].push(tr);
         save_wire(b);
         if (was_cancelled) {

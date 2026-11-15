@@ -2023,10 +2023,15 @@ class RoomContract(unittest.TestCase):
         self.assertIn("LASTPAGEZZ", blob)
         self.assertNotIn("OLDDUMPzzzz", blob)
         self.assertGreater(len(compact["messages"]), 2)
-        self.assertIn("image_url", json.dumps(seen[1]))
+        self.assertNotIn("image_url", json.dumps(seen[1]))
         self.assertNotIn("image_url", json.dumps(seen[3]))
         r.idle()
         self.assertEqual(browser.clicks, [28])
+        cards = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
+        self.assertTrue(any(p.get("shot") for p in cards))  # JPEG is still on the step card
+        wire = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        self.assertTrue(any(m.get("_goal_note") and "AKTIVER AUFTRAG" in m.get("content", "")
+                            for m in wire["messages"]))
         self.assertLess(len(seen), 12)  # the repeated plan stalled instead of looping
         said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
         self.assertIn("hänge", said)
@@ -2076,6 +2081,45 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena danke")
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
+
+    def test_browser_goal_kv_prefix_is_append_only_without_model_jpegs(self):
+        browser = FakeBrowser()
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_VISION="lena", MAG_ROOM_GOAL_EYES="1")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        n = {"i": 0}
+
+        def reply(body):
+            i = n["i"]
+            n["i"] += 1
+            if i == 0:
+                return {"content": "", "tool_calls": [{"name": "browser_open", "arguments": {"url": "https://www.amazon.de"}}]}
+            if i == 1:
+                return {"content": "", "tool_calls": [{"name": "browser_scroll", "arguments": {"dy": 700}}]}
+            if i == 2:
+                return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
+                    "summary": "Ein sichtbarer Schrumpfschlauch.",
+                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN"}]}}]}
+            return "Ein transparenter Schrumpfschlauch wurde gefunden."
+
+        r.lena.reply = reply
+        r.say("@Lena Suche transparenten Schrumpfschlauch auf Amazon.de")
+        r.idle()
+        requests = r.lena.chats()
+        self.assertGreaterEqual(len(requests), 4)
+        for before, after in zip(requests, requests[1:]):
+            old = json.dumps(before["messages"], ensure_ascii=False, separators=(",", ":"))
+            prefix = json.dumps(after["messages"][:len(before["messages"])], ensure_ascii=False, separators=(",", ":"))
+            self.assertEqual(old, prefix)  # byte-stable serialized prefix, including goal notes
+        self.assertNotIn("image_url", json.dumps(requests))
+        wire = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        notes = [m["content"] for m in wire["messages"] if m.get("_goal_note")]
+        self.assertTrue(any("AKTIVER AUFTRAG" in t for t in notes))
+        self.assertTrue(any("Der Auftrag ist abgeschlossen" in t for t in notes))
+        self.assertTrue(any(p.get("shot") for m in r.messages() if m["from"] == "lena"
+                            for p in m["parts"] if p["k"] == "step"))
+        self.assertRegex((r.tmp / "magroom.log").read_text(), r"engine: lena kv prompt=\d+ cached=\d+ eval=\d+ prompt_ms=")
 
     def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):
         browser = FakeBrowser()

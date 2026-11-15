@@ -44,8 +44,7 @@ struct Result {
   bool ok = true;
   bool blocker = false; // Chris said no, or the work is done as far as it may go: the goal driver does not send the bot on
   std::string shown = {}; // what the step shows in the chat, where the text is meant for the bot alone (empty: the text)
-  std::string image;       // JPEG of the page, for the model after a navigation or a click
-  bool navigated = false;  // open, click, back, Enter: the picture may go to the model
+  bool navigated = false;  // open, click, back, Enter; the JPEG stays on the step card only
   Val snapshot;            // the full /elements document; the model sees a short form
 };
 // A result whose text tells the bot what to do next; Chris reads in the step what happened.
@@ -402,9 +401,9 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
   return out;
 }
 
-// The browser as a person sees it. The model gets a short page; the full
-// document stays on the result. The picture goes to the step, and along for
-// the model when the caller asks.
+// The browser as a person sees it. The model gets text and numbered elements.
+// The JPEG belongs only to the visible step card, never to an automatic
+// image_url in the model request (CPU-only mmproj prefill is expensive).
 inline Result look(Ctx &ctx, const std::string &vm) {
   const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
   if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
@@ -416,7 +415,6 @@ inline Result look(Ctx &ctx, const std::string &vm) {
   out.text = page_for_model(v, ctx.goal, ctx.page_version > 0 ? ctx.page_version : 1);
   if (pic.status == 200 && pic.body.size() > 100) {
     if (ctx.shot) ctx.shot(pic.body);
-    out.image = pic.body;
   }
   return out;
 }

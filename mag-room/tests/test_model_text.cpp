@@ -203,8 +203,15 @@ int main() {
     Val goal = Val::object();
     goal::begin(goal, "lena", "Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de");
     goal::correct(goal, "Nicht 2 Stueck sondern 2s");
+    // Goal text and corrections live in a persistent checkpoint; compaction
+    // may discard the original human message, but never rewrites old tool text.
+    Val checkpoint = Val::object();
+    checkpoint["role"] = "user";
+    checkpoint["content"] = goal::tail(goal, false);
+    msgs.push(checkpoint);
     CHECK(goal::shrink(msgs, goal, 400) > 0);
     const std::string flat = mj::dump(msgs);
+    CHECK(flat.find("AKTIVER AUFTRAG") != std::string::npos);
     CHECK(flat.find("Schrumpfschlauch") != std::string::npos);
     CHECK(flat.find("Nicht 2 Stueck sondern 2s") != std::string::npos);
     CHECK(flat.find("LASTPAGEZZ") != std::string::npos);

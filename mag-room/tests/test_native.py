@@ -2071,7 +2071,7 @@ class RoomContract(unittest.TestCase):
         r.lena.reply = finish
         r.say("Done?")
         r.idle()
-        self.assertEqual(fin["last"].get("tool_choice"), None)
+        self.assertEqual(fin["last"].get("tool_choice"), "required")  # no redundant closing LLM call
         self.assertIn("required", [body.get("tool_choice") for body in r.lena.chats()[-4:-1]])
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step" and p["tool"] == "goal_finish"]
         self.assertEqual([s["state"] for s in steps], ["error", "error", "ok"])
@@ -2080,7 +2080,12 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
         self.assertIn("Amazon.de", goal["text"])
-        self.assertIn("Schrumpfschläuche", " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena"))
+        final_text = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
+        self.assertIn("Schrumpfschläuche", final_text)
+        self.assertIn("https://www.amazon.de/dp/B00SEEN", final_text)
+        self.assertIn("https://www.amazon.de/dp/B00SEEN2", final_text)
+        self.assertEqual([x["url"] for x in goal["results"]],
+                         ["https://www.amazon.de/dp/B00SEEN", "https://www.amazon.de/dp/B00SEEN2"])
         # A plain chat afterwards does not force a tool.
         r.lena.reply = lambda body: "Gern."
         r.say("@Lena danke")

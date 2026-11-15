@@ -21,7 +21,7 @@
     constructor(bot) {
       Object.assign(this, { bot, vm: '', users: 0, gen: 0, pc: null, control: null, console: null,
         screen: null, term: null, // the views attached right now
-        chunks: null, painting: false, lastSeq: -1, frameAt: 0, waitAt: 0,
+        chunks: null, painting: false, lastSeq: -1, frameAt: 0, waitAt: 0, fallbackTimer: 0,
         http: null, httpBefore: false, posts: Promise.resolve(), scroll: 0,
         pending: [], hbAt: 0, udp: false, retryTimer: 0, retryDelay: 1000, lingerTimer: 0, clock: 0 });
     }
@@ -67,13 +67,12 @@
       if (this.screen && !document.hidden) {
         if (open) this.control.send(SUBSCRIBE);
         if (this.chunks && now - this.chunks.stamp > 550) this.chunks = null;
-        // The control channel is the UDP path. A late picture means the VM is
-        // busy, not that UDP failed: screenshot polling then takes the
-        // controller's only thread and the last frame stays frozen.
-        if (now - (this.frameAt || this.waitAt) > 5000) {
-          if (open) { if (!this.frameAt) this.sayScreen('WebRTC/UDP · ' + this.vm + ' · warte auf Bild'); }
-          else this.startHttp(this.frameAt ? 'UDP-Bild stockt' : 'UDP nicht erreichbar');
-        }
+        // Open control channel: a late picture is the VM being busy, so do not
+        // poll screenshots. Closed channel: the phone may have no ICE address,
+        // so the HTTPS picture starts after about two seconds.
+        const since = this.waitAt ? now - this.waitAt : 0;
+        if (!open && since >= 2000) this.startHttp(this.frameAt ? 'UDP-Bild stockt' : 'UDP nicht erreichbar');
+        else if (open && !this.frameAt && since >= 5000) this.sayScreen('WebRTC/UDP · ' + this.vm + ' · warte auf Bild');
       }
       if (this.console?.readyState === 'open' && this.hbAt && now - this.hbAt > 6000 && !document.hidden) {
         this.hbAt = 0;
@@ -86,7 +85,8 @@
     // The view (re)appears: ask for pictures now. A picture already on screen
     // stays; HTTPS is only for a control channel that never opens.
     wantFrames() {
-      this.waitAt = performance.now();
+      // Once. A later visibilitychange must not push the HTTPS fallback back.
+      if (!this.waitAt) this.waitAt = performance.now();
       if (this.control?.readyState === 'open') this.control.send(SUBSCRIBE);
     }
     watch(screen) {
@@ -266,7 +266,9 @@
     disconnect() {
       ++this.gen;
       clearTimeout(this.retryTimer);
+      clearTimeout(this.fallbackTimer);
       this.retryTimer = 0;
+      this.fallbackTimer = 0;
       if (this.pc) { this.pc.close(); this.pc = null; }
       Object.assign(this, { control: null, console: null, chunks: null, painting: false, lastSeq: -1, hbAt: 0 });
       this.sayTerm('Shell getrennt · Sitzung bleibt in der VM erhalten');
@@ -280,6 +282,17 @@
         return;
       }
       this.vm = bot.vm;
+      // About two seconds, not the next visibility change. A frame on the UDP
+      // path still replaces this picture when the data channel opens.
+      const httpSoon = () => {
+        this.fallbackTimer = setTimeout(() => {
+          this.fallbackTimer = 0;
+          if (gen !== this.gen || this.control?.readyState === 'open' || this.http || !this.screen) return;
+          if (document.hidden) { httpSoon(); return; }
+          this.startHttp('UDP nicht erreichbar');
+        }, 2000);
+      };
+      httpSoon();
       if (!window.RTCPeerConnection) { this.sayTerm('Dieser Browser kann kein WebRTC.'); this.startHttp('kein WebRTC'); return; }
       const pc = new RTCPeerConnection({ iceServers: [] });
       this.pc = pc;

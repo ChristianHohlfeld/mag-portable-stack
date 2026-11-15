@@ -96,14 +96,18 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
   padding: calc(6px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--line);
   background: var(--bg);
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
-/* A bot in the header: the dot pauses and resumes it, the name opens its sheet. */
+/* A bot in the header: the dot pauses and resumes it, the name opens its sheet.
+   The name is never cut. The status gives up its space first, then hides. */
 .chip {
   display: flex;
   align-items: stretch;
-  min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
+  min-width: min-content;
+  max-width: max-content;
   height: 34px;
   border-radius: 17px;
   border: 1px solid var(--line);
@@ -112,11 +116,11 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 }
 .chip .tog { flex: none; width: 30px; padding-left: 3px; display: grid; place-items: center; transition: background .12s; }
 .chip .tog:disabled { opacity: 1; }
-.chip .open { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 12px 0 3px; transition: background .12s; }
+.chip .open { display: grid; grid-template-columns: max-content max-content minmax(0, max-content); align-items: center; column-gap: 7px; min-width: 0; flex: 1 1 auto; padding: 0 12px 0 3px; transition: background .12s; }
 .chip .tog:not(:disabled):hover, .chip .open:hover { background: var(--surface); }
-.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-.chip .name { font-weight: 650; }
-.chip .state { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.chip .name { white-space: nowrap; font-weight: 650; }
+.chip .state { min-width: 0; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip[data-bot="lena"] .name { color: var(--lena); }
 .chip[data-bot="noah"] .name { color: var(--noah); }
 .chip.ready .dot { background: var(--ok); }
@@ -130,13 +134,20 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .chip.nudge { border-color: var(--warn); animation: nudge .4s ease-in-out 2; }
 @keyframes nudge { 30% { transform: translateX(-3px); } 70% { transform: translateX(3px); } }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
-#top .spacer { flex: 1; }
+#top .spacer { flex: 1 1 0; min-width: 0; }
 .icon-btn {
   width: 40px; height: 40px; border-radius: 12px;
   display: grid; place-items: center; color: var(--muted); flex: none;
   transition: background .12s, color .12s;
 }
 .icon-btn:hover, .icon-btn:active { background: var(--surface-2); color: var(--text); }
+@media (max-width: 420px) {
+  #top { gap: 4px; }
+  .icon-btn { width: 36px; height: 36px; }
+  .chip .tog { width: 26px; }
+  .chip .open { gap: 5px; padding-right: 8px; }
+  .chip .state { display: none; }
+}
 #offline { font-size: 12px; color: var(--warn); padding: 0 4px; white-space: nowrap; }
 
 /* ---- timeline ------------------------------------------------------------ */

@@ -452,8 +452,15 @@
       }
     });
     keys.addEventListener('blur', clearKeys);
-    // After a tap: if the page now has a field in focus, the keyboard comes up
-    // (within the tap's own moment, which the phone requires); if not, it goes.
+    // The phone only opens its keyboard for a focus() inside the tap itself
+    // (touchend or click). That focus is optimistic; the guest then says
+    // whether the spot was a field. A non-field closes it. A field keeps it
+    // and is brought up large.
+    const openKeyboard = () => {
+      if (document.activeElement === keys) return;
+      clearKeys();
+      keys.focus({ preventScroll: true });
+    };
     const keyboardFor = (state) => {
       shown(state);
       const field = state && state.editable;
@@ -481,7 +488,8 @@
       } else if (field === false && document.activeElement === keys) keys.blur();
     };
     // The tap reaches the page over the realtime link, the question over HTTPS:
-    // asked twice, so a slow tap is not taken for one beside a field.
+    // asked twice, so a slow tap is not taken for one beside a field. The
+    // keyboard is already up from the tap; this only keeps or closes it.
     const afterTap = () => {
       const ask = () => MAG.api('POST', '/api/browser/' + bot + '/state', {});
       setTimeout(() => ask().then((state) => (state && state.editable ? keyboardFor(state)
@@ -498,10 +506,10 @@
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= g.w || y >= g.h) return null;
       return { x: Math.min(1439, Math.max(0, (x * 1440) / g.w)), y: Math.min(899, Math.max(0, (y * 900) / g.h)) };
     };
-    // Two fingers: a spacing change of about 4% zooms at once, from 100% too.
-    // While magnified, those fingers also pan. At 100% a drag that keeps the
-    // spacing scrolls the page. The percent button fits it, a tap lands on the
-    // point under the finger, and one finger still taps and scrolls.
+    // One finger taps the point under it. A drag does nothing at 100%; while
+    // magnified it only pans the picture. Two fingers pinch and pan together.
+    // At 100% a two-finger drag that does not spread is the scroll of the page.
+    // The percent button fits it.
     const zoom = { z: 1, tx: 0, ty: 0 };
     let lastTap = null;
     const lens = el('button', { type: 'button', class: 'pill lens', text: '100%', title: 'Ganze Seite', 'aria-label': 'Ganze Seite', onclick: () => {
@@ -529,7 +537,7 @@
       applyZoom();
     };
     const button = (e) => (e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left');
-    let held = false, movedAt = 0, finger = null;
+    let held = false, movedAt = 0, finger = null, touchTap = false;
     const pts = new Map();
     let pinch = null;
     const pointer = (e, action, extra) => {
@@ -546,9 +554,8 @@
         const [a, b] = [...pts.values()];
         const r = canvas.getBoundingClientRect();
         const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-        // Anchor for the whole gesture. Spacing is measured from this first
-        // gap, so a spread is not thrown away. Pan uses the same anchor only
-        // once the picture is magnified; at 100% a steady gap scrolls.
+        // Anchor for the whole gesture. Spacing and the midpoint are both
+        // applied on every move: pinch and pan together, with no cutoff.
         pinch = {
           d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: zoom.z, tx: zoom.tx, ty: zoom.ty,
           mx, my, sentMx: mx, sentMy: my, scrollAt: 0,
@@ -556,6 +563,7 @@
         };
         finger = null;
         held = false;
+        touchTap = false;
         for (const id of pts.keys()) { try { canvas.releasePointerCapture(id); } catch {} }
         e.stopPropagation();
         e.preventDefault();
@@ -568,11 +576,13 @@
       const [a, b] = [...pts.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      // Scale from the fingers' first gap. At 100% a change of about 4% zooms
-      // at once and is not locked into a scroll; a steadier drag scrolls the page.
-      // Once magnified, the same move pinches and pans together.
+      // Spacing sets the zoom on every move, from the first gap. The midpoint
+      // pans at the same time once the picture is larger than the view. At
+      // 100% there is nothing to pan, so a drag that does not spread scrolls.
       const next = Math.max(1, Math.min(4, pinch.s * dist / pinch.d));
-      if (pinch.s <= 1.001 && next < 1.04) {
+      if (next <= 1.001) {
+        zoom.z = 1; zoom.tx = 0; zoom.ty = 0;
+        applyZoom();
         if (performance.now() - pinch.scrollAt >= 30) {
           const dx = mx - pinch.sentMx, dy = my - pinch.sentMy;
           if (dx || dy) {
@@ -587,10 +597,8 @@
         const u = (pinch.mx - pinch.L - pinch.tx) / pinch.s;
         const v = (pinch.my - pinch.T - pinch.ty) / pinch.s;
         zoom.z = next;
-        if (next > 1.001) {
-          zoom.tx = mx - pinch.L - u * next;
-          zoom.ty = my - pinch.T - v * next;
-        } else { zoom.tx = 0; zoom.ty = 0; }
+        zoom.tx = mx - pinch.L - u * next;
+        zoom.ty = my - pinch.T - v * next;
         applyZoom();
       }
       e.stopPropagation();
@@ -611,8 +619,9 @@
       // A touch is captured only once it is a drag. Capturing the first finger
       // on contact eats the second one, and the pinch never starts.
       if (e.pointerType !== 'touch') { try { canvas.setPointerCapture(e.pointerId); } catch {} }
-      // A finger taps to click and drags to scroll the page; a mouse presses, moves and releases.
-      if (e.pointerType === 'touch') { finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false }; return; }
+      // A finger taps to click. Its drag pans the picture only while magnified.
+      // A mouse presses, moves and releases.
+      if (e.pointerType === 'touch') { touchTap = true; finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false }; return; }
       held = true;
       pointer(e, 'down', { button: button(e) });
     });
@@ -623,13 +632,14 @@
       const dx = e.clientX - finger.x, dy = e.clientY - finger.y;
       if (!finger.dragged && Math.hypot(dx, dy) < 9) return;
       finger.dragged = true;
+      touchTap = false;
       try { canvas.setPointerCapture(finger.id); } catch {}
-      if (performance.now() - movedAt < 30) return;
-      movedAt = performance.now();
-      const scale = place().scale || 1;
-      link.send({ kind: 'wheel', dx: -dx / scale, dy: -dy / scale });
       finger.x = e.clientX;
       finger.y = e.clientY;
+      if (zoom.z <= 1.001) return;
+      zoom.tx += dx;
+      zoom.ty += dy;
+      applyZoom();
     });
     const release = (e) => {
       if (pinch || pts.size) return;
@@ -637,7 +647,12 @@
         if (e.pointerId !== finger.id) return;
         const tap = !finger.dragged && e.type === 'pointerup';
         finger = null;
-        if (tap) { lastTap = { x: e.clientX, y: e.clientY }; pointer(e, 'tap', { button: 'left' }); afterTap(); }
+        if (tap) {
+          lastTap = { x: e.clientX, y: e.clientY };
+          pointer(e, 'tap', { button: 'left' });
+          if (e.pointerType === 'touch') openKeyboard();
+          afterTap();
+        }
         return;
       }
       if (!held) return;
@@ -646,6 +661,17 @@
     };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', release);
+    // The keyboard must be opened in the tap's own touchend or click. A focus
+    // later, after the guest has answered, does not open it.
+    const keyboardIfTap = (e) => {
+      if (!touchTap) return;
+      if (e.touches && (e.touches.length || e.changedTouches.length !== 1)) return;
+      if (e.pointerType === 'mouse') return;
+      openKeyboard();
+    };
+    canvas.addEventListener('touchend', keyboardIfTap);
+    canvas.addEventListener('click', (e) => { keyboardIfTap(e); touchTap = false; });
+    canvas.addEventListener('pointercancel', () => { touchTap = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();

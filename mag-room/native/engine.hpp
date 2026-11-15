@@ -2287,7 +2287,8 @@ private:
       if (!msgs.isArr() || msgs.arr->size() < 4) return;
       size_t total = 0;
       for (size_t i = 1; i < msgs.arr->size(); ++i) total += goal::tokens_of((*msgs.arr)[i]);
-      size_t target = (size_t)((double)total * keep_fraction);
+      const size_t cpu_window = (size_t)std::max(1200.0, goal::envd("MAG_ROOM_GOAL_COMPACT_TOKENS", 3500));
+      size_t target = std::min((size_t)((double)total * keep_fraction), cpu_window);
       if (target < 800) target = 800;
       const int n = goal::shrink(msgs, b.goal, target);
       if (n) {
@@ -3238,14 +3239,21 @@ private:
                   result = tools::fail("Die Seite will eine Anmeldung oder ein Captcha. Das ist kein Ergebnis. Rufe goal_blocked auf (kind login oder captcha) oder browser_login.");
                 else if (jbool(b.goal, "shopping")) {
                   const Val *items = args.find("items");
-                  if (!items || !items->isArr() || items->asArr().empty())
-                    result = tools::fail("Ein Such- oder Kaufauftrag braucht items: name und url von einer Seite, die du gesehen hast.");
+                  const size_t minimum = (size_t)std::max(1.0, jnum(b.goal, "min_items", 1));
+                  if (!items || !items->isArr() || items->asArr().size() < minimum)
+                    result = tools::fail("Mindestens " + std::to_string(minimum) +
+                                         " unterschiedliche Artikel mit name und URL von einer gesehenen Seite nötig.");
                   else {
                     std::string bad;
+                    std::set<std::string> unique;
                     for (auto &it : items->asArr()) {
                       const std::string url = trim(jstr(it, "url")), item = trim(jstr(it, "name"));
+                      std::string canonical = lower(url);
+                      if (const size_t query = canonical.find('?'); query != std::string::npos) canonical.resize(query);
+                      while (!canonical.empty() && canonical.back() == '/') canonical.pop_back();
                       if (item.empty() || url.empty()) bad = "Jeder Artikel braucht name und url.";
                       else if (!goal::url_seen(b.goal, url)) bad = "Die URL stand auf keiner gesehenen Seite: " + clip(url, 160);
+                      else if (!unique.insert(canonical).second) bad = "Doppelter Artikel-Link: keine zwei verschiedenen Produkte.";
                       if (!bad.empty()) break;
                     }
                     if (!bad.empty()) result = tools::fail(bad);

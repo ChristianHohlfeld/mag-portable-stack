@@ -678,6 +678,10 @@ def sampling_line(job_id, value):
     step = int(match.group(1))
     with lock:
         item = jobs.get(job_id) or {}
+        # A hold already renamed the stage. A line that was already in the log
+        # must not put the old name back while the card is still cooling.
+        if item.get("cooling"):
+            return
         known = int(item.get("step", 0)) if item.get("phase") == 2 else -1
     if not 0 <= step <= 50 or step <= known:
         return

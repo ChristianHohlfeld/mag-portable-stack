@@ -67,7 +67,13 @@
       if (this.screen && !document.hidden) {
         if (open) this.control.send(SUBSCRIBE);
         if (this.chunks && now - this.chunks.stamp > 550) this.chunks = null;
-        if (now - (this.frameAt || this.waitAt) > 5000) this.startHttp(this.frameAt ? 'UDP-Bild stockt' : open ? 'UDP verbunden, aber kein Bild' : 'UDP nicht erreichbar');
+        // The control channel is the UDP path. A late picture means the VM is
+        // busy, not that UDP failed: screenshot polling then takes the
+        // controller's only thread and the last frame stays frozen.
+        if (now - (this.frameAt || this.waitAt) > 5000) {
+          if (open) { if (!this.frameAt) this.sayScreen('WebRTC/UDP · ' + this.vm + ' · warte auf Bild'); }
+          else this.startHttp(this.frameAt ? 'UDP-Bild stockt' : 'UDP nicht erreichbar');
+        }
       }
       if (this.console?.readyState === 'open' && this.hbAt && now - this.hbAt > 6000 && !document.hidden) {
         this.hbAt = 0;
@@ -77,10 +83,9 @@
     }
 
     // ---- the browser view ---------------------------------------------------
-    // The view (re)appears: ask for pictures now instead of at the next tick,
-    // and give them the usual time before falling back to HTTPS.
+    // The view (re)appears: ask for pictures now. A picture already on screen
+    // stays; HTTPS is only for a control channel that never opens.
     wantFrames() {
-      this.frameAt = 0;
       this.waitAt = performance.now();
       if (this.control?.readyState === 'open') this.control.send(SUBSCRIBE);
     }
@@ -117,6 +122,12 @@
     // then JPEG bytes. Pieces of an older frame are dropped, never waited for.
     receiveFrame(bytes) {
       if (!this.screen || document.hidden) return;
+      // A Blob is not a frame yet. new Uint8Array(blob) is empty, so every
+      // picture would be dropped while the control channel still says connected.
+      if (typeof Blob !== 'undefined' && bytes instanceof Blob) {
+        bytes.arrayBuffer().then((buf) => this.receiveFrame(buf)).catch(() => {});
+        return;
+      }
       const b = new Uint8Array(bytes);
       if (b.length < 8) return;
       const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -399,7 +410,12 @@
       back.disabled = state.can_go_back === false;
       forward.disabled = state.can_go_forward === false;
     };
-    const sync = () => { if (!document.hidden && !stopped) MAG.api('POST', '/api/browser/' + bot + '/state', {}).then(shown, () => {}); };
+    let syncing = false;
+    const sync = () => {
+      if (document.hidden || stopped || syncing) return;
+      syncing = true;
+      MAG.api('POST', '/api/browser/' + bot + '/state', {}).then(shown, () => {}).finally(() => { syncing = false; });
+    };
     const act = (action, body) => MAG.api('POST', '/api/browser/' + bot + '/' + action, body || {})
       .then((state) => { shown(state); setTimeout(sync, 700); }, (err) => { status.textContent = err.message; });
     const nav = (label, title, action) => el('button', { type: 'button', class: 'pill', text: label, title, 'aria-label': title, onclick: () => act(action) });
@@ -444,20 +460,23 @@
       if (field) {
         keys.type = state.secret ? 'password' : 'text';
         if (document.activeElement !== keys) { clearKeys(); keys.focus({ preventScroll: true }); }
-        // About 420 px of the page across the view: a form is as large as on the phone itself.
-        // The field across the view (at most 4x), its left edge at the left, near the top;
-        // without its box, about 420 px of the page around the tap.
+        // The field across the view (at most 4x), its left edge at the left, near the
+        // top, so the phone keyboard does not cover it. Same zoom a pinch uses.
         if (lastTap && zoom.z < 2) {          // lastTap: a finger's, never a mouse's
-          const r = canvas.parentNode.getBoundingClientRect(), g = place(), base = g.scale / zoom.z;
           const box = Array.isArray(state.field) && state.field.length === 4 ? state.field : null;
-          if (box && box[2] > 0) {
-            const z = Math.max(1.5, Math.min(4, (r.width * 0.92) / (box[2] * base)));
-            const left = (g.left - r.left - zoom.tx) / zoom.z, top = (g.top - r.top - zoom.ty) / zoom.z;   // the picture's corner in the view, unzoomed
+          const vw = canvas.clientWidth || 1, vh = canvas.clientHeight || 1;
+          if (box && box[2] > 8) {
+            const z = Math.max(1.5, Math.min(4, (vw * 0.92) / ((box[2] / 1440) * vw)));
             zoom.z = z;
-            zoom.tx = r.width * 0.04 - (left + box[0] * base) * z;
-            zoom.ty = r.height * 0.3 - (top + (box[1] + box[3] / 2) * base) * z;
+            zoom.tx = vw * 0.04 - (box[0] / 1440) * vw * z;
+            zoom.ty = vh * 0.3 - ((box[1] + box[3] / 2) / 900) * vh * z;
             applyZoom();
-          } else zoomTo(Math.max(2, Math.min(4, 1440 / 420)), lastTap.x, lastTap.y, undefined, r.height * 0.3);
+          } else {
+            zoomAt(Math.max(2, Math.min(4, 1440 / 420)), lastTap.x, lastTap.y);
+            const r = canvas.parentNode.getBoundingClientRect();
+            zoom.ty += r.top + r.height * 0.3 - lastTap.y;
+            applyZoom();
+          }
         }
       } else if (field === false && document.activeElement === keys) keys.blur();
     };
@@ -479,67 +498,105 @@
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= g.w || y >= g.h) return null;
       return { x: Math.min(1439, Math.max(0, (x * 1440) / g.w)), y: Math.min(899, Math.max(0, (y * 900) / g.h)) };
     };
-    // On a phone the page is small: it is looked at magnified. A field that
-    // takes the keyboard is brought up large where it was tapped, the
-    // magnifier button zooms in and out, and a finger then moves the view.
+    // The page is looked at magnified the way the old view did: two fingers
+    // pinch, the percent button fits the whole page, a tap lands on the point
+    // under the finger (the transformed picture), a drag scrolls the page.
     const zoom = { z: 1, tx: 0, ty: 0 };
     let lastTap = null;
+    const lens = el('button', { type: 'button', class: 'pill lens', text: '100%', title: 'Ganze Seite', 'aria-label': 'Ganze Seite', onclick: () => {
+      zoom.z = 1; zoom.tx = zoom.ty = 0; applyZoom();
+    } });
     const applyZoom = () => {
       const view = canvas.parentNode, vw = view?.clientWidth || 0, vh = view?.clientHeight || 0;
+      zoom.z = Math.max(1, Math.min(4, zoom.z));
       zoom.tx = Math.min(0, Math.max(vw - vw * zoom.z, zoom.tx));
       zoom.ty = Math.min(0, Math.max(vh - vh * zoom.z, zoom.ty));
+      if (zoom.z <= 1.001) { zoom.z = 1; zoom.tx = zoom.ty = 0; }
       canvas.style.transform = zoom.z > 1 ? 'translate(' + zoom.tx + 'px,' + zoom.ty + 'px) scale(' + zoom.z + ')' : '';
-      lens.textContent = zoom.z > 1 ? '－' : '＋';
+      lens.textContent = Math.round(zoom.z * 100) + '%';
     };
-    // Zoom to z with the point (x, y) of the screen at (atX, atY) of the view.
-    const zoomTo = (z, x, y, atX, atY) => {
-      const r = canvas.parentNode.getBoundingClientRect();
-      const cx = (x - r.left - zoom.tx) / zoom.z, cy = (y - r.top - zoom.ty) / zoom.z;
-      zoom.z = z;
-      zoom.tx = (atX ?? x - r.left) - cx * z;
-      zoom.ty = (atY ?? y - r.top) - cy * z;
+    // Keep the client point (cx, cy) on the same pixel of the page. This is the
+    // old view's zoom: translate then scale about the canvas origin.
+    const zoomAt = (next, cx, cy) => {
+      next = Math.max(1, Math.min(4, next));
+      const r = canvas.getBoundingClientRect();
+      const ox = (cx ?? r.left + r.width / 2) - (r.left - zoom.tx);
+      const oy = (cy ?? r.top + r.height / 2) - (r.top - zoom.ty);
+      zoom.tx = ox - (ox - zoom.tx) * next / zoom.z;
+      zoom.ty = oy - (oy - zoom.ty) * next / zoom.z;
+      zoom.z = next;
       applyZoom();
     };
-    const lens = el('button', { type: 'button', class: 'pill lens', text: '＋', title: 'Vergrößern', 'aria-label': 'Vergrößern', onclick: () => {
-      if (zoom.z > 1) { zoom.z = 1; zoom.tx = zoom.ty = 0; return applyZoom(); }
-      const r = canvas.parentNode.getBoundingClientRect();
-      zoomTo(2.5, lastTap?.x ?? r.left + r.width / 2, lastTap?.y ?? r.top + r.height / 2, r.width / 2, r.height / 2);
-    } });
     const button = (e) => (e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left');
     let held = false, movedAt = 0, finger = null;
+    const pts = new Map();
+    let pinch = null;
     const pointer = (e, action, extra) => {
       const at = spot(e);
       if (!at) return;
       if (action === 'move') { if (performance.now() - movedAt < 55) return; movedAt = performance.now(); }
       if (!link.send({ kind: 'pointer', ...at, action, ...(extra || {}) })) status.textContent = 'Kein Steuerkanal verbunden';
     };
+    // Pinch before the click handler. The second finger never becomes a tap.
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || e.target !== canvas) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2) {
+        const [a, b] = [...pts.values()];
+        pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: zoom.z };
+        finger = null;
+        held = false;
+        for (const id of pts.keys()) { try { canvas.releasePointerCapture(id); } catch {} }
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }, true);
+    canvas.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!pinch || pts.size < 2) return;
+      const [a, b] = [...pts.values()];
+      zoomAt(pinch.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d, (a.x + b.x) / 2, (a.y + b.y) / 2);
+      e.stopPropagation();
+    }, true);
+    const pinchEnd = (e) => {
+      if (!pts.has(e.pointerId)) return;
+      const was = pinch;
+      pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      if (was) { finger = null; held = false; e.stopPropagation(); }
+    };
+    canvas.addEventListener('pointerup', pinchEnd, true);
+    canvas.addEventListener('pointercancel', pinchEnd, true);
     canvas.addEventListener('pointerdown', (e) => {
       if (e.button > 2) return;
       e.preventDefault();
       canvas.focus({ preventScroll: true });
-      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      // A touch is captured only once it is a drag. Capturing the first finger
+      // on contact eats the second one, and the pinch never starts.
+      if (e.pointerType !== 'touch') { try { canvas.setPointerCapture(e.pointerId); } catch {} }
       // A finger taps to click and drags to scroll the page; a mouse presses, moves and releases.
       if (e.pointerType === 'touch') { finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false }; return; }
       held = true;
       pointer(e, 'down', { button: button(e) });
     });
     canvas.addEventListener('pointermove', (e) => {
+      if (pinch) return;
       if (!finger) return pointer(e, 'move');
       if (e.pointerId !== finger.id) return;
       const dx = e.clientX - finger.x, dy = e.clientY - finger.y;
       if (!finger.dragged && Math.hypot(dx, dy) < 9) return;
       finger.dragged = true;
+      try { canvas.setPointerCapture(finger.id); } catch {}
       if (performance.now() - movedAt < 30) return;
       movedAt = performance.now();
-      if (zoom.z > 1) { zoom.tx += dx; zoom.ty += dy; applyZoom(); }
-      else {
-        const scale = place().scale || 1;
-        link.send({ kind: 'wheel', dx: -dx / scale, dy: -dy / scale });
-      }
+      const scale = place().scale || 1;
+      link.send({ kind: 'wheel', dx: -dx / scale, dy: -dy / scale });
       finger.x = e.clientX;
       finger.y = e.clientY;
     });
     const release = (e) => {
+      if (pinch || pts.size) return;
       if (finger) {
         if (e.pointerId !== finger.id) return;
         const tap = !finger.dragged && e.type === 'pointerup';
@@ -554,7 +611,11 @@
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', release);
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-    canvas.addEventListener('wheel', (e) => { e.preventDefault(); link.send({ kind: 'wheel', dy: e.deltaY, dx: e.deltaX }); }, { passive: false });
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) { zoomAt(zoom.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY); return; }
+      link.send({ kind: 'wheel', dy: e.deltaY, dx: e.deltaX });
+    }, { passive: false });
     canvas.addEventListener('keydown', (e) => {
       const named = ['Enter', 'Escape', 'Backspace', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert'];
       if (e.isComposing) return;
@@ -580,10 +641,15 @@
     link.watch(screen);
     sync();
     const timer = setInterval(sync, 3000);
+    const onResize = () => { if (!stopped && zoom.z > 1) applyZoom(); };
+    window.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('resize', onResize);
     return { node, stop() {
       if (stopped) return;
       stopped = true;
       clearInterval(timer);
+      window.removeEventListener('resize', onResize);
+      window.visualViewport?.removeEventListener('resize', onResize);
       full.close();
       link.unwatch(screen);
     } };

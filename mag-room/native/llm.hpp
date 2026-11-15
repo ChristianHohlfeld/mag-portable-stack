@@ -87,9 +87,12 @@ inline std::string short_error(std::string text) {
 // Takes a model's content as it streams and tells text from thinking. Raw
 // channel markup is read for what it means: Gemma's <|channel>thought …
 // <channel|> and gpt-oss's <|channel|>analysis<|message|> … <|end|> are
-// thoughts, a raw tool call and a turn the model made up for somebody else
-// are dropped, every other tag just disappears. A tag that is still arriving
-// is held back until it is whole. Inside code (a fenced block, an inline
+// thoughts, and so is <thought>, <think> or <thinking>, closed or not (a
+// partial "<thought" that is still arriving is held, never shown). A raw
+// tool call and a turn the model made up for somebody else are dropped,
+// every other tag just disappears. A line that is an English step plan
+// ("Step 1: …") is the same kind of note: the step card already shows the
+// action, so the line is not text. Inside code (a fenced block, an inline
 // span) nothing is markup: a bot may well explain a prompt format.
 class Clean {
 public:
@@ -116,28 +119,43 @@ public:
           if (pend_.compare(lt, t.size(), t) == 0) { tag = t; break; }
           if (pend_.size() - lt < t.size() && t.compare(0, pend_.size() - lt, pend_, lt, std::string::npos) == 0) partial = true;
         }
-      if (tag.empty()) {
-        if (partial) { pend_.erase(0, lt); return; } // the rest of the tag is still to come
-        put("<", text, thought);
-        i = lt + 1;
+      size_t took = 0;
+      const int th = tag.empty() && (mode_ != TEXT || !code()) ? thought_at(pend_, lt, took) : 0;
+      if (tag.empty() && (partial || th == 1)) { pend_.erase(0, lt); return; } // the rest of the tag is still to come
+      if (!tag.empty()) {
+        i = lt + tag.size();
+        take(tag, text, thought);
         continue;
       }
-      i = lt + tag.size();
-      take(tag, text, thought);
+      if (th == 2 || th == 3) {
+        if (mode_ == TEXT) spill(text); // a plan held on this line ends before the thought
+        mode_ = th == 2 ? THOUGHT : TEXT;
+        i = lt + took;
+        continue;
+      }
+      put("<", text, thought);
+      i = lt + 1;
     }
     pend_.clear();
   }
   // The stream is over. The beginning of a tag that never arrived is no text.
+  // An unclosed analysis channel and a step plan held back for its newline
+  // are not text either.
   void flush(std::string &text, std::string &thought) {
     const std::string rest = pend_;
     pend_.clear();
-    if (mode_ != HEAD && rest.size() < 2) put(rest, text, thought);
+    if (mode_ == HEAD) {
+      if (lower(head_).find("analysis") != std::string::npos) thought += head_;
+      head_.clear();
+    } else if (rest.size() < 2) put(rest, text, thought);
+    if (mode_ == TEXT) spill(text);
+    else line_.clear();
   }
 
 private:
   enum Mode { TEXT, THOUGHT, DROP, HEAD } mode_ = TEXT;
   char kind_ = 0; // of a head: 'c' Gemma channel, 't' turn role, 'h' gpt-oss message header
-  std::string pend_, head_;
+  std::string pend_, head_, line_; // line_: the text line still arriving, so a step plan can be dropped whole
   bool fence_ = false, inline_ = false; // the text is inside a code block / an inline code span
   size_t ticks_ = 0;                    // backticks in a row, so far
 
@@ -147,17 +165,83 @@ private:
     return fence || (ticks_ > 0 && ticks_ < 3 ? !inline_ : inline_);
   }
 
+  // 0 not a thought tag, 1 still arriving, 2 opens a thought, 3 closes one.
+  // "<thought" counts once it cannot be a longer word, even without its ">".
+  static int thought_at(const std::string &s, size_t at, size_t &take) {
+    auto word = [&](const char *p, bool closing) -> int {
+      size_t i = 0;
+      const std::string pref = closing ? std::string("</") + p : std::string("<") + p;
+      for (; i < pref.size(); ++i) {
+        if (at + i >= s.size()) return 1;
+        if (tolower((unsigned char)s[at + i]) != pref[i]) return 0;
+      }
+      if (at + i >= s.size()) return 1;
+      const unsigned char c = (unsigned char)s[at + i];
+      if (c == '>') { take = i + 1; return closing ? 3 : 2; }
+      if (std::isalpha(c)) return 0;
+      take = i;
+      return closing ? 3 : 2;
+    };
+    for (const char *p : {"thinking", "thought", "think"}) {
+      if (int c = word(p, true)) return c;
+      if (int c = word(p, false)) return c;
+    }
+    return 0;
+  }
+  // A line of the model's own plan: "Step 1: Type search term…". The step card shows the action.
+  static bool step_plan(std::string line) {
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    line = trim(line);
+    const std::string low = lower(line);
+    if (low.size() < 6 || low.compare(0, 4, "step") != 0) return false;
+    size_t j = 4;
+    while (j < low.size() && (low[j] == ' ' || low[j] == '\t')) ++j;
+    if (j >= low.size() || !isdigit((unsigned char)low[j])) return false;
+    while (j < low.size() && isdigit((unsigned char)low[j])) ++j;
+    while (j < low.size() && (low[j] == ' ' || low[j] == '\t')) ++j;
+    return j < low.size() && low[j] == ':';
+  }
+  // The line so far could still become "Step N:". "Steht" and "Steps" cannot.
+  static bool maybe_step(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    if (i == line.size()) return false;
+    const std::string low = lower(line.substr(i));
+    size_t k = 0;
+    while (k < low.size() && k < 4 && low[k] == "step"[k]) ++k;
+    if (k < 4) return k == low.size();
+    size_t j = 4;
+    if (j < low.size() && low[j] != ' ' && low[j] != '\t') return false;
+    while (j < low.size() && (low[j] == ' ' || low[j] == '\t')) ++j;
+    if (j == low.size()) return true;
+    if (!isdigit((unsigned char)low[j])) return false;
+    while (j < low.size() && isdigit((unsigned char)low[j])) ++j;
+    while (j < low.size() && (low[j] == ' ' || low[j] == '\t')) ++j;
+    if (j == low.size()) return true;
+    return low[j] == ':';
+  }
+  void spill(std::string &text) {
+    if (!step_plan(line_)) text += line_;
+    line_.clear();
+  }
   void put(const std::string &piece, std::string &text, std::string &thought) {
     if (mode_ == HEAD) head_ += piece; // gpt-oss: channel and recipient of the message that follows
     else if (mode_ == THOUGHT) thought += piece;
     else if (mode_ == TEXT) {
-      text += piece;
-      for (const char c : piece) {
-        if (c == '`') { ++ticks_; continue; }
-        if (ticks_ >= 3) fence_ = !fence_;
-        else if (ticks_ > 0 && !fence_) inline_ = !inline_;
-        ticks_ = 0;
-        if (c == '\n') inline_ = false;
+      for (const unsigned char c : piece) {
+        const bool in_code = fence_ || inline_;
+        if (c == '`') ++ticks_;
+        else {
+          if (ticks_ >= 3) fence_ = !fence_;
+          else if (ticks_ > 0 && !fence_) inline_ = !inline_;
+          ticks_ = 0;
+          if (c == '\n') inline_ = false;
+        }
+        line_ += (char)c;
+        if (c == '\n') {
+          if (!in_code && step_plan(line_)) line_.clear();
+          else spill(text);
+        } else if (in_code || fence_ || inline_ || !maybe_step(line_)) spill(text);
       }
     }
   }
@@ -439,10 +523,15 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   opt.stall_s = 300;
   opt.cancel = cancel;
   opt.on_data = [&](const char *data, size_t n) {
+    // Stop already happened: a late body (the model was still thinking) is not
+    // an answer. Curl notices the flag only about once a second, so the whole
+    // reply can arrive in this callback first; it must not be shown.
+    if (cancel && cancel->stopped()) return false;
     if (http_body.size() < 65536) http_body.append(data, std::min(n, 65536 - http_body.size()));
     buffer.append(data, n);
     size_t nl;
     while ((nl = buffer.find('\n')) != std::string::npos) {
+      if (cancel && cancel->stopped()) return false;
       std::string line = buffer.substr(0, nl);
       buffer.erase(0, nl + 1);
       if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -452,7 +541,9 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   };
   const http::ClientResult res = http::fetch(be.url("/v1/chat/completions"), opt);
   out.cancelled = res.cancelled;
-  if (out.guard.empty()) {
+  // A stopped turn keeps what was already on screen. Text still held back
+  // (a tag, a step line) is not flushed into the chat after the stop.
+  if (out.guard.empty() && !out.cancelled) {
     std::string text, thought, more;
     clean_thoughts.flush(more, more);
     clean.flush(text, thought);

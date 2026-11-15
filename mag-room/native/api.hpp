@@ -686,7 +686,10 @@ private:
         note["model3d"] = m3;
         room_.add(note);
       }
-    } else {
+    } else if (mode != "image" && mode != "video") {
+      // A picture or a video is an order for the worker, like a 3D order above:
+      // the bots read it as context and are not asked, so they do not answer
+      // and do not order the same thing again.
       engine_.on_human(stored, to, mentions);
     }
     http::send_json(fd, 201, out);

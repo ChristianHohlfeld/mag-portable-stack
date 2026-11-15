@@ -1938,8 +1938,9 @@ private:
 
   // A tool call written into the text as JSON instead of being made: a code
   // block, or JSON from the start of a line to the end of a line, that holds
-  // a scene for scene_3d (its actors) or a call {"name": …, "arguments": {…}}
-  // of a tool the bot has. Returns the text without it; `meant` names the tool.
+  // a scene for scene_3d (its actors), a call {"name": …, "arguments": {…}}
+  // of a tool the bot has, or {"action": "<tool>", …} whose other fields are
+  // the arguments. Returns the text without it; `meant` names the tool.
   static std::string without_tool_json(const std::string &text, const std::set<std::string> &offered, std::string &meant) {
     const auto npos = std::string::npos;
     const auto call_of = [&](const std::string &raw) -> std::string {
@@ -1948,9 +1949,14 @@ private:
       if (const Val *actors = v.find("actors"); actors && actors->isArr() && offered.count("scene_3d")) return "scene_3d";
       std::string tool = jstr(v, "name", jstr(v, "tool", jstr(v, "function")));
       if (starts_with(tool, "functions.")) tool = tool.substr(10);
-      if (!offered.count(tool)) return "";
-      for (const char *key : {"arguments", "parameters", "args", "input"})
-        if (const Val *a = v.find(key); a && (a->isObj() || (a->type == Val::STR && jparse(a->str).isObj()))) return tool;
+      if (offered.count(tool))
+        for (const char *key : {"arguments", "parameters", "args", "input"})
+          if (const Val *a = v.find(key); a && (a->isObj() || (a->type == Val::STR && jparse(a->str).isObj()))) return tool;
+      // {"action": "image_generate", "prompt": "…"}: the action names the tool,
+      // and every other field is an argument. An action that is not a tool
+      // the bot has ("add", "list", …) stays text.
+      const std::string action = jstr(v, "action");
+      if (!action.empty() && offered.count(action)) return action;
       return "";
     };
     // Code blocks (one the model never closed runs to the end).
@@ -1970,7 +1976,9 @@ private:
     // JSON without a fence: from a line that starts with { to a line that ends with }.
     if (out.size() < 100000)
       for (size_t from = 0; from < out.size() && meant.empty(); from = out.find('\n', from) == npos ? npos : out.find('\n', from) + 1) {
-        if (out[from] != '{') continue;
+        size_t begin = from;
+        while (begin < out.size() && (out[begin] == ' ' || out[begin] == '\t')) ++begin;
+        if (begin >= out.size() || out[begin] != '{') continue;
         for (size_t to = out.find('\n', from); ; to = out.find('\n', to + 1)) {
           const size_t stop = to == npos ? out.size() : to;
           const std::string chunk = out.substr(from, stop - from);
@@ -2500,6 +2508,28 @@ private:
     std::set<std::string> offered;
     for (auto &def : tools.asArr())
       if (const Val *f = def.find("function")) offered.insert(jstr(*f, "name"));
+    // The message that started this turn is an order for a picture or a video.
+    // The newest thing Chris wrote decides: an older order read along as context
+    // does not, a later question of his does not. Such a turn must not order
+    // the same picture or video again (the worker already has it).
+    bool ordered_media = false;
+    if (reason == "human" && b.wire["messages"].isArr())
+      for (auto it = b.wire["messages"].arr->rbegin(); it != b.wire["messages"].arr->rend(); ++it) {
+        if (jstr(*it, "role") != "user") continue;
+        const Val *items = it->find("_items");
+        if (!items || !items->isArr()) break;
+        std::string newest;
+        bool order = false;
+        for (auto &item : items->asArr()) {
+          Val src;
+          if (!room_.get(jstr(item, "id"), src) || jstr(src, "from") != "chris") continue;
+          if (!newest.empty() && jstr(src, "id") <= newest) continue;
+          newest = jstr(src, "id");
+          order = jbool(src, "order_image") || jbool(src, "order_video");
+        }
+        ordered_media = order;
+        break;
+      }
     std::string error;
     const int64_t deadline = mono_ms() + (int64_t)room_.cfg.turn_budget_s * 1000;
     for (int step = 0; step <= room_.cfg.max_steps; ++step) {
@@ -2634,7 +2664,10 @@ private:
       if (res.calls.empty()) {
         // Once per turn the bot is told so and makes the call for real (or
         // says in a sentence why it cannot, e.g. no 3D model in the chat).
-        if (!meant.empty() && !dumped) {
+        // An order for a picture or a video already started the job. Telling the
+        // bot to call image_generate or video_generate now would start another.
+        const bool already_ordered = ordered_media && (meant == "image_generate" || meant == "video_generate");
+        if (!meant.empty() && !dumped && !already_ordered) {
           dumped = true;
           Val note = Val::object();
           note["role"] = "user";
@@ -2852,6 +2885,15 @@ private:
               result = {text, !starts_with(text, "Fehler")};
             } else if (c.name == "routine") {
               result = routine_call(b, args, cancel.get(), card);
+            } else if (ordered_media && (c.name == "image_generate" || c.name == "video_generate")) {
+              // The turn was started by Chris's own order of this picture or video.
+              // Calling the tool would put a second job on the card, and a nudge
+              // that then called it a third. The text of a written-out call is
+              // already gone; the tool itself does not run.
+              result = {c.name == "image_generate"
+                            ? "Das Bild ist schon als Auftrag an Bild erzeugen unterwegs. image_generate wird dafür nicht aufgerufen."
+                            : "Das Video ist schon als Auftrag an Video erzeugen unterwegs. video_generate wird dafür nicht aufgerufen.",
+                        false, true};
             } else if (Plugins::is_tool(c.name)) {
               // A tool that changes something waits for Chris: the step shows
               // what is asked, and his answer comes back through /api/approval.

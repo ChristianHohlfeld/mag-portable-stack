@@ -899,10 +899,41 @@
     // The room's markers and a lone PASS are for the room (it takes them out too; this is for a page from before).
     text = text.replace(/\[\[MAG:[^\]]*\]\]/g, '');
     if (/^[\s*_`"'.()[\]]*pass[\s*_`"'.!()[\]]*$/i.test(text)) return '';
+    // Thoughts, closed or not: <thought, <think>, <thinking>, and an analysis channel.
+    // A "<thought" that never got its ">" still hides everything after it.
+    text = text.replace(/<\|channel\|>\s*analysis\b[\s\S]*?(?:<\|end\|>|<\|start\|>|$)/gi, '');
+    text = text.replace(/<\/?think(?:ing)?\b[^>]*>[\s\S]*?(?:<\/think(?:ing)?>|$)/gi, '');
+    text = text.replace(/<thought\b[^>]*>[\s\S]*?(?:<\/thought>|$)/gi, '');
+    text = text.replace(/<thought\b[\s\S]*$/gi, '');
+    text = text.replace(/<\/thought>/gi, '');
     // A fenced block that is a tool call written out (JSON with an action or a function name).
     text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n```/g, (all, inner) => {
       try { const v = JSON.parse(inner); return v && typeof v === 'object' && (v.action || v.name || v.arguments || v.tool) ? '' : all; } catch { return all; }
     });
+    // The same call without a fence, written over several lines: from a line
+    // that starts with { to a line that ends with }, when the object names a
+    // tool (action, name, tool) or carries arguments.
+    {
+      const lines = text.split('\n');
+      const drop = new Array(lines.length).fill(false);
+      let fence = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (/^\s*```/.test(lines[i])) { fence = !fence; continue; }
+        if (fence || drop[i] || !/^\s*\{/.test(lines[i])) continue;
+        for (let j = i; j < lines.length; j++) {
+          if (j > i && /^\s*```/.test(lines[j])) break;
+          if (!/\}\s*$/.test(lines[j])) continue;
+          let v;
+          try { v = JSON.parse(lines.slice(i, j + 1).join('\n')); } catch { continue; }
+          if (v && typeof v === 'object' && !Array.isArray(v) && (v.action || v.name || v.tool || v.arguments)) {
+            for (let k = i; k <= j; k++) drop[k] = true;
+            i = j;
+          }
+          break;
+        }
+      }
+      text = lines.filter((_, i) => !drop[i]).join('\n');
+    }
     const lines = text.split('\n');
     const lang = (line) => {
       const words = line.toLowerCase().match(/[a-zäöüß']+/g) || [];
@@ -918,6 +949,8 @@
       const t = line.trim();
       if (/^<br\s*\/?>$/i.test(t)) return false;
       if (/\bconsent\b/i.test(t)) return false;
+      // "Step 1: …" is the model's plan. The step card already shows the action.
+      if (/^\s*step\s+\d+\s*:/i.test(t)) return false;
       if (/^\{.*\}$/.test(t)) { try { JSON.parse(t); return false; } catch { /* text */ } }
       return !(german && lang(t) === 'en');
     });

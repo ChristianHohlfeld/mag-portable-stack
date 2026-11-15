@@ -412,7 +412,10 @@
     });
     sendBtn.addEventListener('click', send);
     $('#attach').addEventListener('click', (e) => MAG.menu(e.currentTarget, [
-      { icon: 'image', label: 'Datei oder Foto', run: () => pick('', false) },
+      // An empty accept makes Android offer Files only. The gallery needs image types,
+      // and no callback, so several photos can be chosen. A file stays every type.
+      { icon: 'image', label: 'Galerie', run: () => pick('image/png,image/jpeg,image/webp', false) },
+      { icon: 'file', label: 'Datei', run: () => pick('', false) },
       { icon: 'camera', label: 'Kamera', run: () => shoot() },
       { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; modeImage = modeVideo = false; paintStaged(); } },
       { icon: 'image', label: 'Bild erzeugen', run: () => { modeImage = true; mode3d = modeVideo = false; paintStaged(); input.focus(); } },

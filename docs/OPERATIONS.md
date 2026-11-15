@@ -55,7 +55,7 @@ persisted once per task revision, not reinserted as an ephemeral tail;
 `cache_prompt=true`, one slot and NUMA pinning remain unchanged.
 
 To verify the cache regression, check the bot details (KV-Cache, Prompt-Lesen,
-Browser-Auftrag) and `journalctl -u magroom -f` for
+Browser-Auftrag) and `journalctl -u mag-120 -f` for
 `engine: lena prefill prompt=N cached=M ms=T goal=active eyes=off`.
 The cache counts depend on what the llama-server version reports. Compare
 at least three consecutive tool calls: prompt processing should no longer

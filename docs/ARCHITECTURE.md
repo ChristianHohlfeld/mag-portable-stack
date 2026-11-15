@@ -650,24 +650,25 @@ element list and its version), candidates and the last error. It survives a
 restart of the room. Trash and Stop end it. "Nicht … sondern …" updates the
 text. "Done?", "Und?" and "Hallo" do not replace it.
 
-While it is open the request ends with a short tail (task, success, page so
-far) that is not part of the stored prefix. `tool_choice` is `required`,
+While it is open, the goal instructions are appended **once per goal ID and
+revision** to the persistent wire log. Later browser tool calls extend the
+same byte-stable prefix; no ephemeral tail is inserted into a past user
+message. This is necessary for llama.cpp one-slot KV reuse on the CPU. `tool_choice` is `required`,
 `parallel_tool_calls` is false, and the sample is temperature 0.3, top_p
 0.9, top_k 40 (`MAG_ROOM_GOAL_TEMP`, `MAG_ROOM_GOAL_TOP_P`,
 `MAG_ROOM_GOAL_TOP_K`). A stop without a tool call is an unfinished step:
 the room asks for the next tool, and the same stall twice (or four tries)
-becomes one line, "Ich hänge bei …". Only `goal_finish` (a summary; a shop
-or a search also needs items whose URLs were on a page the bot actually
-saw) and `goal_blocked` (login, captcha, consent) end it. A login wall is
+becomes one line, "Ich hänge bei …". Only `goal_finish` (a summary; a request for two distinct products needs
+two distinct URLs from pages the bot actually saw) and `goal_blocked` (login, captcha, consent) end it. A login wall is
 the login card, not a made-up result. `[[MAG:WEITER]]` is not required.
 The next human message continues the same goal and the current page.
 
 The model sees about 2500 characters of page text and up to 40 numbered
 elements (a product line keeps name, price and link). Element numbers
-belong to that page version. The full snapshot stays in the goal. When the
-bot's vision projector is loaded, a half-size JPEG of the page after an
-open, a click, Back or Enter goes to the model as `image_url`
-(`MAG_ROOM_GOAL_EYES=0` turns that off). A tool call written into the
+belong to that page version. The full snapshot stays in the goal. The half-size JPEG still appears in the step card, but on the dual-socket
+Xeon CPU-only deployment **does not go to the model by default**: BF16
+mmproj image prefill was too costly. `MAG_ROOM_GOAL_EYES=1` explicitly
+opts in and stores each image once in the wire log. A tool call written into the
 thoughts as `<|tool_call>call:NAME{…}<tool_call|>` is executed when it is
 the only complete call, the tool is offered and the arguments match;
 otherwise the open goal is retried. That markup is never shown.

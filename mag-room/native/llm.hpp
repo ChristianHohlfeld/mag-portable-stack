@@ -523,10 +523,15 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   opt.stall_s = 300;
   opt.cancel = cancel;
   opt.on_data = [&](const char *data, size_t n) {
+    // Stop already happened: a late body (the model was still thinking) is not
+    // an answer. Curl notices the flag only about once a second, so the whole
+    // reply can arrive in this callback first; it must not be shown.
+    if (cancel && cancel->stopped()) return false;
     if (http_body.size() < 65536) http_body.append(data, std::min(n, 65536 - http_body.size()));
     buffer.append(data, n);
     size_t nl;
     while ((nl = buffer.find('\n')) != std::string::npos) {
+      if (cancel && cancel->stopped()) return false;
       std::string line = buffer.substr(0, nl);
       buffer.erase(0, nl + 1);
       if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -536,7 +541,9 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   };
   const http::ClientResult res = http::fetch(be.url("/v1/chat/completions"), opt);
   out.cancelled = res.cancelled;
-  if (out.guard.empty()) {
+  // A stopped turn keeps what was already on screen. Text still held back
+  // (a tag, a step line) is not flushed into the chat after the stop.
+  if (out.guard.empty() && !out.cancelled) {
     std::string text, thought, more;
     clean_thoughts.flush(more, more);
     clean.flush(text, thought);

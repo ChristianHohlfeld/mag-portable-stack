@@ -53,6 +53,13 @@ int main() {
   // The start of a tag that never arrived is no text; a lone bracket is.
   CHECK(clean({"Ende<|chan"}).first == "Ende");
   CHECK(clean({"a <"}).first == "a <");
+  // A plan and an unclosed "<thought" (Lena, a browser task): not text, in any split.
+  const std::string plan = "Step 1: Type search term in element 3. Step 2: Press Enter. Step 3: Look at results.";
+  const std::string scroll = "Step 1: Scroll down to see more results...";
+  CHECK(any_split("Ich schaue nach.\n" + plan + "\nFertig.", {"Ich schaue nach.\nFertig.", ""}));
+  CHECK(any_split("Weiter im Blick.\n<thought\n" + scroll, {"Weiter im Blick.\n", "\n" + scroll}));
+  CHECK(any_split("Ja.<think>still</think> Nein.", {"Ja. Nein.", "still"}));
+  CHECK(any_split("Ja.<|channel|>analysis the plan", {"Ja.", "analysis the plan"}));
 
   // ---- circles ---------------------------------------------------------------
   const std::string round = "Die neue Szene „Das große Abenteuer“ ist bereit! Ich habe eine längere Abfolge eingebaut. 🦊✨\n";

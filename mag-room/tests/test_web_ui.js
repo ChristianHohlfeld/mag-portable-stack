@@ -44,6 +44,11 @@ assert.strictEqual(MAG.tidy('Ruf das so: {"action": "image_generate", "prompt": 
 const plain = '{\n  "ok": true,\n  "n": 1\n}';
 assert.strictEqual(MAG.tidy(plain), plain);
 assert.strictEqual(MAG.tidy('Schau:\n' + noah + '\nFertig.'), 'Schau:\nFertig.');
+const plan = 'Step 1: Type search term in element 3. Step 2: Press Enter. Step 3: Look at results.';
+const scroll = 'Step 1: Scroll down to see more results...';
+assert.strictEqual(MAG.tidy('Ich schaue nach.\n' + plan + '\nFertig.'), 'Ich schaue nach.\nFertig.');
+assert.strictEqual(MAG.tidy('Weiter im Blick.\n<thought\n' + scroll), 'Weiter im Blick.');
+assert.strictEqual(MAG.tidy('Ja.<|channel|>analysis<|message|>Hm.<|end|>Passt.'), 'Ja.Passt.');
 
 document.getElementById('attach').click();
 const labels = [...document.querySelectorAll('.menu button')].map((b) => b.textContent.trim());

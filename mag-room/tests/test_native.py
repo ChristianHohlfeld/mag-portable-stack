@@ -1327,6 +1327,20 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((m["text"], "reasoning" in m), ("Nichts gedacht.", False))
         m = ask("lena", "Gern.")   # and the bot's own log holds what was shown
         self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "assistant" and x["content"]][-3], "Die Antwort ist 4.")
+        # A browser task wrote its plan into the chat, and an unclosed "<thought"
+        # with the next plan. Neither is stored, and neither is streamed.
+        plan = "Step 1: Type search term in element 3. Step 2: Press Enter. Step 3: Look at results."
+        scroll = "Step 1: Scroll down to see more results..."
+
+        def streamed(since):
+            return "".join((e.get("text") or "") for e in r.events[since:] if e.get("t") == "delta")
+        mark = len(r.events)
+        m = ask("lena", "Ich schaue nach.\n" + plan + "\nFertig.")
+        self.assertEqual(m["text"], "Ich schaue nach.\nFertig.")
+        self.assertNotIn(plan, m["text"] + streamed(mark))
+        mark = len(r.events)
+        m = ask("lena", "Weiter im Blick.\n<thought\n" + scroll)
+        self.assertEqual((m["text"], "<thought" in m["text"] + streamed(mark), scroll in m["text"] + streamed(mark)), ("Weiter im Blick.", False, False))
         # 4. An answer in circles is ended and kept once.
         passage = "Die neue Szene ist bereit! Ich habe eine längere Abfolge an Bewegungen eingebaut, damit es lebhafter zugeht. 🦊✨\n\n"
         r.lena.delay = 0.002

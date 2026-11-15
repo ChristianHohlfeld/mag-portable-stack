@@ -899,6 +899,13 @@
     // The room's markers and a lone PASS are for the room (it takes them out too; this is for a page from before).
     text = text.replace(/\[\[MAG:[^\]]*\]\]/g, '');
     if (/^[\s*_`"'.()[\]]*pass[\s*_`"'.!()[\]]*$/i.test(text)) return '';
+    // Thoughts, closed or not: <thought, <think>, <thinking>, and an analysis channel.
+    // A "<thought" that never got its ">" still hides everything after it.
+    text = text.replace(/<\|channel\|>\s*analysis\b[\s\S]*?(?:<\|end\|>|<\|start\|>|$)/gi, '');
+    text = text.replace(/<\/?think(?:ing)?\b[^>]*>[\s\S]*?(?:<\/think(?:ing)?>|$)/gi, '');
+    text = text.replace(/<thought\b[^>]*>[\s\S]*?(?:<\/thought>|$)/gi, '');
+    text = text.replace(/<thought\b[\s\S]*$/gi, '');
+    text = text.replace(/<\/thought>/gi, '');
     // A fenced block that is a tool call written out (JSON with an action or a function name).
     text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n```/g, (all, inner) => {
       try { const v = JSON.parse(inner); return v && typeof v === 'object' && (v.action || v.name || v.arguments || v.tool) ? '' : all; } catch { return all; }
@@ -942,6 +949,8 @@
       const t = line.trim();
       if (/^<br\s*\/?>$/i.test(t)) return false;
       if (/\bconsent\b/i.test(t)) return false;
+      // "Step 1: …" is the model's plan. The step card already shows the action.
+      if (/^\s*step\s+\d+\s*:/i.test(t)) return false;
       if (/^\{.*\}$/.test(t)) { try { JSON.parse(t); return false; } catch { /* text */ } }
       return !(german && lang(t) === 'en');
     });

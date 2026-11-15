@@ -1,0 +1,4 @@
+# The MI50's two clock files belong to the Idol user, so mag-idol (which
+# has NoNewPrivileges and cannot sudo) can limit the sclk itself. The power
+# cap is not in this rule. gpu-clock.sh also puts the clocks back on auto.
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1002", ATTR{device}=="0x66a1", RUN+="/usr/local/lib/mag-idol/gpu-clock.sh prepare"

@@ -17,11 +17,54 @@
   const SUBSCRIBE = '{"kind":"subscribe"}', SCREEN_TIMEOUT_MS = 16000;
   const gone = (pc) => !pc || ['failed', 'disconnected', 'closed'].includes(pc.connectionState);
 
+  // The hidden keyboard field is focused from one place: a one-finger tap
+  // that did not move. A tap on the field the page has already named, or a
+  // tap while no field is known yet (the phone can open its keyboard only
+  // from this call), focuses it. A tap outside that field closes it. A guest
+  // answer that the spot is not a field closes it. Frames, timers, state
+  // that is a field, a reconnect, the page becoming visible and a card drawn
+  // again do not focus it.
+  function onField(point, field) {
+    if (!point || !Array.isArray(field) || field.length !== 4) return null;
+    const x = +field[0], y = +field[1], w = +field[2], h = +field[3];
+    if (!(w > 1) || !(h > 1)) return null;
+    const pad = 16;
+    return point.x >= x - pad && point.y >= y - pad && point.x <= x + w + pad && point.y <= y + h + pad;
+  }
+  function keysAction(ev) {
+    if (!ev) return 'none';
+    if (ev.kind === 'state') return ev.editable === false ? 'blur' : 'none';
+    if (ev.kind !== 'tap') return 'none';
+    if (ev.pointerType !== 'touch' || ev.moved || ev.fingers !== 1) return 'none';
+    if (ev.onField === false) return 'blur';
+    return 'focus';
+  }
+  // Two fingers: spacing sets the zoom from the gesture's first gap, and the
+  // midpoint pans in the same step once the picture is larger than the view.
+  // At 1x a drag that does not spread scrolls the page instead.
+  function pinchStep(pinch, dist, mx, my) {
+    const next = Math.max(1, Math.min(4, pinch.s * dist / (pinch.d || 1)));
+    if (next <= 1.001) return { z: 1, tx: 0, ty: 0, scroll: true };
+    const u = (pinch.mx - pinch.L - pinch.tx) / (pinch.s || 1);
+    const v = (pinch.my - pinch.T - pinch.ty) / (pinch.s || 1);
+    return { z: next, tx: mx - pinch.L - u * next, ty: my - pinch.T - v * next, scroll: false };
+  }
+  // One finger pans the picture only while it is magnified.
+  function fingerDrag(zoom) { return zoom > 1.001; }
+  // No control channel: the HTTPS picture starts after about two seconds.
+  // An open channel with no picture yet only says so; it does not poll.
+  function pictureFallback(controlOpen, sinceMs) {
+    if (!controlOpen && sinceMs >= 2000) return 'https';
+    if (controlOpen && sinceMs >= 5000) return 'wait';
+    return 'none';
+  }
+  MAG.liveGesture = { onField, keysAction, pinchStep, fingerDrag, pictureFallback };
+
   class Link {
     constructor(bot) {
       Object.assign(this, { bot, vm: '', users: 0, gen: 0, pc: null, control: null, console: null,
         screen: null, term: null, // the views attached right now
-        chunks: null, painting: false, lastSeq: -1, frameAt: 0, waitAt: 0,
+        chunks: null, painting: false, lastSeq: -1, frameAt: 0, waitAt: -1, fallbackTimer: 0,
         http: null, httpBefore: false, posts: Promise.resolve(), scroll: 0,
         pending: [], hbAt: 0, udp: false, retryTimer: 0, retryDelay: 1000, lingerTimer: 0, clock: 0 });
     }
@@ -67,13 +110,13 @@
       if (this.screen && !document.hidden) {
         if (open) this.control.send(SUBSCRIBE);
         if (this.chunks && now - this.chunks.stamp > 550) this.chunks = null;
-        // The control channel is the UDP path. A late picture means the VM is
-        // busy, not that UDP failed: screenshot polling then takes the
-        // controller's only thread and the last frame stays frozen.
-        if (now - (this.frameAt || this.waitAt) > 5000) {
-          if (open) { if (!this.frameAt) this.sayScreen('WebRTC/UDP · ' + this.vm + ' · warte auf Bild'); }
-          else this.startHttp(this.frameAt ? 'UDP-Bild stockt' : 'UDP nicht erreichbar');
-        }
+        // Open control channel: a late picture is the VM being busy, so do not
+        // poll screenshots. Closed channel: HTTPS starts after about two
+        // seconds, so the view does not stay black on "verbinde".
+        const since = this.waitAt < 0 ? 0 : now - this.waitAt;
+        const fb = pictureFallback(!!open, since);
+        if (fb === 'https') this.startHttp(this.frameAt ? 'UDP-Bild stockt' : 'UDP nicht erreichbar');
+        else if (fb === 'wait' && !this.frameAt) this.sayScreen('WebRTC/UDP · ' + this.vm + ' · warte auf Bild');
       }
       if (this.console?.readyState === 'open' && this.hbAt && now - this.hbAt > 6000 && !document.hidden) {
         this.hbAt = 0;
@@ -86,7 +129,8 @@
     // The view (re)appears: ask for pictures now. A picture already on screen
     // stays; HTTPS is only for a control channel that never opens.
     wantFrames() {
-      this.waitAt = performance.now();
+      // Once. Coming back to the page must not push the HTTPS picture back.
+      if (this.waitAt < 0) this.waitAt = performance.now();
       if (this.control?.readyState === 'open') this.control.send(SUBSCRIBE);
     }
     watch(screen) {
@@ -266,7 +310,9 @@
     disconnect() {
       ++this.gen;
       clearTimeout(this.retryTimer);
+      clearTimeout(this.fallbackTimer);
       this.retryTimer = 0;
+      this.fallbackTimer = 0;
       if (this.pc) { this.pc.close(); this.pc = null; }
       Object.assign(this, { control: null, console: null, chunks: null, painting: false, lastSeq: -1, hbAt: 0 });
       this.sayTerm('Shell getrennt · Sitzung bleibt in der VM erhalten');
@@ -280,6 +326,18 @@
         return;
       }
       this.vm = bot.vm;
+      // About two seconds, from this attempt, not from the next time the page
+      // is shown. A WebRTC frame still replaces the HTTPS picture.
+      const httpSoon = () => {
+        this.fallbackTimer = setTimeout(() => {
+          this.fallbackTimer = 0;
+          if (gen !== this.gen || this.control?.readyState === 'open' || this.http || !this.screen) return;
+          if (this.frameAt && performance.now() - this.frameAt < 2000) return;
+          if (document.hidden) { httpSoon(); return; }
+          this.startHttp('UDP nicht erreichbar');
+        }, 2000);
+      };
+      httpSoon();
       if (!window.RTCPeerConnection) { this.sayTerm('Dieser Browser kann kein WebRTC.'); this.startHttp('kein WebRTC'); return; }
       const pc = new RTCPeerConnection({ iceServers: [] });
       this.pc = pc;
@@ -289,8 +347,13 @@
       this.control = control;
       control.onopen = () => {
         if (gen !== this.gen) return;
+        clearTimeout(this.fallbackTimer);
+        this.fallbackTimer = 0;
+        // The channel is up: stop screenshot polling so it does not take the
+        // browser's only thread. The picture already drawn stays until a frame.
+        if (this.http) this.stopHttp();
         if (this.screen && !document.hidden) control.send(SUBSCRIBE);
-        if (!this.http) this.sayScreen('WebRTC/UDP · verbunden');
+        if (!this.frameAt) this.sayScreen('WebRTC/UDP · verbunden');
       };
       pc.ondatachannel = (e) => {
         if (e.channel.label === 'console') {
@@ -401,11 +464,21 @@
     const keys = el('input', { type: 'text', class: 'keys', enterKeyHint: 'go', autocapitalize: 'off', autocomplete: 'off', 'aria-label': 'Tastatur für die Seite' });
     for (const input of [address, keys]) input.setAttribute('spellcheck', 'false');
     keys.setAttribute('autocorrect', 'off');
-    let stopped = false;
+    keys.readOnly = true;
+    let stopped = false, knownField = null;
 
     // The address follows the page, also while the bot is the one browsing.
+    // Where the page's field is, so a later tap can tell a field from the rest.
+    // Nothing here focuses the keyboard.
+    const remember = (state) => {
+      if (!state || typeof state !== 'object') return;
+      if (state.editable === true && Array.isArray(state.field) && state.field.length === 4 && +state.field[2] > 1 && +state.field[3] > 1)
+        knownField = state.field.map(Number);
+      else if (state.editable === false || state.editable === 'maybe') knownField = null;
+    };
     const shown = (state) => {
       if (!state || typeof state !== 'object' || stopped) return;
+      remember(state);
       if (state.url && document.activeElement !== address) address.value = state.url;
       back.disabled = state.can_go_back === false;
       forward.disabled = state.can_go_forward === false;
@@ -451,22 +524,44 @@
         if (e.key === 'Enter' || e.key === 'Tab') clearKeys();
       }
     });
-    keys.addEventListener('blur', clearKeys);
-    // The phone only opens its keyboard for a focus() inside the tap itself
-    // (touchend or click). That focus is optimistic; the guest then says
-    // whether the spot was a field. A non-field closes it. A field keeps it
-    // and is brought up large.
-    const openKeyboard = () => {
-      if (document.activeElement === keys) return;
+    keys.addEventListener('blur', () => { clearKeys(); if (!allowKeysFocus) keys.readOnly = true; });
+    // focus() runs only while a tap (or the keyboard key) allows it. Any other
+    // focus, including one the browser restores when the card is drawn again,
+    // is closed before the keyboard can come up, and it is not asked for again.
+    let allowKeysFocus = false, refusingKeys = false;
+    const focusKeys = () => {
+      if (document.activeElement === keys && !keys.readOnly) return;
       clearKeys();
-      keys.focus({ preventScroll: true });
+      keys.readOnly = false;
+      allowKeysFocus = true;
+      try { keys.focus({ preventScroll: true }); }
+      finally { allowKeysFocus = false; }
     };
+    keys.addEventListener('focus', () => {
+      if (allowKeysFocus || refusingKeys) return;
+      refusingKeys = true;
+      keys.blur();
+      refusingKeys = false;
+    });
+    // The address bar is typed into only when it itself is tapped.
+    let addressTap = false;
+    address.addEventListener('pointerdown', () => { addressTap = true; });
+    address.addEventListener('focus', () => {
+      if (addressTap) { addressTap = false; return; }
+      address.blur();
+    });
     const keyboardFor = (state) => {
       shown(state);
       const field = state && state.editable;
       if (field) {
-        keys.type = state.secret ? 'password' : 'text';
-        if (document.activeElement !== keys) { clearKeys(); keys.focus({ preventScroll: true }); }
+        const next = state.secret ? 'password' : 'text';
+        if (keys.type !== next && document.activeElement === keys) {
+          // Changing the type can blur and focus again. That is not a new tap,
+          // and it must not be refused or the password keyboard would close.
+          allowKeysFocus = true;
+          try { keys.type = next; }
+          finally { allowKeysFocus = false; }
+        }
         // The field across the view (at most 4x), its left edge at the left, near the
         // top, so the phone keyboard does not cover it. Same zoom a pinch uses.
         if (lastTap && zoom.z < 2) {          // lastTap: a finger's, never a mouse's
@@ -485,11 +580,11 @@
             applyZoom();
           }
         }
-      } else if (field === false && document.activeElement === keys) keys.blur();
+      } else if (keysAction({ kind: 'state', editable: field }) === 'blur' && document.activeElement === keys) keys.blur();
     };
     // The tap reaches the page over the realtime link, the question over HTTPS:
-    // asked twice, so a slow tap is not taken for one beside a field. The
-    // keyboard is already up from the tap; this only keeps or closes it.
+    // asked twice, so a slow tap is not taken for one beside a field. This
+    // keeps the zoom or closes the keyboard. It never focuses the field.
     const afterTap = () => {
       const ask = () => MAG.api('POST', '/api/browser/' + bot + '/state', {});
       setTimeout(() => ask().then((state) => (state && state.editable ? keyboardFor(state)
@@ -537,7 +632,7 @@
       applyZoom();
     };
     const button = (e) => (e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left');
-    let held = false, movedAt = 0, finger = null, touchTap = false;
+    let held = false, movedAt = 0, finger = null, touchTap = false, gestureFocused = false, pinched = false;
     const pts = new Map();
     let pinch = null;
     const pointer = (e, action, extra) => {
@@ -564,6 +659,7 @@
         finger = null;
         held = false;
         touchTap = false;
+        pinched = true;
         for (const id of pts.keys()) { try { canvas.releasePointerCapture(id); } catch {} }
         e.stopPropagation();
         e.preventDefault();
@@ -579,8 +675,8 @@
       // Spacing sets the zoom on every move, from the first gap. The midpoint
       // pans at the same time once the picture is larger than the view. At
       // 100% there is nothing to pan, so a drag that does not spread scrolls.
-      const next = Math.max(1, Math.min(4, pinch.s * dist / pinch.d));
-      if (next <= 1.001) {
+      const step = pinchStep(pinch, dist, mx, my);
+      if (step.scroll) {
         zoom.z = 1; zoom.tx = 0; zoom.ty = 0;
         applyZoom();
         if (performance.now() - pinch.scrollAt >= 30) {
@@ -594,11 +690,9 @@
           }
         }
       } else {
-        const u = (pinch.mx - pinch.L - pinch.tx) / pinch.s;
-        const v = (pinch.my - pinch.T - pinch.ty) / pinch.s;
-        zoom.z = next;
-        zoom.tx = mx - pinch.L - u * next;
-        zoom.ty = my - pinch.T - v * next;
+        zoom.z = step.z;
+        zoom.tx = step.tx;
+        zoom.ty = step.ty;
         applyZoom();
       }
       e.stopPropagation();
@@ -621,7 +715,13 @@
       if (e.pointerType !== 'touch') { try { canvas.setPointerCapture(e.pointerId); } catch {} }
       // A finger taps to click. Its drag pans the picture only while magnified.
       // A mouse presses, moves and releases.
-      if (e.pointerType === 'touch') { touchTap = true; finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false }; return; }
+      if (e.pointerType === 'touch') {
+        // The capture listener already started a pinch: this finger is not a tap.
+        if (pinch || pts.size > 1) { touchTap = false; finger = null; return; }
+        touchTap = true; gestureFocused = false; pinched = false;
+        finger ||= { id: e.pointerId, x: e.clientX, y: e.clientY, dragged: false };
+        return;
+      }
       held = true;
       pointer(e, 'down', { button: button(e) });
     });
@@ -636,7 +736,7 @@
       try { canvas.setPointerCapture(finger.id); } catch {}
       finger.x = e.clientX;
       finger.y = e.clientY;
-      if (zoom.z <= 1.001) return;
+      if (!fingerDrag(zoom.z)) return;
       zoom.tx += dx;
       zoom.ty += dy;
       applyZoom();
@@ -650,7 +750,7 @@
         if (tap) {
           lastTap = { x: e.clientX, y: e.clientY };
           pointer(e, 'tap', { button: 'left' });
-          if (e.pointerType === 'touch') openKeyboard();
+          offerKeys(e);
           afterTap();
         }
         return;
@@ -661,16 +761,30 @@
     };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', release);
-    // The keyboard must be opened in the tap's own touchend or click. A focus
-    // later, after the guest has answered, does not open it.
-    const keyboardIfTap = (e) => {
-      if (!touchTap) return;
-      if (e.touches && (e.touches.length || e.changedTouches.length !== 1)) return;
+    // One focus per tap, inside pointerup or touchend (the call a phone accepts).
+    // A click comes later and is not a tap, so it does not focus the field.
+    const offerKeys = (e) => {
       if (e.pointerType === 'mouse') return;
-      openKeyboard();
+      if (e.touches && (e.touches.length || e.changedTouches.length !== 1)) return;
+      // pointerup and touchend are one tap. Focus again only if the first call
+      // did not take (a phone may ignore focus except on touchend).
+      if (gestureFocused && (document.activeElement === keys || e.type === 'pointerup')) return;
+      const page = spot(e);
+      const decision = keysAction({ kind: 'tap', pointerType: 'touch', moved: false, fingers: 1, onField: page ? onField(page, knownField) : false });
+      gestureFocused = true;
+      if (decision === 'focus') focusKeys();
+      else if (decision === 'blur' && document.activeElement === keys) keys.blur();
     };
-    canvas.addEventListener('touchend', keyboardIfTap);
-    canvas.addEventListener('click', (e) => { keyboardIfTap(e); touchTap = false; });
+    canvas.addEventListener('touchend', (e) => {
+      if (pinched || pinch || pts.size) {
+        touchTap = false;
+        if (!e.touches || !e.touches.length) pinched = false;
+        return;
+      }
+      if (touchTap) offerKeys(e);
+      touchTap = false;
+    });
+    canvas.addEventListener('click', () => { touchTap = false; });
     canvas.addEventListener('pointercancel', () => { touchTap = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
@@ -695,7 +809,7 @@
       el('form', { class: 'url', onsubmit: (e) => { e.preventDefault(); go(); } },
         back, forward, nav('↻', 'Neu laden', 'reload'), address,
         lens,
-        el('button', { type: 'button', class: 'pill kbd', text: '⌨', title: 'Tastatur', 'aria-label': 'Tastatur', onclick: () => { clearKeys(); keys.focus({ preventScroll: true }); } }),
+        el('button', { type: 'button', class: 'pill kbd', text: '⌨', title: 'Tastatur', 'aria-label': 'Tastatur', onclick: () => focusKeys() }),
         el('button', { type: 'button', class: 'pill', 'aria-label': 'Vollbild', title: 'Vollbild', html: fullIcon, onclick: () => full.toggle() })),
       el('div', { class: 'view' }, canvas, wait, keys),
       status);

@@ -255,9 +255,7 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  var offer webrtc.SessionDescription
  if err=json.NewDecoder(io.LimitReader(req.Body,65536)).Decode(&offer);err!=nil||
     offer.Type!=webrtc.SDPTypeOffer{http.Error(w,"invalid offer",400);return}
- setting:=webrtc.SettingEngine{}
- setting.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
- if err=setting.SetEphemeralUDPPortRange(18840,18890);err!=nil{http.Error(w,"ICE ports",500);return}
+ setting,err:=iceSetting();if err!=nil{http.Error(w,"ICE ports",500);return}
  api:=webrtc.NewAPI(webrtc.WithSettingEngine(setting))
  pc,err:=api.NewPeerConnection(webrtc.Configuration{ICEServers:[]webrtc.ICEServer{}})
  if err!=nil {http.Error(w,"peer creation",500);return}
@@ -355,6 +353,47 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  complete=true
  _=json.NewEncoder(w).Encode(pc.LocalDescription())
 }
+// The phone reaches this host over Tailscale, not over the LAN. Pion gathers a
+// host candidate per interface it can bind; the tailnet address is also
+// advertised on its own, in the same UDP port range, without replacing the
+// LAN candidate. The address is read from the host, never written in here.
+func iceSetting()(webrtc.SettingEngine,error){
+ setting:=webrtc.SettingEngine{}
+ setting.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+ if err:=setting.SetEphemeralUDPPortRange(18840,18890);err!=nil{return setting,err}
+ // tailscale0 stays in the gather. virbr and docker are not a path to the phone.
+ setting.SetInterfaceFilter(func(name string)bool{
+  if strings.HasPrefix(name,"tailscale"){return true}
+  if strings.HasPrefix(name,"virbr")||strings.HasPrefix(name,"docker")||strings.HasPrefix(name,"veth")||strings.HasPrefix(name,"br-"){return false}
+  return true
+ })
+ if ip:=tailscaleIPv4();ip!=""{
+  // Srflx adds the tailnet address. Host type would replace the LAN address.
+  setting.SetNAT1To1IPs([]string{ip},webrtc.ICECandidateTypeSrflx)
+ }
+ return setting,nil
+}
+// Tailscale numbers the node in 100.64.0.0/10. Prefer the tailscale interface.
+func tailscaleIPv4()string{
+ ifaces,err:=net.Interfaces();if err!=nil{return ""}
+ var other string
+ for _,iface:=range ifaces{
+  if iface.Flags&net.FlagUp==0{continue}
+  addrs,err:=iface.Addrs();if err!=nil{continue}
+  named:=strings.HasPrefix(iface.Name,"tailscale")
+  for _,addr:=range addrs{
+   ipnet,ok:=addr.(*net.IPNet)
+   if !ok||!tailnetIPv4(ipnet.IP){continue}
+   if named{return ipnet.IP.String()}
+   if other==""{other=ipnet.IP.String()}
+  }
+ }
+ return other
+}
+func tailnetIPv4(ip net.IP)bool{
+ ip=ip.To4();if ip==nil{return false}
+ return ip[0]==100&&ip[1]&0xc0==64
+}
 func boolptr(v bool)*bool{return &v}
 func uint16ptr(v uint16)*uint16{return &v}
 func main(){
@@ -382,6 +421,7 @@ func main(){
   w.Header().Set("Content-Type","text/plain");_,_=w.Write([]byte("ok\n"))
  })
  server:=&http.Server{Addr:"127.0.0.1:18784",Handler:mux,ReadHeaderTimeout:5*time.Second}
+ if ip:=tailscaleIPv4();ip!=""{log.Printf("browser WebRTC also advertises the tailnet address %s",ip)}
  log.Printf("MAG browser WebRTC/UDP gateway ready: localhost:18784 and UDP :18783")
  log.Fatal(server.ListenAndServe())
 }

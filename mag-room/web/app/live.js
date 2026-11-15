@@ -498,10 +498,10 @@
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= g.w || y >= g.h) return null;
       return { x: Math.min(1439, Math.max(0, (x * 1440) / g.w)), y: Math.min(899, Math.max(0, (y * 900) / g.h)) };
     };
-    // The page is looked at magnified the way the old view did: two fingers
-    // pinch and, while zoomed, pan in every direction; at 100% the same drag
-    // scrolls the page. The percent button fits it, a tap lands on the point
-    // under the finger, and one finger still taps and scrolls.
+    // Two fingers: a spacing change of about 4% zooms at once, from 100% too.
+    // While magnified, those fingers also pan. At 100% a drag that keeps the
+    // spacing scrolls the page. The percent button fits it, a tap lands on the
+    // point under the finger, and one finger still taps and scrolls.
     const zoom = { z: 1, tx: 0, ty: 0 };
     let lastTap = null;
     const lens = el('button', { type: 'button', class: 'pill lens', text: '100%', title: 'Ganze Seite', 'aria-label': 'Ganze Seite', onclick: () => {
@@ -546,12 +546,12 @@
         const [a, b] = [...pts.values()];
         const r = canvas.getBoundingClientRect();
         const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-        // Anchor for the whole gesture: the page pixel under the fingers stays
-        // under them while the spacing changes (pinch) and while both fingers
-        // travel (pan). At 100% there is nothing to pan, so the travel scrolls.
+        // Anchor for the whole gesture. Spacing is measured from this first
+        // gap, so a spread is not thrown away. Pan uses the same anchor only
+        // once the picture is magnified; at 100% a steady gap scrolls.
         pinch = {
           d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: zoom.z, tx: zoom.tx, ty: zoom.ty,
-          mx, my, sentMx: mx, sentMy: my, scrollAt: 0, zoomed: zoom.z > 1.001,
+          mx, my, sentMx: mx, sentMy: my, scrollAt: 0,
           L: r.left - zoom.tx, T: r.top - zoom.ty,
         };
         finger = null;
@@ -568,10 +568,11 @@
       const [a, b] = [...pts.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const ratio = dist / pinch.d;
-      // A straight two-finger drag at 100% is a scroll. Spreading the fingers
-      // (or any drag once zoomed) moves the picture; both can happen at once.
-      if (!pinch.zoomed && ratio < 1.12 && ratio > 0.88) {
+      // Scale from the fingers' first gap. At 100% a change of about 4% zooms
+      // at once and is not locked into a scroll; a steadier drag scrolls the page.
+      // Once magnified, the same move pinches and pans together.
+      const next = Math.max(1, Math.min(4, pinch.s * dist / pinch.d));
+      if (pinch.s <= 1.001 && next < 1.04) {
         if (performance.now() - pinch.scrollAt >= 30) {
           const dx = mx - pinch.sentMx, dy = my - pinch.sentMy;
           if (dx || dy) {
@@ -583,24 +584,13 @@
           }
         }
       } else {
-        if (!pinch.zoomed) {
-          pinch.zoomed = true;
-          pinch.s = zoom.z;
-          pinch.tx = zoom.tx;
-          pinch.ty = zoom.ty;
-          pinch.d = dist;
-          pinch.mx = mx;
-          pinch.my = my;
-          const r = canvas.getBoundingClientRect();
-          pinch.L = r.left - zoom.tx;
-          pinch.T = r.top - zoom.ty;
-        }
-        const next = Math.max(1, Math.min(4, pinch.s * dist / pinch.d));
         const u = (pinch.mx - pinch.L - pinch.tx) / pinch.s;
         const v = (pinch.my - pinch.T - pinch.ty) / pinch.s;
         zoom.z = next;
-        zoom.tx = mx - pinch.L - u * next;
-        zoom.ty = my - pinch.T - v * next;
+        if (next > 1.001) {
+          zoom.tx = mx - pinch.L - u * next;
+          zoom.ty = my - pinch.T - v * next;
+        } else { zoom.tx = 0; zoom.ty = 0; }
         applyZoom();
       }
       e.stopPropagation();

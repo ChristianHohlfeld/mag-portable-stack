@@ -613,12 +613,16 @@ public:
       if (b->progress_total > 0) {
         v["processed"] = (double)b->progress_done;
         v["total"] = (double)b->progress_total;
+        v["cached"] = (double)b->progress_cached;
       }
       v["message"] = b->message;
       v["ctx_tokens"] = (double)b->ctx_tokens;
       v["ctx_budget"] = (double)(b->budget + plugins_.weight(conf));
       v["tps"] = b->tps;
       v["kv"] = b->kv;
+      v["cache_tokens"] = (double)b->last_cached;
+      v["prompt_ms"] = b->last_prompt_ms;
+      if (b->goal_public.isObj()) v["goal"] = b->goal_public;
       out.push(v);
     }
     return out;
@@ -661,7 +665,9 @@ private:
     std::vector<std::string> forget;
     std::string phase = "idle", detail, kv = "unknown";
     int64_t phase_since = 0;
-    long progress_done = 0, progress_total = 0, ctx_tokens = 0;
+    long progress_done = 0, progress_total = 0, progress_cached = 0, ctx_tokens = 0, last_cached = 0;
+    double last_prompt_ms = 0;
+    Val goal_public; // status snapshot, protected by mu_
     double tps = 0;
     double model_since = -1;     // modeld "since" this bot's slot state belongs to
     std::vector<std::string> said; // own replies since the last human message (normalised)
@@ -2159,6 +2165,13 @@ private:
     {
       std::lock_guard<std::mutex> lk(mu_);
       b.goal_on = goal::active(b.goal);
+      Val status_goal = Val::object();
+      for (const char *k : {"state", "owner", "id", "version", "progress"})
+        if (const Val *v = b.goal.find(k)) status_goal[k] = *v;
+      status_goal["text"] = clip(jstr(b.goal, "text"), 200);
+      status_goal["url"] = jstr(b.goal["page"], "url");
+      status_goal["error"] = clip(jstr(b.goal, "error"), 200);
+      b.goal_public = status_goal;
       if (!b.goal_on) b.goal_arm = false;
       if (!goal::active(b.goal)) b.end_goal = false;
     }
@@ -2173,6 +2186,13 @@ private:
     if (exists(goal_mark(b)) && jstr(b.goal, "state") != "done" && jstr(b.goal, "state") != "blocked") goal::end(b.goal, "ended");
     std::lock_guard<std::mutex> lk(mu_);
     b.goal_on = goal::active(b.goal);
+    Val status_goal = Val::object();
+    for (const char *k : {"state", "owner", "id", "version", "progress"})
+      if (const Val *v = b.goal.find(k)) status_goal[k] = *v;
+    status_goal["text"] = clip(jstr(b.goal, "text"), 200);
+    status_goal["url"] = jstr(b.goal["page"], "url");
+    status_goal["error"] = clip(jstr(b.goal, "error"), 200);
+    b.goal_public = status_goal;
     b.goal_arm = false;
   }
   // Queued from the HTTP thread. The worker is the only one that edits b.goal.
@@ -2205,41 +2225,56 @@ private:
       if (o.get() != &self && (o->goal_on || o->goal_arm) && !o->end_goal.load()) return true;
     return false;
   }
-  // The request the model sees: the log, then the open task at the end (not in the log).
+  // An append-only prompt is essential for the single llama.cpp KV slot on CPU:
+  // an ephemeral tail between old user messages and future tools invalidates
+  // cached tokens on every action. Persist each goal revision only once.
   Val request_with_goal(Bot &b, bool closing) {
-    Val msgs = request_messages(b, b.wire["messages"]);
-    std::string shot;
-    if (!closing && goal::envd("MAG_ROOM_GOAL_EYES", 1) != 0 && sees(b.id) && b.wire["messages"].isArr()) {
-      const auto &a = *b.wire["messages"].arr;
-      for (size_t i = a.size(); i-- > 0;) {
-        if (jstr(a[i], "role") != "tool") continue;
-        if (jbool(a[i], "_nav")) shot = jstr(a[i], "_shot");
+    if (!b.wire["messages"].isArr()) return request_messages(b, b.wire["messages"]);
+    const bool active = goal_live(b);
+    const std::string goal_id = jstr(b.goal, "id", jstr(b.goal, "owner") + ":" + jstr(b.goal, "text"));
+    const std::string stamp = (closing ? "end:" : "active:") + goal_id +
+                              (closing ? "" : ":" + std::to_string((long)jnum(b.goal, "revision")));
+    if ((active || closing) && jstr(b.wire, "goal_prompt_stamp") != stamp) {
+      Val note = Val::object();
+      note["role"] = "user";
+      note["content"] = closing ? goal::tail(b.goal, true)
+          : "AKTIVER AUFTRAG: " + jstr(b.goal, "text") + "\nERFOLG: " + jstr(b.goal, "done") +
+            "\nBISHER: Der aktuelle Seitenstand steht im letzten Browser-Werkzeugergebnis. "
+            "Arbeite bis goal_finish oder einem nachgewiesenen goal_blocked weiter; keine Ankündigung als Antwort.";
+      b.wire["messages"].push(note);
+      b.wire["goal_prompt_stamp"] = stamp;
+      save_wire(b);
+    }
+    // Vision is optional and intentionally OFF by default on the two CPU NUMA
+    // servers: BF16 mmproj + image prefill is expensive. If explicitly enabled,
+    // insert each image only once into the stored prompt, not as a throwaway tail.
+    if (active && !closing && goal::envd("MAG_ROOM_GOAL_EYES", 0) != 0 && sees(b.id)) {
+      std::string shot;
+      const auto &messages = *b.wire["messages"].arr;
+      for (size_t i = messages.size(); i-- > 0;) {
+        if (jstr(messages[i], "role") != "tool") continue;
+        if (jbool(messages[i], "_nav")) shot = jstr(messages[i], "_shot");
         break;
       }
+      const std::string shot_key = goal_id + ":" + shot;
+      if (!shot.empty() && jstr(b.wire, "goal_last_shot") != shot_key) {
+        std::string bytes;
+        if (read_file(shot, bytes, 400000) && bytes.size() > 100) {
+          Val msg = Val::object(), parts = Val::array(), part = Val::object(), url = Val::object();
+          url["url"] = "data:image/jpeg;base64," + b64_encode(bytes);
+          part["type"] = "image_url";
+          part["image_url"] = url;
+          parts.push(part);
+          parts.push(text_part("Screenshot nach der letzten Browser-Navigation."));
+          msg["role"] = "user";
+          msg["content"] = parts;
+          b.wire["messages"].push(msg);
+          b.wire["goal_last_shot"] = shot_key;
+          save_wire(b);
+        }
+      }
     }
-    const std::string extra = goal::tail(b.goal, closing);
-    if (extra.empty() && shot.empty()) return msgs;
-    std::string bytes;
-    const bool image = !shot.empty() && read_file(shot, bytes, 400000) && bytes.size() > 100;
-    if (!image && !msgs.arr->empty() && jstr(msgs.arr->back(), "role") == "user" && msgs.arr->back()["content"].type == Val::STR) {
-      msgs.arr->back()["content"] = jstr(msgs.arr->back(), "content") + "\n\n" + extra;
-      return msgs;
-    }
-    Val user = Val::object();
-    user["role"] = "user";
-    if (image) {
-      Val parts = Val::array(), url = Val::object(), part = Val::object();
-      url["url"] = "data:image/jpeg;base64," + b64_encode(bytes);
-      part["type"] = "image_url";
-      part["image_url"] = url;
-      parts.push(part);
-      parts.push(text_part(extra.empty() ? "(Bild der Seite nach dem letzten Öffnen oder Klick.)" : extra));
-      user["content"] = parts;
-    } else {
-      user["content"] = extra;
-    }
-    msgs.push(user);
-    return msgs;
+    return request_messages(b, b.wire["messages"]);
   }
 
   // Drops the oldest turns once the log exceeds its token budget. Cuts only
@@ -2754,8 +2789,9 @@ private:
         roster.push_back({jstr(c, "id"), jstr(c, "name")});
         named.push_back({jstr(c, "id"), jstr(c, "name")});
       }
+      const auto addressed = group_chat::addressed(human, named);
       const bool mentioned = std::find(mentions.begin(), mentions.end(), b.id) != mentions.end() ||
-                             std::find(group_chat::addressed(human, named).begin(), group_chat::addressed(human, named).end(), b.id) != group_chat::addressed(human, named).end();
+                             std::find(addressed.begin(), addressed.end(), b.id) != addressed.end();
       t.errand = goal::classify(human, roster).kind == goal::Kind::Task && mentioned;
     }
     std::string error;
@@ -2787,12 +2823,13 @@ private:
         body["top_k"] = (double)envl("MAG_ROOM_GOAL_TOP_K", 40);
       }
       llm::ChatCallbacks cb;
-      cb.on_progress = [&](long done, long total, long) {
+      cb.on_progress = [&](long done, long total, long cached) {
         bool publish = false;
         {
           std::lock_guard<std::mutex> lk(mu_);
           b.progress_done = done;
           b.progress_total = total;
+          b.progress_cached = cached;
           publish = mono_ms() - last_bots_ms_ > 700;
         }
         if (publish) publish_bots();
@@ -2816,9 +2853,15 @@ private:
       llm::ChatResult res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
       t.last = res;
       t.completion += res.completion_tokens;
+      logf("engine: " + b.id + " prefill prompt=" + std::to_string(res.prompt_tokens) +
+           " cached=" + std::to_string(res.cached_tokens) + " ms=" + std::to_string((long)res.prompt_ms) +
+           " goal=" + (driving ? "active" : "off") +
+           " eyes=" + (goal::envd("MAG_ROOM_GOAL_EYES", 0) != 0 ? "on" : "off"));
       {
         std::lock_guard<std::mutex> lk(mu_);
         if (res.prompt_tokens) b.ctx_tokens = res.prompt_tokens + res.completion_tokens;
+        b.last_cached = res.cached_tokens;
+        b.last_prompt_ms = res.prompt_ms;
         if (res.tps > 0) b.tps = res.tps;
         b.kv = "warm";
       }
@@ -2997,6 +3040,9 @@ private:
             if (where.empty()) where = clip(jstr(b.goal, "text"), 80);
             if (t.steps > 0) t.visible = true;
             emit_text(b, t, "Ich hänge bei " + where + ".", name, reason, true);
+            b.goal["progress"] = "stalled";
+            b.goal["error"] = "Kein Werkzeugaufruf nach mehreren Versuchen.";
+            save_goal(b);
             logf("engine: " + b.id + " stalled on its goal");
             break;
           }
@@ -3298,6 +3344,10 @@ private:
           if (c.name == "shell" && starts_with(result.text, "exit=")) s["exit"] = atoi(result.text.c_str() + 5);
         });
         if (result.ok) t.ok_tool = true;
+        if (result.ok && goal_live(b) && jstr(b.goal, "progress") == "stalled") {
+          b.goal["progress"] = "running";
+          b.goal["error"] = "";
+        }
         t.last_ok = result.ok || was_cancelled;
         // A page that wants a login, a password or a code is Chris's card, not the bot's typing.
         if (c.name == "browser_login") t.login_wall = false;

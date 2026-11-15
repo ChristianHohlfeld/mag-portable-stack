@@ -157,6 +157,8 @@ class FakeBrowser:
         for n in range(1, 41):
             self.elements.append({"n": n, "kind": "link", "label": "Treffer %d" % n, "x": 100, "y": 20 * n})
         self.elements[0] = {"n": 1, "kind": "search", "label": "Suche", "x": 400, "y": 40}
+        self.elements[26] = {"n": 27, "kind": "link", "label": "PVC Schrumpfschlauch 2s 18650 transparent",
+                             "price": "5,40 €", "href": "https://www.amazon.de/dp/B00SEEN2", "x": 200, "y": 340}
         self.elements[27] = {"n": 28, "kind": "link", "label": "Schrumpfschlauch transparent 2s",
                              "price": "4,20 €", "href": "https://www.amazon.de/dp/B00SEEN", "x": 200, "y": 360}
 
@@ -2023,8 +2025,9 @@ class RoomContract(unittest.TestCase):
         self.assertIn("LASTPAGEZZ", blob)
         self.assertNotIn("OLDDUMPzzzz", blob)
         self.assertGreater(len(compact["messages"]), 2)
-        self.assertIn("image_url", json.dumps(seen[1]))
+        self.assertNotIn("image_url", json.dumps(seen[1]))  # dual Xeon CPU: vision off by default
         self.assertNotIn("image_url", json.dumps(seen[3]))
+        self.assertEqual(seen[0]["messages"], seen[1]["messages"][:len(seen[0]["messages"])])  # KV prefix stable
         r.idle()
         self.assertEqual(browser.clicks, [28])
         self.assertLess(len(seen), 12)  # the repeated plan stalled instead of looping
@@ -2052,21 +2055,28 @@ class RoomContract(unittest.TestCase):
             fin["last"] = body
             if fin["n"] == 1:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
-                    "summary": "Zwei Stück.", "items": [{"name": "X", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
+                    "summary": "Zwei Stück.", "items": [{"name": "Schrumpfschlauch", "url": "https://www.amazon.de/dp/B00SEEN"}]}}]}
             if fin["n"] == 2:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei transparente Schrumpfschläuche.",
-                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"}]}}]}
+                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
+                              {"name": "Fake", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
+            if fin["n"] == 3:
+                return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
+                    "summary": "Zwei transparente Schrumpfschläuche.",
+                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
+                              {"name": "PVC transparent", "url": "https://www.amazon.de/dp/B00SEEN2", "price": "5,40 €"}]}}]}
             return "Ich habe zwei transparente Schrumpfschläuche 2s gefunden."
 
         r.lena.reply = finish
         r.say("Done?")
         r.idle()
         self.assertEqual(fin["last"].get("tool_choice"), None)
-        self.assertIn("required", [body.get("tool_choice") for body in r.lena.chats()[-3:-1]])
+        self.assertIn("required", [body.get("tool_choice") for body in r.lena.chats()[-4:-1]])
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step" and p["tool"] == "goal_finish"]
-        self.assertEqual([s["state"] for s in steps], ["error", "ok"])
-        self.assertIn("gesehenen Seite", steps[0]["output"])
+        self.assertEqual([s["state"] for s in steps], ["error", "error", "ok"])
+        self.assertIn("Mindestens 2", steps[0]["output"])
+        self.assertIn("gesehenen Seite", steps[1]["output"])
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
         self.assertIn("Amazon.de", goal["text"])

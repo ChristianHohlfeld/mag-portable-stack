@@ -261,10 +261,17 @@ public:
     if (addr.empty()) addr = ip(vm, true);
     if (addr.empty()) return fail(*start, error, "VM " + vm + " ist nicht erreichbar.");
     for (int probe = 0; probe < 3; ++probe) {
-      const auto st = browser_raw(addr, vm, "GET", "/state", "", probe ? 3 : 2, nullptr);
-      if (current(st)) return addr;
+      const bool recent = start->ok_at && now_s() - start->ok_at < 45;
+      const auto st = browser_raw(addr, vm, "GET", "/state", "", recent ? 1 : probe ? 3 : 2, nullptr);
+      if (current(st)) { start->ok_at = now_s(); return addr; }
       if (st.status == 401 || st.status == 403) break; // other token: relaunch
       if (st.status == 200 && jparse(st.body).find("udp_transport")) break; // older protocol
+      // A timeout is not a dead controller. mag-browser has one thread: a
+      // navigation or a screenshot holds it, and the live view's own /state
+      // then times out. Replacing it here leaves WebRTC up and the picture
+      // gone (the restart seen with the step-card live view). The request
+      // waits its turn on the controller that just answered.
+      if (st.status == 0 && st.error.find("Timeout") != std::string::npos && recent) return addr;
       if (probe < 2) usleep(200000);
     }
     audit_proxy(vm);
@@ -293,7 +300,7 @@ public:
     const auto started = quiet(vm, launch, 40);
     if (started.code) return fail(*start, error, "Browser-Start fehlgeschlagen: " + clip(started.out, 300));
     for (int i = 0; i < 60; ++i) {
-      if (current(browser_raw(addr, vm, "GET", "/state", "", 2, nullptr))) return addr;
+      if (current(browser_raw(addr, vm, "GET", "/state", "", 2, nullptr))) { start->ok_at = now_s(); return addr; }
       usleep(250000);
     }
     const auto diag = quiet(vm, "tail -n 8 /home/bot/browserd/browser.log 2>/dev/null || true", 10);
@@ -306,7 +313,7 @@ private:
   static constexpr size_t kMaxOut = 256 * 1024;
   struct Start {
     std::timed_mutex mu;
-    int64_t failed_at = 0;
+    int64_t failed_at = 0, ok_at = 0;
     std::string failure;
   };
   const Config &cfg_;

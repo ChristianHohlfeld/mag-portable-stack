@@ -460,6 +460,29 @@ int main(int argc, char **argv) {
     if (udp_key.size() != 64)
       throw std::runtime_error("Per-VM browser UDP key missing");
     BrowserUDP udp(udp_key, vm_name);
+    // A tool call holds this thread (navigation, a wait, typing). Keep reading
+    // input and sending frames while it waits, or the live view goes still and
+    // a tap on the phone lands nowhere until the call returns.
+    auto pump = [&](int ms) {
+      const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+      while (std::chrono::steady_clock::now() < until) {
+        try { udp.tick(c); }
+        catch (const std::exception &e) { std::cerr << "UDP capture: " << e.what() << std::endl; }
+        const int left = (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+                              until - std::chrono::steady_clock::now()).count();
+        if (left <= 0) break;
+        pollfd wait[2]{{udp.fd(), POLLIN, 0}, {udp.terminal_fd(), POLLIN, 0}};
+        const int nfd = udp.terminal_fd() >= 0 ? 2 : 1;
+        if (poll(wait, nfd, std::min(left, 70)) < 0) continue;
+        if (wait[0].revents & POLLIN) {
+          for (int i = 0; i < 24; ++i) {
+            try { udp.receive(c); }
+            catch (const std::exception &e) { std::cerr << "UDP control: " << e.what() << std::endl; break; }
+          }
+        }
+        if (nfd == 2 && (wait[1].revents & (POLLIN | POLLHUP | POLLERR))) udp.terminal_output();
+      }
+    };
     for (;;) {
       // CDP and UDP input run against exactly the same hot tab on one thread.
       // Do not race a second CDP connection from an auxiliary process.
@@ -553,7 +576,7 @@ int main(int argc, char **argv) {
           auto n = c.call("Page.navigate", p);
           if (n.find("errorText"))
             throw std::runtime_error(str(n, "errorText"));
-          std::this_thread::sleep_for(std::chrono::milliseconds(400));
+          pump(400);
           for (int i = 0; i < 100; ++i) {
             try {
               auto state = c.eval("document.readyState");
@@ -561,7 +584,7 @@ int main(int argc, char **argv) {
                 break;
             } catch (...) {
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            pump(100);
           }
           out = snapshot();
           if (c.last_nav.isObj()) {
@@ -593,7 +616,7 @@ int main(int argc, char **argv) {
           bool found = want.empty();
           const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds((long)ms);
           do {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            pump(200);
             try {
               const bool ready = c.eval("document.readyState").asStr() == "complete";
               if (!want.empty())
@@ -659,7 +682,7 @@ int main(int argc, char **argv) {
             mv["type"] = "mouseMoved";
             mv["button"] = "none";
             c.call("Input.dispatchMouseEvent", mv);
-            usleep(250000);
+            pump(250);
           }
           for (auto type : {"mousePressed", "mouseReleased"}) {
             Val p = pos;
@@ -750,7 +773,7 @@ int main(int argc, char **argv) {
             p["text"] = text.substr(i, j - i);
             c.call("Input.insertText", p);
             i = j;
-            if (i < n) usleep(25000);
+            if (i < n) pump(25);
           }
           auto enter = body.find("enter");
           if (enter && enter->asBool()) {

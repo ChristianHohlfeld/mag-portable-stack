@@ -124,7 +124,7 @@
       cancel,
       el('span', { class: 'chev', html: MAG.icons.chev }),
       asking,
-      step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null));
+      step.state === 'running' && !ask && !(step.tool || '').startsWith('browser_') ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
     // A card's step (approval, login, payment) is the card and nothing more: no raw input, no output.
@@ -1076,8 +1076,18 @@
     if (!node) return;
     flush();
     const body = node.querySelector('.body'), old = body.querySelector(':scope > [data-part="' + part + '"]'), fresh = buildStep(m, part);
-    if (old) { fresh.open = old.open; grow(() => old.replaceWith(fresh)); }
-    else grow(() => body.append(fresh));
+    if (old) {
+      fresh.open = old.open;
+      // The live picture is one node per bot. Move it across before the old
+      // step is dropped, so a step update does not detach it and drop the frames.
+      const live = old.querySelector('.live');
+      if (live) {
+        const slot = fresh.querySelector('.live-slot');
+        if (slot) { if (fresh.open) slot.append(live); }
+        else fresh.querySelector('.ask')?.insertBefore(live, fresh.querySelector('.ask .fine'));
+      }
+      grow(() => old.replaceWith(fresh));
+    } else grow(() => body.append(fresh));
 
     markStreaming(node, m);
   });
@@ -1085,6 +1095,7 @@
     const node = nodes.get(m.id)?.querySelector('.body > [data-part="' + part + '"]');
     if (!node) return;
     const out = node.querySelector('pre.out'), peek = node.querySelector('.peek');
+    if (!out) return;
     const follow = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
     grow(() => {
       out.append(text);

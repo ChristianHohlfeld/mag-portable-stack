@@ -76,8 +76,8 @@ inline bool status_question(const std::string &text) {
   const std::string f = flat(text);
   if (f.empty() || f.size() > 48) return false;
   static const char *exact[] = {"done", "und", "hallo", "hi", "hey", "na", "ok", "okay", "danke", "bitte", "fertig", "moin", "servus",
-                                "und jetzt", "wie weit", "alles klar", "status", "update", "bist du da", "bist du fertig", "bist du schon fertig",
-                                "laeufts", "läufts", "laeuft es", "läuft es"};
+                                "und jetzt", "weiter", "mach weiter", "bitte weiter", "fortsetzen", "wie weit", "alles klar", "status", "update",
+                                "bist du da", "bist du fertig", "bist du schon fertig", "laeufts", "läufts", "laeuft es", "läuft es"};
   for (const char *e : exact)
     if (f == e) return true;
   if (f.rfind("hallo ", 0) == 0 || f.rfind("hi ", 0) == 0 || f.rfind("hey ", 0) == 0 || f.rfind("bist du", 0) == 0 || f.rfind("wie weit", 0) == 0)

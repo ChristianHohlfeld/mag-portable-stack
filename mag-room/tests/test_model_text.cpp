@@ -165,6 +165,7 @@ int main() {
     std::vector<std::pair<std::string, std::string>> bots = {{"lena", "Lena"}, {"noah", "Noah"}};
     CHECK(goal::classify("Done?", bots).kind == goal::Kind::Status);
     CHECK(goal::classify("Und?", bots).kind == goal::Kind::Status);
+    CHECK(goal::classify("Mach weiter", bots).kind == goal::Kind::Status);
     CHECK(goal::classify("Hallo", bots).kind == goal::Kind::Status);
     CHECK(goal::classify("@Lena Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de 18650", bots).kind == goal::Kind::Task);
     CHECK(goal::classify("Nicht 2 Stueck sondern 2s", bots).kind == goal::Kind::Correction);

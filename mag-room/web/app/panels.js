@@ -214,9 +214,12 @@
           const state = { active: 'läuft', done: 'abgeschlossen', blocked: 'blockiert',
                           ended: 'beendet' }[goal.state] || goal.state;
           add('Browser-Auftrag', state + (goal.progress === 'stalled' ? ' · hängt, noch offen' : ''));
+          if (goal.source === 'legacy_recovered') add('Wiederaufnahme', 'Aus offenem Altauftrag rekonstruiert · Browser neu prüfen');
           if (goal.text) add('Ziel', goal.text);
           if (goal.url && goal.state === 'active') add('Letzte Seite', goal.url);
           if (goal.error) add('Auftrags-Hinweis', goal.error);
+        } else {
+          add('Browser-Auftrag', 'keiner (kein aktiver Goal-Datensatz)');
         }
         if (m.numa !== undefined) add('Rechner', 'NUMA ' + m.numa + ' · nur CPU');
         add('VM', b.vm_note === 'creating' ? 'wird erstellt …' : b.vm || 'keine (nur Chat)');

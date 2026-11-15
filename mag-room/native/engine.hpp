@@ -2010,7 +2010,8 @@ private:
   static bool announces(const std::string &text) {
     const std::string low = lower(text);
     for (const char *w : {"ich werde ", "als nächstes", "als nächstes ", "jetzt klicke", "jetzt öffne", "jetzt suche", "ich versuche jetzt",
-                          "versuche ich", "ich klicke", "ich öffne", "ich gehe jetzt", "einen moment", "i will ", "let me ", "next, i", "i'll "})
+                          "versuche ich", "ich klicke", "ich öffne", "ich gehe jetzt", "ich scrolle ", "ich tippe ",
+                          "einen moment", "i will ", "let me ", "next, i", "i'll "})
       if (low.find(w) != std::string::npos) return true;
     return false;
   }
@@ -2166,7 +2167,7 @@ private:
       std::lock_guard<std::mutex> lk(mu_);
       b.goal_on = goal::active(b.goal);
       Val status_goal = Val::object();
-      for (const char *k : {"state", "owner", "id", "version", "progress"})
+      for (const char *k : {"state", "owner", "id", "version", "progress", "source"})
         if (const Val *v = b.goal.find(k)) status_goal[k] = *v;
       status_goal["text"] = clip(jstr(b.goal, "text"), 200);
       status_goal["url"] = jstr(b.goal["page"], "url");
@@ -2187,13 +2188,71 @@ private:
     std::lock_guard<std::mutex> lk(mu_);
     b.goal_on = goal::active(b.goal);
     Val status_goal = Val::object();
-    for (const char *k : {"state", "owner", "id", "version", "progress"})
+    for (const char *k : {"state", "owner", "id", "version", "progress", "source"})
       if (const Val *v = b.goal.find(k)) status_goal[k] = *v;
     status_goal["text"] = clip(jstr(b.goal, "text"), 200);
     status_goal["url"] = jstr(b.goal["page"], "url");
     status_goal["error"] = clip(jstr(b.goal, "error"), 200);
     b.goal_public = status_goal;
     b.goal_arm = false;
+  }
+  // #586 persisted goals only from newly arriving tasks. A pre-deploy
+  // task can therefore be underway in the room while no Goal exists. Recover
+  // only an unambiguous named task whose last bot answer is an unfinished plan
+  // (or whose human turn was interrupted). Never resurrect a file, tombstone,
+  // completed tool, unrelated conversation or an unaddressed task.
+  void recover_legacy_goal(Bot &b) {
+    if (exists(goal_file(b)) || exists(goal_mark(b)) || !jstr(b.goal, "state").empty()) return;
+    if (!vm::valid_name(jstr(room_.bot(b.id), "vm"))) return;
+    const auto history = room_.all();
+    if (history.empty()) return;
+    const Val roster_bots = room_.bots();
+    std::vector<std::pair<std::string, std::string>> roster;
+    std::vector<group_chat::Bot> named;
+    for (const auto &other : roster_bots.asArr()) {
+      roster.push_back({jstr(other, "id"), jstr(other, "name")});
+      named.push_back({jstr(other, "id"), jstr(other, "name")});
+    }
+    const size_t none = history.size();
+    size_t task_index = none;
+    std::vector<std::string> fixes;
+    for (size_t i = history.size(); i-- > 0;) {
+      const Val &m = history[i];
+      if (jstr(m, "role") != "user") continue;
+      const std::string words = jstr(m, "text");
+      const auto kind = goal::classify(words, roster).kind;
+      if (kind == goal::Kind::Status) continue;
+      if (kind == goal::Kind::Correction) { fixes.push_back(words); continue; }
+      if (kind != goal::Kind::Task) return; // Stop or unrelated new chat
+      bool addressed = false;
+      if (const Val *to = m.find("mentions"); to && to->isArr())
+        for (const Val &id : to->asArr()) addressed |= id.asStr() == b.id;
+      const auto mentions = group_chat::addressed(words, named);
+      addressed = addressed || std::find(mentions.begin(), mentions.end(), b.id) != mentions.end();
+      if (!addressed) return; // never assign an old unaddressed task to both bots
+      task_index = i;
+      break;
+    }
+    if (task_index == none) return;
+    const Val *last_bot = nullptr;
+    for (size_t i = task_index + 1; i < history.size(); ++i) {
+      const Val &m = history[i];
+      if (jstr(m, "role") != "bot" || jstr(m, "from") != b.id) continue;
+      if (const Val *parts = m.find("parts"); parts && parts->isArr())
+        for (const Val &p : parts->asArr())
+          if (jstr(p, "k") == "step" && jstr(p, "state") == "ok" &&
+              (jstr(p, "tool") == "goal_finish" || jstr(p, "tool") == "goal_blocked")) return;
+      last_bot = &m;
+    }
+    const Val *at = b.wire.find("at_work");
+    const bool interrupted = !last_bot && at && at->isObj() &&
+                             jstr(*at, "reason") == "human" && !jbool(*at, "seen");
+    if (!interrupted && (!last_bot || !announces(jstr(*last_bot, "text")))) return;
+    goal::begin(b.goal, b.id, jstr(history[task_index], "text"));
+    for (auto it = fixes.rbegin(); it != fixes.rend(); ++it) goal::correct(b.goal, *it);
+    b.goal["source"] = "legacy_recovered";
+    save_goal(b);
+    logf("engine: " + b.id + " recovered legacy unfinished browser goal; tool_choice will be required");
   }
   // Queued from the HTTP thread. The worker is the only one that edits b.goal.
   void apply_goal_cmd(Bot &b) {
@@ -2241,6 +2300,9 @@ private:
           : "AKTIVER AUFTRAG: " + jstr(b.goal, "text") + "\nERFOLG: " + jstr(b.goal, "done") +
             "\nBISHER: Der aktuelle Seitenstand steht im letzten Browser-Werkzeugergebnis. "
             "Arbeite bis goal_finish oder einem nachgewiesenen goal_blocked weiter; keine Ankündigung als Antwort.";
+      if (active && jstr(b.goal, "source") == "legacy_recovered")
+        note["content"] = jstr(note, "content") + "\nWIEDERAUFNAHME: Lies zuerst die aktuelle Browserseite mit browser_look; "
+                           "Nummern und Ergebnisse aus alten Seiten sind nicht verlässlich.";
       b.wire["messages"].push(note);
       b.wire["goal_prompt_stamp"] = stamp;
       save_wire(b);
@@ -2400,6 +2462,7 @@ private:
     b.wire = read_json(wire_path(b));
     heal_wire(b);
     load_goal(b);
+    recover_legacy_goal(b);
     take_up(b);
     while (true) {
       std::string reason;
@@ -2811,6 +2874,12 @@ private:
       const bool closing = t.wrap;
       t.wrap = false;
       const bool driving = goal_live(b) && !closing;
+      if (step == 0)
+        logf("engine: " + b.id + " goal_gate state=" + jstr(b.goal, "state", "missing") +
+             " source=" + jstr(b.goal, "source", "native") +
+             " tombstone=" + (exists(goal_mark(b)) ? "yes" : "no") +
+             " end=" + (b.end_goal.load() ? "yes" : "no") +
+             " required=" + (driving ? "yes" : "no"));
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
       if (!tools.asArr().empty()) body["tools"] = tools;
@@ -3163,10 +3232,16 @@ private:
           };
           const bool stale_n = (c.name == "browser_click" || c.name == "browser_type") && args.find("n") && goal_live(b) &&
                                !goal::has_element(b.goal, (long)jnum(args, "n"));
-          if (stale_n)
+          const bool recover_needs_look = goal_live(b) && jstr(b.goal, "source") == "legacy_recovered" &&
+                                          jnum(b.goal, "version") == 0 &&
+                                          (c.name == "browser_click" || c.name == "browser_type" ||
+                                           c.name == "browser_scroll" || c.name == "browser_key");
+          if (recover_needs_look)
+            result = tools::fail("Wiederaufgenommener Auftrag: zuerst browser_look ausführen; die alten Elementnummern sind ungültig.");
+          else if (stale_n)
             result = tools::fail("Element " + std::to_string((long)jnum(args, "n")) + " gehört nicht zu Seite-Version " +
                                  std::to_string((long)jnum(b.goal, "version")) + ". Sieh mit browser_look nach und nimm eine Nummer von dort.");
-          if (!stale_n) try {
+          if (!recover_needs_look && !stale_n) try {
             // A card at this step that waits for Chris (consent, a routine to set up).
             const auto card = [&](const Val &ask) {
               room_.update_step(t.id, index, [&](Val &s) {

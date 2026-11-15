@@ -2092,6 +2092,62 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
 
+    def test_legacy_browser_goal_is_recovered_after_upgrade_but_never_after_stop(self):
+        """An old untracked named browser task must regain its goal gate.
+        A stopped task may never be resurrected, even if its last text is a plan."""
+        browser = FakeBrowser()
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        r.lena.reply = lambda body: "Ich scrolle ein Stück nach unten, um eine passende Größe zu finden."
+        r.say("@Lena Nenne zwei transparente Schrumpfschläuche auf Amazon.de für 18650 2S")
+        r.idle()
+        last = [m for m in r.messages() if m["from"] == "lena"][-1]
+        state = pathlib.Path(r.env["MAG_ROOM_STATE"])
+        r.stop()
+        # Model a pre-Goal deploy: room messages and KV wire survive, goal file does not.
+        goal_file = state / "goals" / "lena.json"
+        goal_file.unlink()
+        self.assertFalse((state / "goals" / "lena.json.end").exists())
+        msg_file = state / "messages" / (last["id"] + ".json")
+        msg = json.loads(msg_file.read_text())
+        msg["state"] = "done"
+        msg["text"] = "Ich scrolle ein Stück nach unten, um eine passende Größe zu finden."
+        msg["parts"] = [{"k": "text", "text": msg["text"]}]
+        msg_file.write_text(json.dumps(msg))
+        calls = {"n": 0}
+
+        def do_work(body):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"content": "", "tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Ich scrolle ein Stück nach unten."
+
+        r.lena.reply = do_work
+        r.start()
+        goal = json.loads(goal_file.read_text())
+        self.assertEqual((goal["state"], goal["source"]), ("active", "legacy_recovered"))
+        self.assertIn("Schrumpfschläuche", goal["text"])
+        b = next(x for x in r.state()["bots"] if x["id"] == "lena")
+        self.assertEqual(b["goal"]["source"], "legacy_recovered")
+        before, other = len(r.lena.chats()), len(r.noah.chats())
+        r.say("Und?")
+        r.idle()
+        new = r.lena.chats()[before:]
+        self.assertTrue(new)
+        self.assertEqual(new[0].get("tool_choice"), "required")
+        self.assertIn("WIEDERAUFNAHME", json.dumps(new[0]["messages"], ensure_ascii=False))
+        self.assertEqual(len(r.noah.chats()), other)
+        self.assertTrue(any(p["tool"] == "browser_look" for m in r.messages() if m["from"] == "lena"
+                            for p in m.get("parts", []) if p["k"] == "step"))
+        # Stop creates a tombstone. Reload may not revive the task.
+        self.assertEqual(r.api("POST", "/api/stop", {"bot": "lena"})[0], 200)
+        r.stop()
+        self.assertTrue((state / "goals" / "lena.json.end").exists())
+        r.start()
+        b = next(x for x in r.state()["bots"] if x["id"] == "lena")
+        self.assertEqual(b["goal"]["state"], "ended")
+
     def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):
         browser = FakeBrowser()
         r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port, MAG_ROOM_VISION="lena")

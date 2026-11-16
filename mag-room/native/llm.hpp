@@ -522,11 +522,12 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   opt.headers = be.headers();
   opt.headers.push_back({"Content-Type", "application/json"});
   opt.headers.push_back({"Accept", "text/event-stream"});
-  opt.timeout_s = budget_s;
+  // A zero budget means a live CPU inference with NO wall-clock deadline.
+  // A silent prefill is legitimate; transport disconnect, connection failure
+  // and the user Stop are still handled by curl and the cancellation callback.
+  opt.timeout_s = budget_s <= 0 ? 0 : budget_s;
   opt.connect_timeout_s = 5;
-  // The server sends progress and pings while it works; minutes of silence
-  // mean it is gone.
-  opt.stall_s = 300;
+  opt.stall_s = budget_s <= 0 ? 0 : 300;
   opt.cancel = cancel;
   opt.on_data = [&](const char *data, size_t n) {
     // Stop already happened: a late body (the model was still thinking) is not

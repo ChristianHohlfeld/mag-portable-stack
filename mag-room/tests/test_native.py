@@ -2662,7 +2662,7 @@ class RoomContract(unittest.TestCase):
         self.assertIn("nicht bestätigt", typed[0]["output"])
         self.assertIn("nicht gedrückt", typed[1]["output"].lower())
         self.assertEqual([c["enter"] for c in browser.typed], [False, False])
-        self.assertIn("Wert: \\"Beispielbegriff\\"", json.dumps(requests[3]["messages"], ensure_ascii=False))
+        self.assertIn('Wert: \\"Beispielbegriff\\"', json.dumps(requests[3]["messages"], ensure_ascii=False))
         self.assertNotIn("image_url", json.dumps(requests[3]))
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")

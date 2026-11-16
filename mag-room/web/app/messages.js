@@ -1201,6 +1201,21 @@
     for (const key of dirty) if (key.startsWith(m.id + ':')) dirty.delete(key);
     let node = build(m);
     if (old) {
+      // Reuse the already-mounted browser and timeline BEFORE the message
+      // wrapper itself is replaced. The old keep() fallback can rebuild the
+      // complete article even if refreshGroup() only updates its children.
+      const oldBrowser = old.querySelector('.goal-browser');
+      const newBrowser = node.querySelector('.goal-browser');
+      if (oldBrowser && newBrowser) {
+        oldBrowser.querySelector('.goal-browser-caption').textContent =
+          newBrowser.querySelector('.goal-browser-caption').textContent;
+        oldBrowser.open = browserPrefs.has(oldBrowser.dataset.groupkey)
+          ? browserPrefs.get(oldBrowser.dataset.groupkey) : newBrowser.open;
+        newBrowser.replaceWith(oldBrowser);
+      }
+      const oldGroup = old.querySelector('.goal-group');
+      const newGroup = node.querySelector('.goal-group');
+      if (oldGroup && newGroup) newGroup.replaceWith(oldGroup);
       // Keep what the reader opened.
       old.querySelectorAll('details[open]').forEach((d) => {
         const twin = d.classList.contains('think') ? node.querySelector('.think')
@@ -1218,7 +1233,9 @@
       grow(() => list.insertBefore(node, after), fresh && !after);
     }
     nodes.set(m.id, node);
-    if (m.goal_id && groupAnchor(m).id !== m.id) refreshGroup(m);
+    if ((m.parts || []).some((p) => p.k === 'step') && groupAnchor(m).id === m.id)
+      refreshGroup(m);
+    else if (m.goal_id && groupAnchor(m).id !== m.id) refreshGroup(m);
     empty.hidden = S.messages.size > 0;
     paintDays();
     MAG.speaking?.paint();

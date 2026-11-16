@@ -501,6 +501,66 @@ inline bool url_seen(const Val &g, std::string url) {
   return q != std::string::npos && seen.find(url.substr(0, q)) != std::string::npos;
 }
 
+// Prepare a small, provenance-labelled finishing context instead of forcing
+// another full browser exploration when a CPU model replies without a tool.
+// The model still chooses the answer; these are untrusted observations only.
+inline std::string finish_context(const Val &g) {
+  std::string out = "OFFENER AUFTRAG: " + clip(jstr(g, "text"), 500) + "\n";
+  if (const Val *req = g.find("requirements"); req && req->isArr() && !req->asArr().empty())
+    out += "Erfolgskriterien: " + clip(mj::dump(*req), 1400) + "\n";
+  else out += "Zuerst goal_requirements mit allen Nutzerkriterien aufrufen.\n";
+  if (const Val *plan = g.find("plan"); plan && plan->isArr() && !plan->asArr().empty())
+    out += "Planstand: " + clip(mj::dump(*plan), 700) + "\n";
+  if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr()) {
+    const size_t start = pages->asArr().size() > 3 ? pages->asArr().size() - 3 : 0;
+    for (size_t i = start; i < pages->asArr().size(); ++i) {
+      const Val &p = pages->asArr()[i];
+      out += "QUELLE " + std::to_string(i + 1) + ": " + clip(jstr(p, "url"), 380) +
+             "\nSICHTBARER TEXT (Zitat exakt daraus): " + clip(jstr(p, "text"), 850) + "\n";
+    }
+  }
+  if (const Val *cs = g.find("candidates"); cs && cs->isArr() && !cs->asArr().empty()) {
+    out += "Gesehene Kandidaten (Link nur verwendbar, falls URL tatsächlich beobachtet):\n";
+    for (size_t i = 0; i < cs->asArr().size() && i < 8; ++i) {
+      const Val &c = cs->asArr()[i];
+      out += "- " + clip(jstr(c, "name"), 150) +
+             " | " + clip(jstr(c, "price"), 40) + " | " +
+             clip(jstr(c, "url"), 320) + "\n";
+    }
+  }
+  out += "Nächster Schritt muss ein ECHTER Werkzeugaufruf sein. Ist das Ergebnis durch diese Beobachtungen "
+         "belegt, nutze goal_finish mit proofs (id, exaktes quote, URL derselben Quelle) und bei konkreten "
+         "Links items (name, url, price). Sind Kriterien noch offen, nutze das passende Browserwerkzeug. "
+         "Ein Titel oder Preis ohne beobachtete Artikel-URL genügt nicht: öffne den zugehörigen Link, "
+         "beobachte dessen Ziel-URL und belege erst dann den Artikel. Keine Quellen erfinden.";
+  return clip(out, 5700);
+}
+
+// A failed or missing tool call must never discard witnessed clickable links.
+// Returning them is an explicitly provisional recovery, never a false "done".
+inline std::string provisional_sources(const Val &g) {
+  std::string out = "Abschluss noch nicht verifiziert. Diese tatsächlich beobachteten Links bleiben verfügbar:";
+  std::set<std::string> used;
+  int n = 0;
+  if (const Val *cs = g.find("candidates"); cs && cs->isArr())
+    for (const auto &c : cs->asArr()) {
+      const std::string url = jstr(c, "url");
+      if (!starts_with(url, "https://") && !starts_with(url, "http://")) continue;
+      if (!used.insert(url).second) continue;
+      out += "\n- " + clip(jstr(c, "name"), 110) + " — " + clip(url, 300);
+      if (!jstr(c, "price").empty()) out += " (" + clip(jstr(c, "price"), 45) + ")";
+      if (++n >= 5) break;
+    }
+  if (n == 0) {
+    const std::string source = jstr(g["page"], "url");
+    if (starts_with(source, "https://") || starts_with(source, "http://"))
+      out += "\n- Gesehene Seite: " + clip(source, 380);
+    else out += "\n- Keine überprüfbare Ziel-URL gespeichert.";
+  }
+  out += "\nDer Auftrag bleibt offen; die Auswahl ist noch nicht als Ergebnis bestätigt.";
+  return out;
+}
+
 inline bool login_page(const Val &g) {
   const Val *page = g.find("page");
   if (!page || !page->isObj()) return false;

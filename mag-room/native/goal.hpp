@@ -147,6 +147,8 @@ inline void begin(Val &g, const std::string &owner, const std::string &text) {
   next["page"] = Val::object();
   next["candidates"] = Val::array();
   next["requirements"] = Val::array();
+  next["plan"] = Val::array();
+  next["needs_relook"] = false;
   next["evidence_pages"] = Val::array();
   next["error"] = "";
   next["seen"] = "";
@@ -163,6 +165,7 @@ inline void correct(Val &g, const std::string &text) {
   g["progress"] = "running";
   g["text"] = jstr(g, "text") + "\nKorrektur: " + line;
   g["requirements"] = Val::array(); // a correction invalidates earlier criteria
+  g["plan"] = Val::array(); // the user changed what needs doing
   if (needs_items(line)) g["shopping"] = true;
 }
 
@@ -447,6 +450,28 @@ inline bool proofs_ok(const Val &g, const Val *proofs, std::string &why) {
     if (!known || !found) {
       why = "Unbelegte Anforderung " + clip(id, 60) + ": Textstelle und URL müssen auf derselben gesehenen Seite stehen.";
       return false;
+    }
+  }
+  return true;
+}
+
+inline bool plan_complete(const Val &g) {
+  const Val *plan = g.find("plan");
+  if (!plan || !plan->isArr() || plan->asArr().empty()) return true;
+  for (const auto &step : plan->asArr())
+    if (jstr(step, "status") != "done") return false;
+  return true;
+}
+inline bool plan_valid(const Val *steps, std::string &why) {
+  if (!steps || !steps->isArr() || steps->asArr().empty() || steps->asArr().size() > 12) {
+    why = "Ein Plan braucht 1 bis 12 Teilschritte."; return false;
+  }
+  std::set<std::string> ids;
+  for (const auto &step : steps->asArr()) {
+    const std::string id = jstr(step, "id"), task = trim(jstr(step, "action"));
+    if (!step.isObj() || id.empty() || id.size() > 40 || task.size() < 4 ||
+        task.size() > 300 || !ids.insert(id).second) {
+      why = "Jeder Teilschritt braucht eine eindeutige id und eine konkrete Aktion."; return false;
     }
   }
   return true;

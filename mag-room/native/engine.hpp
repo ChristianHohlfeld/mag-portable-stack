@@ -155,7 +155,7 @@ public:
     const bool hush_only = !how.hush.empty() && how.kind == goal::Kind::Chat && said.size() < 80;
     auto has_vm = [&](const std::string &id) {
       for (auto &c : bots.asArr())
-        if (jstr(c, "id") == id) return vm::valid_name(jstr(c, "vm"));
+        if (jstr(c, "id") == id) return jbool(c, "enabled", true) && vm::valid_name(jstr(c, "vm"));
       return false;
     };
     std::lock_guard<std::mutex> lk(mu_);
@@ -169,7 +169,8 @@ public:
       if (!only && owners.size() > 1) owners.resize(1); // one bot carries an unaddressed task
     } else {
       for (auto &b : bots_)
-        if ((b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
+        if (jbool(room_.bot(b->id), "enabled", true) &&
+            (b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
       // An explicitly addressed correction targets that bot, even if another
       // bot currently has an open goal. A completed goal can be superseded,
       // while blocked/stopped goals are never silently restarted.
@@ -177,6 +178,7 @@ public:
         owners.clear();
         for (auto &b : bots_) {
           if (std::find(to.begin(), to.end(), b->id) == to.end()) continue;
+          if (!jbool(room_.bot(b->id), "enabled", true)) continue;
           const bool open = (b->goal_on || b->goal_arm) && !b->end_goal.load();
           const bool completed = has_vm(b->id) && jstr(b->goal_public, "state") == "done";
           if (open || completed) owners.push_back(b->id);
@@ -190,7 +192,8 @@ public:
     if (!keep_lead) {
       lead_.clear();
       for (auto &b : bots_)
-        if (b->running == "human" && b->acted && b->cancel && !b->cancel->stopped()) lead_ = b->id;
+        if (b->running == "human" && b->acted && b->cancel && !b->cancel->stopped() &&
+            jbool(room_.bot(b->id), "enabled", true)) lead_ = b->id;
     }
     if (!owners.empty() && (how.kind == goal::Kind::Task || how.kind == goal::Kind::Correction))
       lead_ = owners[0];
@@ -244,6 +247,14 @@ public:
       const bool hushed = std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end();
       if (hushed) silenced_.insert(b->id);
       if (how.kind == goal::Kind::Stop && (addressed || to.size() == bots_.size())) mark_end(*b);
+      // Pause means no model execution AND no enqueued future action.
+      // Previously an explicit @Noah browser task still created a durable
+      // .pending goal while Noah was disabled; it could later replay on resume.
+      if (!jbool(room_.bot(b->id), "enabled", true)) {
+        b->want = false;
+        b->continues = 0;
+        continue;
+      }
       if (silenced_.count(b->id) && !(only && addressed && !hushed)) {
         b->want = false;
         continue;
@@ -2726,6 +2737,14 @@ private:
     if (!found || !found->isObj()) return;
     const Val mark = *found;
     b.wire.obj->erase(std::remove_if(b.wire.obj->begin(), b.wire.obj->end(), [](const auto &kv) { return kv.first == "at_work"; }), b.wire.obj->end());
+    if (!jbool(room_.bot(b.id), "enabled", true)) {
+      // An interrupted turn cannot silently re-arm itself after an owner
+      // paused the bot. The old message stays in history, never auto-replayed.
+      b.cut_off = 0;
+      save_wire(b);
+      logf("engine: " + b.id + " skipped interrupted turn while paused");
+      return;
+    }
     const int tries = (int)jnum(mark, "tries");
     const bool unfinished_goal = goal::active(b.goal) && !exists(goal_mark(b));
     // If a browser action was in flight when the room died, the new process

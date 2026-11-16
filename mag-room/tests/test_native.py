@@ -2275,6 +2275,143 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(has_image(captured[2]))  # browser_look screenshot
         self.assertTrue(has_image(captured[3]))  # scroll screenshot
 
+    def test_goal_search_then_missing_calls_still_opens_browser_without_user_retry(self):
+        """Regression: external search is not a page snapshot. Text-only
+        decisions after it must not strand the task before opening Chrome."""
+        browser = FakeBrowser()
+        browser.title = "Bericht"
+        browser.text = "Der Status ist auf der Seite bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            n = len(requests)
+            if n == 1:
+                return {"tool_calls": [{"name": "web_search", "arguments": {"query": "status zu beispielbericht"}}]}
+            if n in (2, 3):
+                return "Ich recherchiere und werde die Seite dann öffnen."
+            if n == 4:
+                return {"tool_calls": [{"name": "browser_open", "arguments": {"url": "https://example.org/report"}}]}
+            if n == 5:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "status", "need": "Bestätigung der Seite nachweisen"}]}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Der Bericht wurde geöffnet und seine Bestätigung geprüft.",
+                "proofs": [{"id": "status", "url": browser.url,
+                            "quote": "Status ist auf der Seite bestätigt"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/report und prüfe die Statusbestätigung")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(requests), 6)
+        self.assertEqual(browser.url, "https://example.org/report")
+        self.assertEqual(goal["evidence_pages"][-1]["url"], browser.url)
+        self.assertTrue(all(x.get("tool_choice") == "required" for x in requests))
+        # No schema switch before and after missing tool calls: warm KV prefix.
+        self.assertTrue(all(x["tools"] == requests[0]["tools"] for x in requests))
+        self.assertIn("keine Browserbeobachtung", json.dumps(requests[1]["messages"], ensure_ascii=False))
+        self.assertIn("browser_open", json.dumps(requests[3]["messages"], ensure_ascii=False))
+        self.assertNotIn("Automatischer Abschluss ohne gültigen Werkzeugaufruf",
+                         " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena"))
+
+    def test_goal_no_browser_evidence_eventually_pauses_without_fabricated_url(self):
+        r = Room()
+        self.addCleanup(r.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            if len(requests) == 1:
+                return {"tool_calls": [{"name": "web_search", "arguments": {"query": "information im web"}}]}
+            return "Ich werde die Ergebnisse prüfen."
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/info und überprüfe den Status")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertEqual(len(requests), 4)  # tool + three missing calls, not an infinite loop
+        self.assertFalse(goal.get("evidence_pages"))
+        self.assertIn("zwei automatischen Korrekturversuchen", goal["error"])
+        self.assertTrue(all(x["tools"] == requests[0]["tools"] for x in requests))
+        self.assertNotIn("results", goal)
+
+    def test_standalone_json_navigation_executes_once_without_extra_inference(self):
+        browser = FakeBrowser()
+        browser.text = "Der Status wurde bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = []
+
+        def reply(body):
+            calls.append(body)
+            if len(calls) == 1:
+                return '{"action":"browser_open","url":"https://example.org/result"}'
+            if len(calls) == 2:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "state", "need": "Status aus Seite belegen"}]}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Seitenstatus geprüft.",
+                "proofs": [{"id": "state", "url": browser.url,
+                            "quote": "Status wurde bestätigt"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/result und prüfe den Status")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(browser.url, "https://example.org/result")
+        steps = [p for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p["k"] == "step"]
+        self.assertEqual([p["tool"] for p in steps], ["browser_open", "goal_requirements", "goal_finish"])
+        self.assertNotIn('{"action":"browser_open"', " ".join(m.get("text", "") for m in r.messages()))
+
+    def test_tool_recovery_keeps_browser_type_after_existing_page_observation(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/page"
+        browser.text = "Der Bericht wurde beobachtet und dokumentiert."
+        browser.elements = [{"n": 1, "kind": "text", "label": "Suche", "x": 100, "y": 50}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = []
+
+        def reply(body):
+            calls.append(body)
+            if len(calls) == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "result", "need": "Die Berichtsaussage belegen"}]}}]}
+            if len(calls) == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if len(calls) == 3:
+                return "Ich werde erst etwas eintippen."
+            if len(calls) == 4:
+                return {"tool_calls": [{"name": "browser_type", "arguments": {"text": "Status", "n": 1}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Die Aussage des Berichts wurde geprüft.",
+                "proofs": [{"id": "result", "url": browser.url,
+                            "quote": "Bericht wurde beobachtet und dokumentiert"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/page und prüfe den Bericht")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(all(x["tools"] == calls[0]["tools"] for x in calls))
+        self.assertIn("browser_type", [x["function"]["name"] for x in calls[3]["tools"]])
+        steps = [p["tool"] for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p["k"] == "step"]
+        self.assertIn("browser_type", steps)
+
     def test_goal_finishes_after_plain_text_via_grounded_narrow_tool_recovery(self):
         browser = FakeBrowser()
         browser.url = "https://example.org/results"
@@ -2313,9 +2450,11 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(seen), 4)
         offered_before = {x["function"]["name"] for x in seen[2]["tools"]}
         offered_after = {x["function"]["name"] for x in seen[3]["tools"]}
-        self.assertLess(len(offered_after), len(offered_before))
+        self.assertEqual(offered_after, offered_before)  # cacheable identical tool prefix during recovery
         self.assertIn("goal_finish", offered_after)
-        self.assertNotIn("image_generate", offered_after)
+        self.assertIn("browser_type", offered_after)
+        self.assertIn("browser_flow", offered_after)
+        self.assertIn("web_search", offered_after)
         self.assertIn("https://example.org/item/3", json.dumps(seen[3]["messages"], ensure_ascii=False))
         self.assertEqual(goal["results"][0]["url"], "https://example.org/item/3")
 
@@ -2347,7 +2486,7 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")
         self.assertEqual(goal["progress"], "paused")
-        self.assertEqual(i["n"], 4)
+        self.assertEqual(i["n"], 5)  # two corrective retries before the bounded pause
         said = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
         self.assertIn("Abschluss noch nicht verifiziert", said)
         self.assertIn("https://example.org/item/3", said)
@@ -2389,7 +2528,7 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
         self.assertEqual(goal["progress"], "done")
-        self.assertEqual(len(requests), 4)  # full palette, look, recovery, narrowed recovery
+        self.assertEqual(len(requests), 5)  # full palette, look, 2 retries, grounded completion
         self.assertEqual(goal["results"][0]["url"], "https://example.org/item/best")
         self.assertEqual(goal["results"][0]["price"], "7,49 EUR")
         seen_urls = [link["url"] for page in goal["evidence_pages"] for link in page["links"]]

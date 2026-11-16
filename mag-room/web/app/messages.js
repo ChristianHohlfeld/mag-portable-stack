@@ -1342,8 +1342,11 @@
       // indication that the reader wants to leave the newest message.
       let now = pinned;
       if (userGesture && up) now = false;
-      else if (userGesture && down && nearBottom()) now = true;
-      else if (userGesture && !nearBottom()) now = false;
+      else if (!pinned && down && nearBottom()) {
+        // Momentum/inertial scrolling can reach the end after the last
+        // touch event: re-attach when the view naturally moves back down.
+        now = true;
+      } else if (userGesture && !nearBottom()) now = false;
       if (now !== pinned) { pinned = now; if (pinned) unread = 0; paintJump(); }
     }, { passive: true });
     jump.addEventListener('click', toBottom);

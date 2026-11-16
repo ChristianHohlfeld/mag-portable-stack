@@ -2184,7 +2184,7 @@ class RoomContract(unittest.TestCase):
                            "price": "6,99 EUR"}]}}]}
 
         r.lena.reply = reply
-        r.say("@Lena Suche eine passende Option mit Breite, Preis und Link")
+        r.say("@Lena Suche auf https://example.org/results eine passende Option mit Breite, Preis und Link")
         r.idle()
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
@@ -2220,7 +2220,7 @@ class RoomContract(unittest.TestCase):
             return "Ich arbeite an der Auswahl."
 
         r.lena.reply = reply
-        r.say("@Lena Suche eine Option mit Preis und Link")
+        r.say("@Lena Suche auf https://example.org/results eine Option mit Preis und Link")
         r.idle()
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")

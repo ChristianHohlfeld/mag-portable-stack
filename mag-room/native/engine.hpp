@@ -132,6 +132,12 @@ public:
       if (to.empty())
         for (auto &b : roster) to.push_back(b.id);
     }
+    // A paused bot cannot be a dispatch target, even when an explicit
+    // mention was resolved before the enabled-state snapshot was read.
+    // Still report that an explicitly addressed bot is paused.
+    std::set<std::string> enabled_ids;
+    for (const auto &entry : bots.asArr())
+      if (jbool(entry, "enabled", true)) enabled_ids.insert(jstr(entry, "id"));
     // A paused bot does not answer. Say so when it was asked by name, or when
     // nobody is left to answer.
     {
@@ -147,6 +153,9 @@ public:
         room_.bus.publish("notice", ev);
       }
     }
+    to.erase(std::remove_if(to.begin(), to.end(), [&](const std::string &id) {
+      return !enabled_ids.count(id);
+    }), to.end());
     const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
     const std::string said = jstr(message, "text");
     std::vector<std::pair<std::string, std::string>> roster;
@@ -169,14 +178,14 @@ public:
       if (!only && owners.size() > 1) owners.resize(1); // one bot carries an unaddressed task
     } else {
       for (auto &b : bots_)
-        if ((b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
+        if (enabled_ids.count(b->id) && (b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
       // An explicitly addressed correction targets that bot, even if another
       // bot currently has an open goal. A completed goal can be superseded,
       // while blocked/stopped goals are never silently restarted.
       if (how.kind == goal::Kind::Correction && only) {
         owners.clear();
         for (auto &b : bots_) {
-          if (std::find(to.begin(), to.end(), b->id) == to.end()) continue;
+          if (!enabled_ids.count(b->id) || std::find(to.begin(), to.end(), b->id) == to.end()) continue;
           const bool open = (b->goal_on || b->goal_arm) && !b->end_goal.load();
           const bool completed = has_vm(b->id) && jstr(b->goal_public, "state") == "done";
           if (open || completed) owners.push_back(b->id);
@@ -244,7 +253,7 @@ public:
       const bool hushed = std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end();
       if (hushed) silenced_.insert(b->id);
       if (how.kind == goal::Kind::Stop && (addressed || to.size() == bots_.size())) mark_end(*b);
-      if (silenced_.count(b->id) && !(only && addressed && !hushed)) {
+      if (!enabled_ids.count(b->id) || (silenced_.count(b->id) && !(only && addressed && !hushed))) {
         b->want = false;
         continue;
       }
@@ -885,7 +894,9 @@ private:
             b->model_since = since;
             b->warm_pending = true;
           }
-          if (ready && b->cut_off > 0 && !b->want && b->running.empty()) {
+          // A deploy must never replay an interrupted turn while paused.
+          if (ready && jbool(room_.bot(b->id), "enabled", true) &&
+              b->cut_off > 0 && !b->want && b->running.empty()) {
             b->want = true;
             b->reason = "human";
           }
@@ -4213,6 +4224,15 @@ private:
 
     // ---- finish ----------------------------------------------------------
     if (cleared(t)) return; // the room was emptied meanwhile: this turn never happened
+    // Pause was requested while the model/tool was working. Stop the old
+    // streaming message, but never flush its withheld tokens, start a new
+    // bubble or schedule another bot round after a pause.
+    if (!jbool(room_.bot(b.id), "enabled", true)) {
+      if (!t.id.empty())
+        room_.update(t.id, [](Val &m) { m["state"] = "stopped"; }, true);
+      tag_turn(b, t);
+      return;
+    }
     const std::string unshown = t.held + t.tail;
     const bool pass = !t.visible && t.steps == 0 && t.id.empty() && !failed &&
                       (trim(unshown).empty() || group_chat::is_pass(unshown) || group_chat::name_only(unshown, names()));

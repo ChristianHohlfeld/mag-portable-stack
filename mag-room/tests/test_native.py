@@ -415,6 +415,29 @@ class RoomContract(unittest.TestCase):
         self.assertIn("noah", [m["from"] for m in r.messages()])
         self.assertIn("Hi beide", json.dumps(r.noah.chats()[0]["messages"], ensure_ascii=False))
 
+    def test_pausing_mid_answer_suppresses_late_output_and_dispatch(self):
+        r = self.room
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_noah(body):
+            entered.set()
+            release.wait(10)
+            return "Antwort nach Pause darf nicht erscheinen"
+
+        r.noah.reply = slow_noah
+        r.say("@Noah starte eine Antwort")
+        r.wait(entered.is_set, "Noah began answering")
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": False})[0], 200)
+        release.set()
+        r.idle(30)
+        self.assertEqual(len([m for m in r.messages() if m["from"] == "noah" and
+                              "Antwort nach Pause" in m.get("text", "")]), 0)
+        previous = len(r.noah.chats())
+        r.say("@Noah bist du noch da?")
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), previous, "explicit mentions must not wake a paused model")
+        self.assertEqual([b["enabled"] for b in r.state()["bots"] if b["id"] == "noah"], [False])
+
     def test_speaker_labels_are_plain_and_copied_tags_are_cleaned(self):
         r = self.room
         r.lena.reply = lambda body: "Hallo [Chris], [Noah · Di 10.11. 01:51] meinte das auch. Siehe [Doku](https://example.org)."

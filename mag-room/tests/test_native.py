@@ -2275,6 +2275,138 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(has_image(captured[2]))  # browser_look screenshot
         self.assertTrue(has_image(captured[3]))  # scroll screenshot
 
+    def test_goal_length_before_tool_call_gets_extra_tokens_without_pausing(self):
+        """A model that spends its 512-token envelope thinking can still act.
+        finish_reason=length is distinct from an unproductive stop."""
+        browser = FakeBrowser()
+        browser.url = "https://example.org/status"
+        browser.text = "Die Seite zeigt den bestätigten Status."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            if len(requests) == 1:
+                return {"reasoning": "Der Browser muss zunächst geöffnet werden. " * 30,
+                        "finish_reason": "length", "completion_tokens": 1536}
+            if len(requests) == 2:
+                return {"tool_calls": [{"name": "browser_open", "arguments": {"url": browser.url}}]}
+            if len(requests) == 3:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "status", "need": "Seitenstatus belegen"}]}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Der Seitenstatus ist bestätigt.",
+                "proofs": [{"id": "status", "url": browser.url,
+                            "quote": "Seite zeigt den bestätigten Status"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/status und prüfe den Seitenstatus")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(requests), 4)
+        self.assertEqual([int(x["max_tokens"]) for x in requests], [1536, 3072, 3072, 3072])
+        self.assertTrue(all(x["tools"] == requests[0]["tools"] for x in requests))
+        log = (r.tmp / "magroom.log").read_text()
+        self.assertIn("finish_reason=length; raising max_tokens 1536 -> 3072", log)
+        self.assertNotIn("goal paused after 3 consecutive missing tool calls", log)
+
+    def test_failed_prefix_restore_rebuilds_even_with_saved_conversation(self):
+        r = Room()
+        self.addCleanup(r.close)
+        # First ever warm-up: no checkpoint, then rebuild and save.
+        actions = list(r.lena.slot_actions)
+        self.assertIn("restore", [a for a, _ in actions])
+        self.assertIn("save", [a for a, _ in actions])
+        self.assertIn("prefix restore failed", (r.tmp / "magroom.log").read_text())
+        r.lena.reply = lambda body: "Hallo."
+        r.say("@Lena Hallo")
+        r.idle()
+        r.stop()
+        wire = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json"
+        data = json.loads(wire.read_text())
+        self.assertGreater(len(data["messages"]), 1)
+        # Model runtime changed: force a cold slot and simulated incompatible
+        # saved checkpoint. It must warm the stable prefix despite the history.
+        data["model_since"] = -99999
+        wire.write_text(json.dumps(data))
+        r.lena.saved.clear()
+        start = len(r.lena.slot_actions)
+        r.start()
+        r.idle()
+        actions = [a for a, _ in r.lena.slot_actions[start:]]
+        self.assertIn("restore", actions)
+        self.assertIn("erase", actions)
+        self.assertIn("save", actions)
+        self.assertLess(actions.index("restore"), actions.index("save"))
+        self.assertIn("prefix rebuilt and saved", (r.tmp / "magroom.log").read_text())
+
+    def test_goal_slot_does_not_describe_unrelated_image_until_goal_ends(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/report"
+        browser.text = "Bisher kein bestätigtes Ergebnis"
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_VISION="lena")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        photo = r.api("POST", "/api/upload?name=test.png", raw=PNG)[1]
+        seen = []
+
+        def reply(body):
+            last = text_of(body["messages"][-1].get("content"))
+            seen.append(last)
+            if len(seen) == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if "Beschreibe das Bild" in last:
+                return "Eine unwichtige Bildbeschreibung."
+            return "Ich muss die Seite noch prüfen."
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/report und prüfe den Status",
+              attachments=[photo["file"]])
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertFalse(any("Beschreibe das Bild" in msg for msg in seen), seen)
+        self.assertEqual(r.lena.chats()[0]["max_tokens"], 1536)
+        self.assertEqual(len([m for m in r.messages() if m.get("from") == "lena"]), 1)
+
+    def test_browser_goal_uses_short_model_view_but_preserves_full_page_evidence(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/large"
+        browser.title = "Lang"
+        browser.text = "Sehr langer Seitentext. " * 500
+        browser.elements = [{"n": i, "kind": "link", "label": "Navigationspunkt %d" % i,
+                             "href": "https://example.org/nav/%d" % i, "x": 100, "y": i * 9}
+                            for i in range(1, 48)]
+        browser.links = [{"name": "Dokument %d" % i, "url": "https://example.org/doc/%d" % i}
+                         for i in range(1, 24)]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            if len(requests) == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Ich prüfe noch."
+
+        r.lena.reply = reply
+        r.say("@Lena Untersuche https://example.org/large und prüfe die Dokumente")
+        r.idle()
+        observation = next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool")
+        self.assertLess(len(observation), 6200)
+        self.assertIn("Weitere echte Seitenlinks", observation)
+        self.assertIn("browser_read", observation)
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        page = goal["evidence_pages"][-1]
+        self.assertGreaterEqual(len(page["links"]), 20)
+        self.assertIn("Sehr langer Seitentext", page["text"])
+
     def test_goal_search_then_missing_calls_still_opens_browser_without_user_retry(self):
         """Regression: external search is not a page snapshot. Text-only
         decisions after it must not strand the task before opening Chrome."""

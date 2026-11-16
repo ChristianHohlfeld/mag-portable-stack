@@ -2275,6 +2275,76 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(has_image(captured[2]))  # browser_look screenshot
         self.assertTrue(has_image(captured[3]))  # scroll screenshot
 
+    def test_prefix_rewarms_before_first_goal_after_deploy_prompt_change(self):
+        """Room-only deploy with a live llama-server may change tool schemas.
+        Detect that even on a nonempty conversation with unchanged persona."""
+        r = Room()
+        self.addCleanup(r.close)
+        r.lena.reply = lambda body: "Hallo."
+        r.say("@Lena hallo")
+        r.idle()
+        r.stop()
+        wire = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json"
+        stored = json.loads(wire.read_text())
+        self.assertGreater(len(stored["messages"]), 1)
+        # Simulate old prefix hash with identical settings signature.
+        stored["prefix"] = "previous-release-tools-changed"
+        wire.write_text(json.dumps(stored))
+        r.lena.slot_actions.clear()
+        start = len(r.lena.requests)
+        r.start()
+        r.wait(lambda: any(a == "save" for a, _ in r.lena.slot_actions), "rebuilt tool prefix")
+        r.idle()
+        warm = r.lena.requests[start:]
+        self.assertTrue(warm and warm[0]["max_tokens"] == 1)
+        actions = [a for a, _ in r.lena.slot_actions]
+        self.assertIn("save", actions)
+        log = (r.tmp / "magroom.log").read_text()
+        self.assertIn("system/tool prefix changed; new checkpoint required", log)
+        self.assertIn("prewarming before queued work (changed prompt/tools)", log)
+
+    def test_missing_slot_file_is_not_mislabeled_corrupt_checkpoint(self):
+        """A real llama.cpp slot dir exposes absent saves before HTTP 400."""
+        r = Room()
+        self.addCleanup(r.close)
+        r.stop()
+        slot_dir = r.tmp / "llama-slots" / "lena"
+        slot_dir.mkdir(parents=True)
+        status = {
+            "updated": time.time(),
+            "bots": {
+                "lena": {"state": "ready", "since": 45, "slot_dir": str(slot_dir)},
+                "noah": {"state": "ready", "since": 45},
+            }
+        }
+        pathlib.Path(r.env["MAG_MODELS_STATUS"]).write_text(json.dumps(status))
+        r.lena.slot_actions.clear()
+        r.start()
+        r.wait(lambda: any(a == "save" for a, _ in r.lena.slot_actions), "prefix built from absent slot")
+        self.assertNotIn("restore", [a for a, _ in r.lena.slot_actions])
+        self.assertIn("prefix checkpoint absent:", (r.tmp / "magroom.log").read_text())
+
+    def test_image_caption_preserves_kv_snapshot_and_restores_it(self):
+        """Auxiliary image caption has different prompt/tools and must restore
+        the previous full chat KV, not just its system prefix."""
+        r = Room(MAG_ROOM_VISION="lena")
+        self.addCleanup(r.close)
+        r.lena.slot_actions.clear()
+
+        def reply(body):
+            return ("Rote Tasse: steht auf einem Tisch."
+                    if "Beschreibe das Bild" in text_of(body["messages"][-1].get("content"))
+                    else "Das ist die Aufnahme.")
+        r.lena.reply = reply
+        photo = r.api("POST", "/api/upload?name=aufnahme.png", raw=PNG)[1]
+        r.say("@Lena was ist auf dem Bild?", attachments=[photo["file"]])
+        r.idle()
+        auxiliary = [(a, fn) for a, fn in r.lena.slot_actions
+                     if fn == "mag-aux-image-lena.bin"]
+        self.assertEqual([a for a, _ in auxiliary], ["save", "restore"])
+        self.assertEqual(len(r.lena.chats()), 2)
+        self.assertIn("Rote Tasse", json.dumps(r.messages(), ensure_ascii=False))
+
     def test_goal_length_before_tool_call_gets_extra_tokens_without_pausing(self):
         """A model that spends its 512-token envelope thinking can still act.
         finish_reason=length is distinct from an unproductive stop."""

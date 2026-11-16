@@ -1078,17 +1078,33 @@ private:
     set_phase(b, "warming", "Systemprompt");
     std::string err;
     if (slot_is_empty) {
-      if (llm::slot_restore(b.backend, file, &err)) {
+      // llama.cpp reports missing checkpoint files with the *same* HTTP 400
+      // as corrupt saves or a full KV cache. Check the actual modeld-exposed
+      // --slot-save-path first, when that directory is accessible locally.
+      std::string dir;
+      {
+        std::lock_guard<std::mutex> models(models_mu_);
+        if (const Val *m = models_.find(b.id)) dir = jstr(*m, "slot_dir");
+      }
+      std::error_code ec;
+      const bool can_inspect = !dir.empty() && std::filesystem::is_directory(dir, ec) && !ec;
+      ec.clear();
+      const bool missing = can_inspect && !std::filesystem::exists(dir + "/" + file, ec) && !ec;
+      if (!missing && llm::slot_restore(b.backend, file, &err)) {
         logf("engine: " + b.id + " prefix restored: " + file);
         set_kv(b, "warm");
         set_phase(b, "idle");
         return;
       }
-      logf("engine: " + b.id + " prefix restore failed: " + file + " (" +
-           clip(err, 240) + "); rebuilding from system text");
+      if (missing)
+        logf("engine: " + b.id + " prefix checkpoint absent: " + file +
+             "; building it before queued requests");
+      else
+        logf("engine: " + b.id + " prefix restore failed: " + file + " (" +
+             clip(err, 240) + "); rebuilding from system text");
       std::string erase_error;
       if (!llm::slot_erase(b.backend, &erase_error))
-        logf("engine: " + b.id + " cannot erase failed prefix slot: " + clip(erase_error, 160));
+        logf("engine: " + b.id + " cannot erase prefix slot for prewarm: " + clip(erase_error, 160));
     }
     Val body = Val::object();
     Val msgs = Val::array();

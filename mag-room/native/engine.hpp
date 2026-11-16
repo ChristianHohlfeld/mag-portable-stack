@@ -3030,8 +3030,7 @@ private:
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
       set_phase(b, "reading");
       const int remaining_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
-      const int budget_s = driving ? std::min(remaining_s, (int)std::max(60L, envl("MAG_ROOM_GOAL_CALL_BUDGET_S", 180)))
-                                   : remaining_s;
+      const int budget_s = driving ? 0 /* unbounded CPU inference, Stop still works */ : remaining_s;
       // Where this call's text and thoughts begin, should some of them have to be taken back.
       const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
       const size_t thought0 = t.reasoning.size();

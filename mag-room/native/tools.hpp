@@ -91,9 +91,10 @@ inline Val schemas(bool has_vm, bool phone = false) {
     list.push(fn("browser_open", "Open a URL in your own VM browser (real Chrome, persistent profile: logins and cookies stay). Shows the page as browser_look does.",
                  R"({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})"));
     list.push(fn("browser_look",
-                 "Look at the browser as it is now: URL, title, the start of the visible text and every element you can act on, numbered "
-                 "(kind, label, point x/y in the 1440x900 window). Work like a person at the screen: look, act on one element by its number, "
-                 "look again. Use it before every click or type and whenever a page changed.",
+                 "Read the current browser when its state is unknown: URL, title, visible text and numbered clickable elements "
+                 "(kind, label, x/y). browser_open, browser_click, browser_type, browser_scroll, browser_wait, "
+                 "browser_back and browser_flow already return an updated page with valid numbers; do not call browser_look "
+                 "again between those actions unless their observation is incomplete.",
                  R"({"type":"object","properties":{}})"));
     list.push(fn("browser_read", "Read URL, title and the whole visible text of the current page (long pages, articles, order lists).",
                  R"({"type":"object","properties":{}})"));

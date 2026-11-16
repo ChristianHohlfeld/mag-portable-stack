@@ -3663,10 +3663,16 @@ private:
       }
       if (cancelled) break;
       if (t.yielded) break; // the other bot does it; this one says nothing more
-      if (mono_ms() > deadline || step == room_.cfg.max_steps) {
+      if ((mono_ms() > deadline && !goal_live(b)) || step == room_.cfg.max_steps) {
         failed = true;
         error = step == room_.cfg.max_steps ? "Schrittlimit erreicht; schreibe eine Nachricht, wenn ich weitermachen soll."
                                               : "Zeitbudget für diesen Auftrag aufgebraucht.";
+        if (goal_live(b)) {
+          // A deliberate step limit is a pause, not a broken model.
+          b.goal["progress"] = "paused";
+          b.goal["error"] = error;
+          save_goal(b);
+        }
         break;
       }
     }

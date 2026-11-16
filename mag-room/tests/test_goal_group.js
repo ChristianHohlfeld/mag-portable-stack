@@ -109,5 +109,35 @@ assert(read('app.css').includes('@media (max-width: 430px)'), 'phone-specific co
 assert(read('app.css').includes('.goal-browser-slot > .live { width: 100%; max-width: 100%'),
        'live browser must remain inside available phone width');
 assert.strictEqual(document.getElementById('scroll').style.width, '390px');
+
+// A reader only 20px above the end must never be forcibly re-pinned by a
+// 2px layout/scroll-anchoring correction, including within the old 70px zone.
+const scroll = document.getElementById('scroll'), jump = document.getElementById('jump');
+Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => 1000 });
+Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 400 });
+scroll.scrollTop = 600;
+scroll.dispatchEvent(new window.Event('scroll'));
+scroll.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -20, bubbles: true }));
+scroll.scrollTop = 580;
+scroll.dispatchEvent(new window.Event('scroll'));
+assert.strictEqual(jump.hidden, false, 'deliberate UP gesture must unpin within 70px');
+test.upsert(first, false);
+assert.strictEqual(scroll.scrollTop, 580, 'incoming updates must not yank the reader to the bottom');
+scroll.scrollTop = 582; // DOM layout/scroll anchoring, NOT new user input
+scroll.dispatchEvent(new window.Event('scroll'));
+assert.strictEqual(jump.hidden, false, 'programmatic +2px cannot auto-attach the reader');
+// Real user wheel DOWN reaches within 2px but not the actual end yet.
+scroll.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 15, bubbles: true }));
+scroll.scrollTop = 598;
+scroll.dispatchEvent(new window.Event('scroll'));
+assert.strictEqual(jump.hidden, false, 'must reach actual end, not just near-bottom tolerance');
+scroll.scrollTop = 600;
+scroll.dispatchEvent(new window.Event('scroll'));
+assert.strictEqual(jump.hidden, true, 'explicit down gesture at true bottom may reattach');
+scroll.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -20, bubbles: true }));
+scroll.scrollTop = 580;
+scroll.dispatchEvent(new window.Event('scroll'));
+jump.click();
+assert.strictEqual(jump.hidden, true, 'jump arrow always explicitly restores following');
 window.close();
 console.log('goal group timeline ok (desktop state + 390px mobile rules)');

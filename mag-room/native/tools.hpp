@@ -105,6 +105,8 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  R"({"type":"object","properties":{"n":{"type":"integer","description":"element number from browser_look"},"x":{"type":"number"},"y":{"type":"number"},"text":{"type":"string"},"selector":{"type":"string","description":"CSS selector, only if nothing else works"}}})"));
     list.push(fn("browser_type",
                  "Type into a field: by its number n from browser_look (it is clicked and its old text replaced), or into the focused field. "
+                 "The controller verifies editable focus and the field value. enter:false only types, it does NOT submit. "
+                 "To search, use enter:true or submit with browser_key Enter / browser_click afterwards. "
                  "Never type passwords, card numbers or codes: when a page wants a login, call browser_login.",
                  R"({"type":"object","properties":{"text":{"type":"string"},"n":{"type":"integer","description":"field number from browser_look"},"selector":{"type":"string"},"enter":{"type":"boolean","description":"press Enter afterwards"}},"required":["text"]})"));
     list.push(fn("browser_key", "Press a key in the browser: Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown, Backspace.",
@@ -417,6 +419,11 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
     if (row.n <= 0 && e.find("x") && e.find("y"))
       out += " (" + std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
     if (jbool(e, "password")) out += " Passwortfeld";
+    else if (!jstr(e, "value").empty() &&
+             (jstr(e, "kind") == "search" || jstr(e, "kind") == "text" ||
+              jstr(e, "kind") == "textarea" || jstr(e, "kind") == "email" ||
+              jstr(e, "kind") == "contenteditable" || jstr(e, "kind") == "combobox"))
+      out += " Wert: \"" + clip(jstr(e, "value"), 110) + "\"";
     if (jbool(e, "checked")) out += " an";
     out += "\n";
   }
@@ -789,8 +796,22 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       body["text"] = jstr(args, "text");
       if (args.find("n")) body["n"] = jnum(args, "n");
       else if (!jstr(args, "selector").empty()) body["selector"] = jstr(args, "selector");
-      body["enter"] = jbool(args, "enter");
-      return acted(ctx.guests.browser(vm, "POST", "/type", mj::dump(body), 60, ctx.cancel));
+      const bool enter = jbool(args, "enter");
+      body["enter"] = enter;
+      const auto typed = ctx.guests.browser(vm, "POST", "/type", mj::dump(body), 60, ctx.cancel);
+      if (!typed.error.empty() || typed.status != 200) return acted(typed);
+      // HTTP success is not proof that an editable field received text.
+      const Val ack = jparse(typed.body);
+      if (!jbool(ack, "typed_verified"))
+        return fail("Der Browser hat die Eingabe im aktiven Feld nicht bestätigt. "
+                    "Mit browser_look das Feld prüfen und über n/selector erneut versuchen.");
+      Result seen = acted(typed);
+      if (seen.ok)
+        seen.text = "Eingabe im aktiven Feld verifiziert. " +
+                    std::string(enter ? "Enter wurde ausgelöst; Seitenänderung anhand URL/Ergebnissen prüfen.\n"
+                                      : "Enter wurde NICHT gedrückt; Eingabe allein startet keine Suche. "
+                                        "Jetzt browser_key Enter oder den Suchbutton verwenden.\n") + seen.text;
+      return seen;
     }
     if (name == "browser_key") {
       const std::string key = jstr(args, "key");

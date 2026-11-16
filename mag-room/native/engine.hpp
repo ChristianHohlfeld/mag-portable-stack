@@ -3361,8 +3361,23 @@ private:
             page["part"] = (double)index;
             room_.update(t.id, [&](Val &m) { add_page(m, page); });
           };
-          const bool stale_n = (c.name == "browser_click" || c.name == "browser_type") && args.find("n") && goal_live(b) &&
-                               !goal::has_element(b.goal, (long)jnum(args, "n"));
+          bool unsafe_flow = false;
+          if (c.name == "browser_flow") {
+            const Val *steps = args.find("steps");
+            if (steps && steps->isArr() && !steps->asArr().empty() &&
+                jstr(steps->asArr()[0], "op") == "link_click") {
+              const long n = (long)jnum(steps->asArr()[0], "n", -1);
+              bool known_link = false;
+              if (const Val *els = b.goal["page"].find("elements"); els && els->isArr())
+                for (const auto &e : els->asArr())
+                  if ((long)jnum(e, "n", -2) == n &&
+                      (jstr(e, "kind") == "link" || jstr(e, "kind") == "a") &&
+                      starts_with(jstr(e, "href"), "https://")) known_link = true;
+              unsafe_flow = !known_link;
+            }
+          }
+          const bool stale_n = ((c.name == "browser_click" || c.name == "browser_type") && args.find("n") && goal_live(b) &&
+                               !goal::has_element(b.goal, (long)jnum(args, "n"))) || unsafe_flow;
           if (stale_n)
             result = tools::fail("Element " + std::to_string((long)jnum(args, "n")) + " gehört nicht zu Seite-Version " +
                                  std::to_string((long)jnum(b.goal, "version")) + ". Sieh mit browser_look nach und nimm eine Nummer von dort.");
@@ -3429,14 +3444,31 @@ private:
                             : "Chris hat die Bezahlung abgebrochen. Bestelle nicht.", false};
                 }
               }
+            } else if (c.name == "goal_requirements") {
+              if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
+              else if (const Val *prev = b.goal.find("requirements"); prev && prev->isArr() && !prev->asArr().empty())
+                result = tools::fail("Kriterien bereits festgelegt; eine Nutzerkorrektur setzt sie zurück.");
+              else {
+                std::string why;
+                const Val *reqs = args.find("requirements");
+                if (!goal::requirements_ok(reqs, why)) result = tools::fail(why);
+                else {
+                  b.goal["requirements"] = *reqs;
+                  if (!save_goal(b)) result = tools::fail("Kriterien konnten nicht gespeichert werden.");
+                  else result = tools::told("Prüfkriterien gespeichert.", "Prüfe alle Anforderungen anhand beobachteter Seiten.");
+                }
+              }
             } else if (c.name == "goal_finish" || c.name == "goal_blocked") {
               if (!goal_live(b)) {
                 result = tools::fail("Kein offener Auftrag.");
               } else if (c.name == "goal_finish") {
                 const std::string summary = trim(jstr(args, "summary"));
+                std::string proof_error;
                 if (summary.empty()) result = tools::fail("summary fehlt: ein bis zwei Sätze auf Deutsch.");
                 else if (goal::login_page(b.goal))
                   result = tools::fail("Die Seite will eine Anmeldung oder ein Captcha. Das ist kein Ergebnis. Rufe goal_blocked auf (kind login oder captcha) oder browser_login.");
+                else if (!goal::proofs_ok(b.goal, args.find("proofs"), proof_error))
+                  result = tools::fail(proof_error);
                 else if (jbool(b.goal, "shopping")) {
                   const Val *items = args.find("items");
                   const size_t minimum = (size_t)std::max(1.0, jnum(b.goal, "min_items", 1));
@@ -3473,7 +3505,8 @@ private:
                     }
                   }
                   b.goal["summary"] = summary;
-                  goal::end(b.goal, "done");
+                  b.goal["proofs"] = *args.find("proofs");
+                   goal::end(b.goal, "done");
                   save_goal(b);
                   emit_text(b, t, "\n" + final_text, name, reason, true);
                   t.stop_after = true;

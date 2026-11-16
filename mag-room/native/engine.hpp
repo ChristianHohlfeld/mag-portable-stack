@@ -1928,7 +1928,7 @@ private:
         }
         saved_slot = true;
       }
-      const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
+      const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0);
       if (!res.ok()) {
         // The model did not get to answer (stopped, too slow, away): the picture stays to be described.
         logf("engine: " + b.id + " could not describe " + job.name + ": " + (res.cancelled ? "cancelled" : res.error));
@@ -2136,7 +2136,7 @@ private:
       logf("engine: " + b.id + " cannot save image locator KV state: " + clip(error, 160));
       return;
     }
-    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
+    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0);
     error.clear();
     if (!llm::slot_restore(b.backend, backup, &error)) {
       set_kv(b, "cold");

@@ -119,6 +119,12 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .chip .open { display: grid; grid-template-columns: max-content max-content minmax(0, max-content); align-items: center; column-gap: 7px; min-width: 0; flex: 1 1 auto; padding: 0 12px 0 3px; transition: background .12s; }
 .chip .tog:not(:disabled):hover, .chip .open:hover { background: var(--surface); }
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.chip .chip-stop { width: 27px; display: grid; place-items: center; flex: none; color: var(--muted);
+  border-left: 1px solid var(--line); }
+.chip .chip-stop svg { width: 14px; height: 14px; }
+.chip .chip-stop:hover { color: var(--text); background: var(--surface); }
+.chip.busy .open { border-color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .chip.busy .dot { animation: none; } }
 .chip .name { white-space: nowrap; font-weight: 650; }
 .chip .state { min-width: 0; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip[data-bot="lena"] .name { color: var(--lena); }
@@ -485,20 +491,6 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .m3 .stage.fs .full svg:last-child { display: block; }
 .m3 .stage.fs .hint { bottom: calc(10px + env(safe-area-inset-bottom)); text-align: center; }
 .m3 .stage.fs .hint::after { content: "Ziehen dreht · zwei Finger oder Mausrad zoomen · Doppeltipp setzt zurück"; }
-
-/* ---- activity row -------------------------------------------------------- */
-#activity { display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; }
-.act-row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); min-height: 32px; }
-.act-row b { font-weight: 650; }
-.act-row[data-bot="lena"] b { color: var(--lena); }
-.act-row[data-bot="noah"] b { color: var(--noah); }
-.act-row .t { font-variant-numeric: tabular-nums; color: var(--faint); }
-.act-row .stop { margin-left: auto; font-size: 13px; padding: 4px 12px; border-radius: 15px; border: 1px solid var(--line); color: var(--text); }
-.act-row .stop:hover { background: var(--surface-2); }
-.act-row .what { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dots { display: inline-flex; flex: none; align-items: center; }
-.dots i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin-right: 3px; animation: pulse 1.2s infinite; }
-.dots i:nth-child(2) { animation-delay: .2s; } .dots i:nth-child(3) { animation-delay: .4s; }
 
 /* ---- composer ------------------------------------------------------------ */
 /* The jump button floats above the composer, never on it: anchored to the

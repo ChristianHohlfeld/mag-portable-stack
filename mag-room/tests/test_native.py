@@ -2292,6 +2292,43 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(browser.scroll, 300)
         self.assertEqual(json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())["state"], "done")
         self.assertEqual(len(calls), 5)  # open, scroll and wait were ONE model decision
+    def test_generic_plan_progress_is_durable_and_requires_seen_evidence(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/page"
+        browser.text = "Die Überschrift ist sichtbar, mit weiteren Details."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        i = {"n": 0}
+
+        def reply(body):
+            i["n"] += 1
+            if i["n"] == 1:
+                return {"tool_calls": [{"name": "goal_plan", "arguments": {"steps": [
+                    {"id": "s1", "action": "Seite lesen", "done_when": "Titel sichtbar"}]}}]}
+            if i["n"] == 2:
+                return {"tool_calls": [{"name": "goal_step", "arguments": {"id": "s1", "state": "done",
+                    "url": browser.url, "quote": "Die Überschrift"}}]}
+            if i["n"] == 3:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i["n"] == 4:
+                return {"tool_calls": [{"name": "goal_step", "arguments": {"id": "s1", "state": "done",
+                    "url": browser.url, "quote": "Die Überschrift"}}]}
+            return "Nächster Schritt folgt."
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe https://example.org/page")
+        r.idle()
+        path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
+        before = json.loads(path.read_text())
+        self.assertEqual(before["plan"][0]["state"], "done")
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m.get("parts") or []
+                 if p["k"] == "step" and p["tool"] == "goal_step"]
+        self.assertEqual([p["state"] for p in steps], ["error", "ok"])
+        r.stop()
+        r.start()
+        self.assertEqual(json.loads(path.read_text())["plan"][0]["state"], "done")
+
 
     def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):
         browser = FakeBrowser()

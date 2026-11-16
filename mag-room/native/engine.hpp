@@ -2542,11 +2542,23 @@ private:
     const Val mark = *found;
     b.wire.obj->erase(std::remove_if(b.wire.obj->begin(), b.wire.obj->end(), [](const auto &kv) { return kv.first == "at_work"; }), b.wire.obj->end());
     const int tries = (int)jnum(mark, "tries");
-    const bool again = jstr(mark, "reason") == "human" && !jbool(mark, "seen") && tries < 3;
-    if (again) b.wire["fresh"] = true; // read, not answered
+    const bool unfinished_goal = goal::active(b.goal) && !exists(goal_mark(b));
+    // If a browser action was in flight when the room died, the new process
+    // must OBSERVE the browser before any more actions. Never replay the call.
+    const bool again = tries < 3 && (unfinished_goal ||
+        (jstr(mark, "reason") == "human" && !jbool(mark, "seen")));
+    if (unfinished_goal) {
+      b.goal["reconcile"] = true;
+      if (!again) {
+        b.goal["progress"] = "stalled";
+        b.goal["error"] = "Nach drei Neustarts pausiert. Fortsetzen mit einer neuen Nachricht.";
+      }
+      save_goal(b);
+    }
+    if (again) b.wire["fresh"] = true; // re-read the task, not the old action
     save_wire(b);
     if (!again) return;
-    logf("engine: " + b.id + " was cut off by a restart before its answer could be seen; it answers now");
+    logf("engine: " + b.id + " resumes interrupted work by reconciling browser state");
     // Whom Chris had asked is with his message.
     std::vector<std::string> only;
     const auto all = room_.all();
@@ -3386,7 +3398,9 @@ private:
               set_phase(b, !ask.isObj() ? "tool" : kind == "login" ? "login" : kind == "pay" ? "paying" : "approval", title);
               if (ask.isObj() && on_approval) on_approval(name, title);
             };
-            if (c.name == "browser_login" && assist && vm::valid_name(jstr(me, "vm"))) {
+            if (goal_live(b) && jbool(b.goal, "reconcile") && c.name != "browser_look") {
+              result = tools::fail("Nach Neustart zuerst browser_look ausführen; keine alte Aktion wiederholen.");
+            } else if (c.name == "browser_login" && assist && vm::valid_name(jstr(me, "vm"))) {
               // A login wall: the card is the bot's browser itself, live in the chat (WebRTC
               // over the VM's UDP link). Chris logs in there with his own hands (password,
               // code, passkey, captcha); the room never reads, types or keeps any of it.
@@ -3452,9 +3466,46 @@ private:
                   else result = tools::told("Erfolgskriterien gespeichert.", "Prüfe jetzt jede Anforderung anhand gesehener Seiten.");
                 }
               }
+            } else if (c.name == "goal_plan" || c.name == "goal_step") {
+              if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
+              else if (c.name == "goal_plan") {
+                std::string why;
+                const Val *steps = args.find("steps");
+                if (!goal::plan_ok(steps, why)) result = tools::fail(why);
+                else {
+                  b.goal["plan"] = *steps;
+                  b.goal["plan_revision"] = jnum(b.goal, "revision");
+                  for (auto &step : *b.goal["plan"].arr) step["state"] = "pending";
+                  result = save_goal(b) ? tools::told("Plan gespeichert.", "Teilschritte werden verfolgt.")
+                                        : tools::fail("Plan konnte nicht gespeichert werden.");
+                }
+              } else {
+                const std::string id = jstr(args, "id"), state = jstr(args, "state");
+                bool found = false, evidence_ok = state != "done";
+                if (state == "done") {
+                  if (const Val *pages = b.goal.find("evidence_pages"); pages && pages->isArr())
+                    for (const auto &page : pages->asArr())
+                      if (jstr(page, "url") == jstr(args, "url") && jstr(args, "quote").size() >= 6 &&
+                          jstr(page, "text").find(jstr(args, "quote")) != std::string::npos) evidence_ok = true;
+                }
+                if (const Val *plan = b.goal.find("plan"); plan && plan->isArr() &&
+                    jnum(b.goal, "plan_revision", -1) == jnum(b.goal, "revision"))
+                  for (auto &step : *b.goal["plan"].arr)
+                    if (jstr(step, "id") == id) { found = true; if (evidence_ok) {
+                      step["state"] = state; step["note"] = clip(jstr(args, "note"), 400);
+                      if (state == "done") { step["url"] = jstr(args, "url"); step["quote"] = jstr(args, "quote"); }
+                    } break; }
+                if (!found || (state != "done" && state != "pending" && state != "blocked"))
+                  result = tools::fail("Unbekannter Teilschritt oder Plan durch Nutzerkorrektur veraltet.");
+                else if (!evidence_ok) result = tools::fail("Schritt nicht durch gesehene Seite belegt.");
+                else result = save_goal(b) ? tools::told("Teilschritt aktualisiert.", "Planfortschritt gespeichert.")
+                                          : tools::fail("Teilschritt konnte nicht gespeichert werden.");
+              }
             } else if (c.name == "goal_finish" || c.name == "goal_blocked") {
               if (!goal_live(b)) {
                 result = tools::fail("Kein offener Auftrag.");
+              } else if (c.name == "goal_finish" && !goal::plan_complete(b.goal)) {
+                result = tools::fail("Nicht alle geplanten Teilschritte sind als erledigt belegt.");
               } else if (c.name == "goal_finish") {
                 const std::string summary = trim(jstr(args, "summary"));
                 std::string proof_error;
@@ -3601,6 +3652,8 @@ private:
           if (c.name == "shell" && starts_with(result.text, "exit=")) s["exit"] = atoi(result.text.c_str() + 5);
         });
         if (result.ok) t.ok_tool = true;
+        if (result.ok && c.name == "browser_look" && jbool(b.goal, "reconcile"))
+          b.goal["reconcile"] = false;
         if (result.ok && goal_live(b) && jstr(b.goal, "progress") == "stalled") {
           b.goal["progress"] = "running";
           b.goal["error"] = "";

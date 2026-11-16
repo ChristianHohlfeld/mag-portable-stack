@@ -2021,6 +2021,47 @@ class RoomContract(unittest.TestCase):
         self.assertNotEqual(next(b for b in r.state()["bots"] if b["id"] == "lena").get("goal", {}).get("state"), "active")
         self.assertNotIn("required", [x.get("tool_choice") for x in r.lena.chats()])
 
+    def test_browser_goal_cpu_context_compacts_before_general_budget_and_tracks_calls(self):
+        """A long browser trace must not grow to the normal 16k ctx budget
+        before reducing old page dumps. Real output remains in the goal ledger."""
+        browser = FakeBrowser()
+        browser.url = "https://example.org/report"
+        browser.title = "Bericht"
+        browser.text = "Beobachteter Seiteninhalt " + ("Details für die Recherche. " * 240)
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_CTX_TOKENS="16000",
+                 MAG_ROOM_GOAL_COMPACT_TOKENS="1200",
+                 MAG_ROOM_GOAL_COMPACT_TRIGGER_TOKENS="3200")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            if len(requests) <= 7:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Die Prüfung ist noch nicht abgeschlossen."
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe auf https://example.org/report die Inhalte dieser Seite")
+        r.idle()
+        self.assertGreaterEqual(len(requests), 8)
+        self.assertTrue(all(body.get("tool_choice") == "required" for body in requests))
+        self.assertEqual(requests[0]["messages"], requests[1]["messages"][:len(requests[0]["messages"])])
+        log = (r.tmp / "magroom.log").read_text()
+        self.assertIn("context compacted for the open goal", log)
+        self.assertIn("elapsed_ms=", log)
+        self.assertIn("gen_ms=", log)
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        perf = goal["llm_perf"]
+        self.assertEqual(perf["calls"], len(requests))
+        self.assertGreaterEqual(perf["elapsed_ms"], 0)
+        self.assertEqual(perf["last_prompt_tokens"], 105)
+        self.assertIn("last_cached_tokens", perf)
+        self.assertTrue(goal["evidence_pages"])  # never delete observed provenance
+        self.assertEqual(goal["evidence_pages"][-1]["url"], browser.url)
+
     def test_a_browser_goal_survives_a_lost_click_and_a_compact(self):
         """The 15.11 trace: a click written into the thoughts is done once, the
         goal and the page survive a 21k-token compact, and a plan is not a result."""

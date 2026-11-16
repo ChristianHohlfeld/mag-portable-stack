@@ -1102,8 +1102,12 @@ private:
 
   Val template_kwargs(const Val &me) {
     Val k = Val::object();
-    k["enable_thinking"] = jbool(me, "thinking", false);
-    k["reasoning_effort"] = jstr(me, "effort", "low");
+    const bool thinking = jbool(me, "thinking", false);
+    k["enable_thinking"] = thinking;
+    // When Thinking is off, do not send an unrelated reasoning effort.
+    // A legacy client can enable it without saving the dropdown first:
+    // the backend and UI both choose the same explicit "low" default.
+    if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
     k["model_identity"] = "You are " + jstr(me, "name") + ", a helpful local AI assistant.";
     return k;
   }

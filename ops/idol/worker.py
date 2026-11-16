@@ -364,15 +364,31 @@ def plateau_ready(job_id, temp, now):
     return then - temp < 1.0
 
 
+def should_hold(job_id, temp, busy, now):
+    """SIGSTOP only stops *future submissions*, not work already queued.
+    At HOT with a continuously busy GPU it is ineffective: keep the card's
+    lowest clocks and let the kernel finish. At emergency temperature still
+    block new submissions, including while busy, to protect the host."""
+    if temp is None or temp < HOT:
+        return False
+    if temp >= EMERGENCY_C:
+        return True
+    if now < hold_rearm_at.get(job_id, 0):
+        return False
+    return busy is None or busy <= HOLD_QUIET_C
+
+
 def release_reason(job_id, item, temp, now):
-    """Why a held stage should run again, or None to keep holding.
-    A dead stage, or a card that is cool, is the ordinary end of a hold.
-    A flat temperature under HOT - 5 means SIGSTOP is not what is cooling
-    the card. A hold that has lasted HOLD_MAX_S while the card is under HOT
-    ends so the stall watchdog cannot stay off for good. At HOT it stays held."""
+    """Continue after actual cooling, an ineffective busy hold, or a stale
+    hold. An emergency hold is kept until cooling/idle makes it safe.
+    This is NOT an automatic job cancellation or stage restart."""
     held_for = now - held_at.get(job_id, now)
     if not stage_alive(item) or ((temp is None or temp <= COOL) and held_for >= HOLD_S):
         return "cool"
+    if (temp is not None and temp < EMERGENCY_C and
+            now - busy_since.get(job_id, now) >= HOLD_BUSY_S and
+            job_id in busy_since and held_for >= HOLD_S):
+        return "gpu_busy"
     if plateau_ready(job_id, temp, now):
         return "plateau"
     if temp is not None and temp < HOT and held_for >= HOLD_MAX_S:
@@ -380,12 +396,17 @@ def release_reason(job_id, item, temp, now):
     return None
 
 
-def note_busy(job_id, temp, busy):
-    """Warn once per hold when the card stays busy after the stage was stopped."""
-    if busy is None or temp is None or job_id in busy_warned:
-        return
-    if busy < 50:
+def note_busy(job_id, temp, busy, now=None):
+    """Track whether a SIGSTOP really drained GPU activity. Sustained busy
+    means an already-submitted kernel, NOT a suspended GPU."""
+    if now is None:
+        now = time.monotonic()
+    if busy is None or busy < HOLD_BUSY_C:
+        busy_since.pop(job_id, None)
         busy_high[job_id] = 0
+        return
+    busy_since.setdefault(job_id, now)
+    if temp is None or job_id in busy_warned:
         return
     busy_high[job_id] = busy_high.get(job_id, 0) + 1
     if busy_high[job_id] >= 3:
@@ -397,6 +418,7 @@ def forget_hold(job_id):
     held_at.pop(job_id, None)
     held_hist.pop(job_id, None)
     busy_high.pop(job_id, None)
+    busy_since.pop(job_id, None)
     busy_warned.discard(job_id)
 
 
@@ -414,28 +436,19 @@ def thermal_guard():
             running_ids = {item["id"] for item in running}
             for item in running:
                 job_id = item["id"]
-                if temp is not None and temp >= HOT and job_id not in held and stage_alive(item):
-                    pids = [-int(item["pid"])] + (h3d_pids() if item.get("stage_key") == "video" else [])
-                    for pid in pids:
-                        try:
-                            os.kill(pid, signal.SIGSTOP)
-                        except OSError:
-                            pass
-                    held[job_id] = pids
-                    held_at[job_id] = now
-                    held_hist[job_id] = [(now, temp)]
-                    busy_high.pop(job_id, None)
-                    busy_warned.discard(job_id)
-                    print(f"card at {temp:.0f} °C: stage {item['stage_key']} of {job_id[:8]} held", flush=True)
-                    update(job_id, cooling=True, stage_before=item.get("stage"), stage="Grafikkarte kühlt ab")
-                elif job_id in held:
+                if job_id in held:
                     if temp is not None:
                         remember_temp(job_id, now, temp)
-                    note_busy(job_id, temp, busy)
+                    note_busy(job_id, temp, busy, now)
                     reason = release_reason(job_id, item, temp, now)
                     if reason:
                         release(job_id)
-                        if reason == "plateau":
+                        hold_rearm_at[job_id] = now + HOLD_REARM_S
+                        if reason == "gpu_busy":
+                            print(f"card at {temp:.0f} °C still {busy:.0f}% busy: "
+                                  f"{job_id[:8]} goes on under lowest clocks "
+                                  "(SIGSTOP cannot preempt a GPU kernel)", flush=True)
+                        elif reason == "plateau":
                             print(f"card at {temp:.0f} °C, not falling for {int(PLATEAU_WINDOW_S)} s: "
                                   f"{job_id[:8]} goes on (hold ineffective)", flush=True)
                         elif reason == "timeout":
@@ -443,10 +456,39 @@ def thermal_guard():
                                   f"{job_id[:8]} goes on (hold timed out)", flush=True)
                         else:
                             print(f"card at {temp if temp is not None else 0:.0f} °C: {job_id[:8]} goes on", flush=True)
+                elif should_hold(job_id, temp, busy, now) and stage_alive(item):
+                    # Stopping a process group must actually succeed before
+                    # the UI claims that the GPU is cooling. No task- or
+                    # model-specific branch: stage + optional helper processes.
+                    pids = []
+                    try:
+                        os.kill(-int(item["pid"]), signal.SIGSTOP)
+                        pids.append(-int(item["pid"]))
+                    except OSError as exc:
+                        print(f"card at {temp:.0f} °C: cannot hold {job_id[:8]}: {type(exc).__name__}", flush=True)
+                    if pids:
+                        for pid in h3d_pids() if item.get("stage_key") == "video" else ():
+                            try:
+                                os.kill(pid, signal.SIGSTOP)
+                                pids.append(pid)
+                            except OSError:
+                                pass
+                        held[job_id] = pids
+                        held_at[job_id] = now
+                        held_hist[job_id] = [(now, temp)]
+                        busy_high.pop(job_id, None)
+                        busy_since.pop(job_id, None)
+                        busy_warned.discard(job_id)
+                        print(f"card at {temp:.0f} °C: stage {item['stage_key']} of {job_id[:8]} held "
+                              f"(GPU busy: {busy if busy is not None else 'unknown'}%)", flush=True)
+                        update(job_id, cooling=True, stage_before=item.get("stage"), stage="Grafikkarte kühlt ab")
             for job_id in [j for j in list(held) if j not in running_ids]:
                 release(job_id)                            # cancelled or gone while held
             for job_id in [j for j in list(held_hist) if j not in held]:
                 forget_hold(job_id)
+            for job_id in [j for j in list(hold_rearm_at)
+                           if j not in running_ids or (temp is not None and temp <= RESTORE_C)]:
+                hold_rearm_at.pop(job_id, None)
         except Exception as exc:                           # the guard itself never stops
             print(f"thermal guard: {type(exc).__name__}", flush=True)
         time.sleep(1)
@@ -820,6 +862,14 @@ def follow(job_id, key, on_line):
                 looked, before, used = now, used, worked(item["pid"])
                 if used != before:
                     moved = now
+                # A GPU-only HIP kernel can hold 100% of the MI50 while the
+                # Python process and h3d server consume no CPU time or log
+                # lines. Do not kill/restart an active video/3D GPU stage for
+                # being CPU-idle: the hardware busy counter is real progress.
+                elif key in GPU_STAGES:
+                    busy = gpu_busy_percent()
+                    if busy is not None and busy >= HOLD_BUSY_C:
+                        moved = now
             if now - moved > STALL:
                 kill_stage(item)
                 raise Stalled(key)

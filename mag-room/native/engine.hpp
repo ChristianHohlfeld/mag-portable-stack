@@ -1792,7 +1792,10 @@ private:
   }
 
   void describe_images(Bot &b, const Val &me) {
-    if (!sees(b.id)) return;
+    // A side-channel image caption is a second full inference on the SAME
+    // persistent slot. Never let it displace an active/queued browser goal's
+    // warm KV history; images remain pending and get captioned after completion.
+    if (!sees(b.id) || goal_live(b) || b.goal_arm) return;
     struct Todo { std::string message, file, name; };
     std::vector<Todo> todo;
     // Every picture of the chat nobody has described yet, the newest first:
@@ -2021,6 +2024,10 @@ private:
   // it is. Asked on a branch off the log, with the image itself in front of
   // the question; nothing of it is appended.
   void look_for(Bot &b, Look &look) {
+    if (goal_live(b) || b.goal_arm) {
+      look.error = "Bildortung zurückgestellt: ein Browser-Auftrag belegt derzeit den Modellslot.";
+      return;
+    }
     const Val me = room_.bot(b.id);
     if (!me.isObj() || !jbool(me, "enabled", true) || model_state(b.id) != "ready" || !sees(b.id)) return;
     const Val image = image_part(look.file);
@@ -2232,6 +2239,9 @@ private:
   // Runs when another bot waits for a description and this one has no turn of
   // its own: read what is new (it becomes part of the log) and describe it.
   void see_pass(Bot &b) {
+    // Do not append unrelated images or run their caption inference while a
+    // browser task owns this model slot. The room cursor stays unchanged.
+    if (goal_live(b) || b.goal_arm) return;
     const Val me = room_.bot(b.id);
     if (!me.isObj() || !jbool(me, "enabled", true) || model_state(b.id) != "ready" || !sees(b.id)) return;
     ensure_wire(b, me, false);
@@ -2746,6 +2756,8 @@ private:
     bool blocked = false;    // a card ended without a yes (consent, login): a real blocker
     int drives = 0;          // times the room sent the bot back to its goal in this turn
     int missing_tool_calls = 0; // consecutive text-only replies with required tools; reset by real tool progress
+    int length_retries = 0;     // capped-token generations without an executable tool
+    long goal_max_tokens = 0;  // adaptive budget, never decreases within a turn
     bool login_wall = false; // the browser shows a login, a password field or a code page
     bool yielded = false;    // another bot carries the task out: this turn ends and is not shown
     std::string tool_sig;
@@ -3060,8 +3072,13 @@ private:
       if (driving) {
         // The CPU models need bounded tool decisions, not unbounded generation.
         // Keep a configurable allowance for arbitrary browser workflows. Bound each request separately from the full task budget.
-        body["max_tokens"] = (double)std::max(128L, std::min(1024L, envl("MAG_ROOM_GOAL_MAX_TOKENS", 512)));
-        if (t.finish_recovery) body["max_tokens"] = std::max(768.0, jnum(body, "max_tokens"));
+        // Gemma's reasoning_content and tool-call arguments consume the SAME
+        // completion budget. 512 tokens was exhausted before tool_calls in
+        // five of nine observed requests. Use room for a full tool decision,
+        // then expand only on an actual finish_reason=length (no timeout).
+        const long base = std::max(512L, std::min(4096L, envl("MAG_ROOM_GOAL_MAX_TOKENS", 1536)));
+        const long budget = std::min(4096L, std::max(base, t.goal_max_tokens));
+        body["max_tokens"] = (double)budget;
         body["tool_choice"] = "required";
         body["parallel_tool_calls"] = false;
         body["temperature"] = t.finish_recovery ? 0.0 : goal::envd("MAG_ROOM_GOAL_TEMP", 0.3);
@@ -3219,6 +3236,33 @@ private:
             logf("engine: " + b.id + " recovered standalone JSON tool call: " + json_call.name);
           }
         }
+      }
+      // An output capped at "length" without a complete tool call is NOT a
+      // refusal or a task-completion attempt: the tool invocation likely
+      // came after the reasoning budget. Retry with more output headroom,
+      // without counting it as a missing tool or retaining a partial call.
+      if (driving && !res.cancelled && res.calls.empty() && res.finish == "length" &&
+          t.length_retries < 2 && (long)jnum(body, "max_tokens") < 4096) {
+        ++t.length_retries;
+        const long previous = (long)jnum(body, "max_tokens");
+        t.goal_max_tokens = std::min(4096L, previous * 2);
+        t.tail.clear();
+        t.reasoning = mj::utf8_cut(t.reasoning, thought0);
+        if (t.id.empty()) t.held.clear();
+        else room_.retake_text(t.id, text0, "");
+        Val note = Val::object();
+        note["role"] = "user";
+        note["content"] = "(Notiz des Raums: Deine letzte Ausgabe wurde durch das Ausgabetoken-Limit "
+                          "ABGESCHNITTEN, BEVOR ein vollständiger Werkzeugaufruf vorlag. "
+                          "Antworte jetzt mit dem nächsten echten Werkzeugaufruf, nicht mit einer "
+                          "erneuten langen Erklärung. Vorhandene Beobachtungen weiterverwenden; "
+                          "nichts als erledigt melden, was nicht ausgeführt wurde.)";
+        note["_turn"] = t.token;
+        b.wire["messages"].push(note);
+        save_wire(b);
+        logf("engine: " + b.id + " tool decision hit finish_reason=length; raising max_tokens " +
+             std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
+        continue;
       }
       // What the model produced is part of the log, also when it was cut off.
       const std::string content = strip_markers(res.content);
@@ -3429,6 +3473,7 @@ private:
         // A real tool call ended the consecutive no-call streak, even when
         // the tool itself fails (e.g. network down or invalid arguments).
         t.missing_tool_calls = 0;
+        t.length_retries = 0;
         const auto &c = res.calls[i];
         Val args = jparse(c.arguments.empty() ? "{}" : c.arguments);
         const bool bad_args = !c.valid || !args.isObj();

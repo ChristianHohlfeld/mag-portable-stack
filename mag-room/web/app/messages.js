@@ -1013,6 +1013,12 @@
       const texts = (m.parts || []).length ? m.parts : [{ k: 'text', text: m.text || '' }];
       if (m.role === 'bot' && m.state !== 'streaming' && !(m.attachments || []).length && texts.every((p) => p.k === 'text' && !tidy(p.text || '')))
         node.hidden = true;
+      // Continuation messages may contain only tool steps. Their steps
+      // appear in the original goal group, not as a second empty bot row.
+      if (m.goal_id && groupAnchor(m).id !== m.id &&
+          !(m.attachments || []).length &&
+          (m.parts || []).every((p) => p.k === 'step' || p.k === 'text' && !tidy(p.text || '')))
+        node.hidden = true;
       // The other bot carried the task out; this one stood back.
       if (m.yielded || (m.state !== 'streaming' && (m.parts || []).some((p) => p.k === 'step' && / erledigt diese Aufgabe schon/.test(p.output || '')))) node.hidden = true;
     }

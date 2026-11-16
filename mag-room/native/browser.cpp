@@ -258,8 +258,12 @@ for(const e of document.querySelectorAll(sel)){
  const cx=Math.min(Math.max(r.left+r.width/2,1),innerWidth-2),cy=Math.min(Math.max(r.top+r.height/2,1),innerHeight-2);
  const top=document.elementFromPoint(cx,cy);
  if(top&&top!==e&&!e.contains(top)&&!top.contains(e))continue;
- const secret=e.type==='password';
  const tag=e.tagName.toLowerCase();
+ // Textual sight never exposes credentials, payment data, PINs or codes.
+ const privateField=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test(
+  [e.type||'',e.autocomplete||'',e.name||'',e.id||''].join(' '));
+ const secret=e.type==='password'||privateField;
+ const editable=tag==='textarea'||e.isContentEditable||(tag==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type));
  const kind=tag==='input'?(e.type||'text'):tag==='a'?'link':tag==='iframe'?'frame':(e.getAttribute('role')||tag);
  let href='';
  try{if(e.href)href=String(e.href);else{const a=e.closest&&e.closest('a[href]');if(a&&a.href)href=String(a.href);}}catch(_){}
@@ -269,7 +273,9 @@ for(const e of document.querySelectorAll(sel)){
  if(!label){const img=e.querySelector('img[alt]');if(img)label=img.alt.trim().slice(0,140);}
  if(tag==='iframe'&&!label){try{label=new URL(e.src).host}catch(_){label='frame'}}
  els.push(e);
- out.push({n:els.length,kind,label,x:Math.round(cx),y:Math.round(cy),href:href||undefined,price:price||undefined,password:secret||undefined,checked:(e.checked===true)||undefined});
+ const fieldValue=editable&&!secret?String(e.isContentEditable?(e.innerText||''):(e.value||'')).slice(0,160):'';
+ out.push({n:els.length,kind,label,x:Math.round(cx),y:Math.round(cy),href:href||undefined,price:price||undefined,
+  value:fieldValue||undefined,password:secret||undefined,checked:(e.checked===true)||undefined});
  if(els.length>=150)break;}
 window.__magEls=els;
 // Click targets are viewport-only. Search results may be below the fold:
@@ -794,6 +800,20 @@ int main(int argc, char **argv) {
             c.eval("(()=>{let e=document.querySelector(" + js(selector) +
                    ");if(!e)throw Error('Element not "
                    "found');e.focus();if(e.select)e.select();})()");
+          // A successful CDP call is NOT evidence that an editable field
+          // received input. Focus may still be on document.body or a button.
+          const Val focus = c.eval("(()=>{const e=document.activeElement;"
+                                   "if(!e||e===document.body)return {editable:false};"
+                                   "const t=e.tagName.toLowerCase(),type=String(e.type||'').toLowerCase();"
+                                   "const edit=e.isContentEditable||t==='textarea'||"
+                                   "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
+                                   "const priv=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test("
+                                   "[type,e.autocomplete||'',e.name||'',e.id||''].join(' '));"
+                                   "return {editable:!!edit,private:!!priv}})()");
+          if (!(focus.find("editable") && focus.find("editable")->asBool()))
+            throw std::runtime_error("No editable field has focus; choose field n or selector from browser_look");
+          if (focus.find("private") && focus.find("private")->asBool())
+            throw std::runtime_error("Private input: use browser_login or browser_pay, never browser_type");
           // Type in small chunks so the live view shows text appearing
           // (about 2.5 s at most, independent of the text length).
           const std::string text = value("text");
@@ -809,6 +829,24 @@ int main(int argc, char **argv) {
             i = j;
             if (i < n) pump(25);
           }
+          // Controlled inputs can discard insertText without CDP reporting
+          // an error. Verify the ACTUAL field value, not the HTTP status.
+          bool verified = false;
+          for (int attempt = 0; attempt < 6; ++attempt) {
+            const Val check = c.eval("(()=>{const e=document.activeElement;"
+                                    "if(!e||e===document.body)return {editable:false};"
+                                    "const t=e.tagName.toLowerCase(),type=String(e.type||'').toLowerCase();"
+                                    "const edit=e.isContentEditable||t==='textarea'||"
+                                    "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
+                                    "return {editable:!!edit,value:edit?String(e.isContentEditable?(e.innerText||''):(e.value||'')):''}})()");
+            if (check.find("editable") && check.find("editable")->asBool() && str(check, "value") == text) {
+              verified = true;
+              break;
+            }
+            if (attempt < 5) pump(120);
+          }
+          if (!verified)
+            throw std::runtime_error("Text not verified in the active field; observe the page and pick a current editable field");
           auto enter = body.find("enter");
           if (enter && enter->asBool()) {
             Val k = Val::object();
@@ -827,7 +865,10 @@ int main(int argc, char **argv) {
             k["windowsVirtualKeyCode"] = 13;
             c.call("Input.dispatchKeyEvent", k);
           }
+          if (enter && enter->asBool()) pump(450); // let search navigation begin
           out = snapshot();
+          out["typed_verified"] = true;
+          out["submitted"] = !!(enter && enter->asBool());
         } else if (r.path == "/scroll") {
           // dy arrives as a JSON number or as text; negative scrolls up.
           auto dy = value("dy");

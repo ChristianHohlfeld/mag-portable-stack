@@ -70,6 +70,8 @@ class FakeBrowser:
         self.title = "leer"
         self.text = ""
         self.scroll = 0
+        self.typed = []
+        self.type_failures = 0
         self.screenshot_requests = 0
         self.password = False
         self.blocked = False
@@ -150,6 +152,18 @@ class FakeBrowser:
                         if fake.scroll_i < len(fake.scroll_texts):
                             fake.text = fake.scroll_texts[fake.scroll_i]
                             fake.scroll_i += 1
+                    elif parsed.path == "/type":
+                        fake.typed.append(dict(body))
+                        if fake.type_failures:
+                            fake.type_failures -= 1
+                            return self._json({"ok": True, "typed_verified": False})
+                        index = int(body.get("n") or 1)
+                        for element in fake.elements:
+                            if element.get("n") == index and not element.get("password"):
+                                element["value"] = body.get("text", "")
+                                break
+                        return self._json({"ok": True, "typed_verified": True,
+                                           "submitted": bool(body.get("enter"))})
                 self._json({"ok": True})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -2606,6 +2620,95 @@ class RoomContract(unittest.TestCase):
         parts = [p for m in r.messages() if m.get("from") == "lena"
                  for p in m.get("parts") or [] if p["k"] == "step"]
         self.assertTrue(parts and parts[0].get("shot"))
+
+    def test_browser_type_unverified_input_is_error_then_observed_value_and_enter(self):
+        """HTTP 200 alone must not turn an unfocused CDP keystroke green.
+        DOM-only agents must read actual input value and know Enter was not
+        pressed; this does not use screenshots or an mmproj."""
+        browser = FakeBrowser()
+        browser.url = "https://example.org/items"
+        browser.title = "Katalog"
+        browser.text = "Bestätigter Inhalt ist sichtbar."
+        browser.elements = [{"n": 1, "kind": "search", "label": "Suchen", "x": 110, "y": 40}]
+        browser.type_failures = 1
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_GOAL_EYES="0")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            i = len(requests)
+            if i == 1: return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i in (2, 3):
+                return {"tool_calls": [{"name": "browser_type", "arguments": {
+                    "n": 1, "text": "Beispielbegriff", "enter": False}}]}
+            if i == 4: return {"tool_calls": [{"name": "browser_key", "arguments": {"key": "Enter"}}]}
+            if i == 5: return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                "requirements": [{"id": "status", "need": "Bestätigung von gesehener Seite"}]}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Seitenstatus anhand der aktuellen Seite bestätigt.",
+                "proofs": [{"id": "status", "url": browser.url,
+                            "quote": "Bestätigter Inhalt ist sichtbar"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe auf https://example.org/items den Seitenstatus")
+        r.idle()
+        pages = [p for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p["k"] == "step"]
+        typed = [p for p in pages if p["tool"] == "browser_type"]
+        self.assertEqual([p["state"] for p in typed], ["error", "ok"])
+        self.assertIn("nicht bestätigt", typed[0]["output"])
+        self.assertIn("nicht gedrückt", typed[1]["output"].lower())
+        self.assertEqual([c["enter"] for c in browser.typed], [False, False])
+        self.assertIn('Wert: \\"Beispielbegriff\\"', json.dumps(requests[3]["messages"], ensure_ascii=False))
+        self.assertNotIn("image_url", json.dumps(requests[3]))
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+
+    def test_duplicate_requirements_read_is_idempotent_and_invalid_finish_is_repaired(self):
+        """A new page does not invalidate criteria. Broken native JSON never
+        finishes a goal; the real model gets the immutable IDs and must retry."""
+        browser = FakeBrowser()
+        browser.url = "https://example.org/verified"
+        browser.title = "Ergebnis"
+        browser.text = "Der Status ist nachweislich bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+        proof = {"id": "status", "url": browser.url, "quote": "Status ist nachweislich bestätigt"}
+
+        def reply(body):
+            requests.append(body)
+            i = len(requests)
+            if i == 1: return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                "requirements": [{"id": "status", "need": "Status durch Seitenzitat belegen"}]}}]}
+            if i == 2: return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i == 3: return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                "requirements": [{"id": "overwrite", "need": "Soll nicht ersetzen"}]}}]}
+            if i == 4: return {"raw_tool_calls": [{"name": "goal_finish", "arguments":
+                '{"summary":"unvollständiger Aufruf","proofs":['}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Der beobachtete Status ist belegt.", "proofs": [proof]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe auf https://example.org/verified den Status")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual([x["id"] for x in goal["requirements"]], ["status"])
+        steps = [p for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p["k"] == "step"]
+        duplicates = [p for p in steps if p["tool"] == "goal_requirements"]
+        self.assertEqual([p["state"] for p in duplicates], ["ok", "ok"])
+        self.assertIn("unverändert", duplicates[-1]["output"])
+        finish_steps = [p for p in steps if p["tool"] == "goal_finish"]
+        self.assertEqual([p["state"] for p in finish_steps], ["error", "ok"])
+        self.assertIn("kein gültiges JSON", finish_steps[0]["output"])
+        self.assertIn("goal_requirements NICHT wiederholen",
+                      json.dumps(requests[-1]["messages"], ensure_ascii=False))
 
     def test_goal_search_then_missing_calls_still_opens_browser_without_user_retry(self):
         """Regression: external search is not a page snapshot. Text-only

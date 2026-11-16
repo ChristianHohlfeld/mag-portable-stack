@@ -3058,8 +3058,10 @@ private:
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
       set_phase(b, "reading");
       const int remaining_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
-      const int budget_s = driving ? std::min(remaining_s, (int)std::max(60L, envl("MAG_ROOM_GOAL_CALL_BUDGET_S", 180)))
-                                   : remaining_s;
+      // An active browser goal may be slow on CPU: do not label a live
+      // generation "stalled" only because an arbitrary time elapsed.
+      // Zero means no HTTP wall/idle timeout, but Stop still cancels.
+      const int budget_s = driving ? 0 : remaining_s;
       // Where this call's text and thoughts begin, should some of them have to be taken back.
       const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
       const size_t thought0 = t.reasoning.size();
@@ -3494,8 +3496,9 @@ private:
                     if (!llm::slot_save(peer->backend, backup, &backup_error)) {
                       result = tools::fail("Zweitprüfung ohne gesicherten Peer-KV-Cache verweigert: " + clip(backup_error, 160));
                     } else {
-                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {},
-                          (int)std::max(30L, std::min(180L, envl("MAG_ROOM_PEER_REVIEW_SECONDS", 120))));
+                      // The peer is another local CPU model; avoid an
+                      // artificial timeout during productive reviews too.
+                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {}, 0);
                       std::string restore_error;
                       const bool restored = llm::slot_restore(peer->backend, backup, &restore_error);
                       if (!restored) {
@@ -3811,10 +3814,16 @@ private:
       }
       if (cancelled) break;
       if (t.yielded) break; // the other bot does it; this one says nothing more
-      if (mono_ms() > deadline || step == room_.cfg.max_steps) {
+      if ((!goal_live(b) && mono_ms() > deadline) || step == room_.cfg.max_steps) {
         failed = true;
         error = step == room_.cfg.max_steps ? "Schrittlimit erreicht; schreibe eine Nachricht, wenn ich weitermachen soll."
                                               : "Zeitbudget für diesen Auftrag aufgebraucht.";
+        if (goal_live(b)) {
+          // Deterministic step cap is a pause, not a model/network outage.
+          b.goal["progress"] = "paused";
+          b.goal["error"] = error;
+          save_goal(b);
+        }
         break;
       }
     }

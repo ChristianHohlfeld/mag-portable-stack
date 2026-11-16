@@ -53,7 +53,7 @@
   // ---- scrolling ----------------------------------------------------------
   // No 70px tolerance for *re*-pinning. A person who reads 20px up
   // must stay there even when layout changes or an update shifts the page.
-  const atTrueEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 2;
+  const atTrueEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
   function setScrollTop(top) {
     scroller.scrollTop = top;
     lastScrollTop = scroller.scrollTop; // programmatic scroll is never a user gesture

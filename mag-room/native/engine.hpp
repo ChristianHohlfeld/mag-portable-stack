@@ -3619,6 +3619,12 @@ private:
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
           ctx.goal = jstr(b.goal, "text");
           ctx.page_version = look_version;
+          // A text-only goal uses the compact DOM observation and avoids a
+          // JPEG network fetch on every browser action. Step JPEGs remain
+          // available on explicit opt-in, and vision goals still receive them.
+          ctx.capture_browser_shot = !goal_live(b) ||
+              goal::envd("MAG_ROOM_BROWSER_STEP_SHOTS", 0) != 0 ||
+              (goal::envd("MAG_ROOM_GOAL_EYES", 0) != 0 && sees(b.id));
           ctx.scenes = &scenes_;
           ctx.imagine = imagine;
           ctx.film = film;

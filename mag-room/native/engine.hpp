@@ -3906,6 +3906,14 @@ private:
         if (result.snapshot.isObj() && (goal_live(b) || jstr(b.goal, "state") == "blocked"))
           goal::absorb(b.goal, result.snapshot, look_version);
         if (!result.ok && goal::active(b.goal)) b.goal["error"] = clip(result.text, 400);
+        if (c.name == "web_search" && goal_live(b)) {
+          const Val *seen_pages = b.goal.find("evidence_pages");
+          if (!seen_pages || !seen_pages->isArr() || seen_pages->asArr().empty())
+            result.text += "\nHinweis des Raums: Websuche liefert Recherche, aber keine Browserbeobachtung. "
+                           "Wenn der Auftrag eine Website betrifft, öffne einen belegten HTTP(S)-Treffer "
+                           "mit browser_open und bediene die Seite danach mit Browserwerkzeugen; "
+                           "nicht nach der Websuche als erledigt antworten.";
+        }
         if (b.goal.isObj() && !jstr(b.goal, "state").empty()) save_goal(b);
         // goal_finish already posted the verified links; no second model call.
         Val tr = Val::object();

@@ -630,6 +630,21 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       const Val *steps = args.find("steps");
       if (!steps || !steps->isArr() || steps->asArr().empty() || steps->asArr().size() > 4)
         return fail("browser_flow erwartet 1 bis 4 Schritte.");
+      // Validate the WHOLE plan before any side effect: reject an unsafe
+      // later step rather than executing the first operation and then failing.
+      for (size_t i = 0; i < steps->asArr().size(); ++i) {
+        const Val &step = steps->asArr()[i];
+        const std::string op = jstr(step, "op");
+        const bool open = op == "open" && i == 0 && ctx.web &&
+                          starts_with(jstr(step, "url"), "https://") && jstr(step, "url").size() > 8;
+        const bool click = op == "link_click" && i == 0 && step.find("n") &&
+                           jnum(step, "n", -1) >= 0;
+        const bool scroll = op == "scroll" && std::abs(jnum(step, "dy", 600)) <= 5000;
+        const bool wait = op == "wait" && jnum(step, "seconds", 1) >= 0 &&
+                          jnum(step, "seconds", 1) <= 15;
+        if (!step.isObj() || !(open || click || scroll || wait))
+          return fail("Browserfolge vor Ausführung abgelehnt: keine sichere Aktionsfolge.");
+      }
       bool navigated = false;
       for (size_t i = 0; i < steps->asArr().size(); ++i) {
         if (ctx.cancel && ctx.cancel->stopped()) return fail("Abgebrochen (Stop).");

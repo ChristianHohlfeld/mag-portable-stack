@@ -73,6 +73,12 @@ const file = choose('Datei');
 assert.strictEqual(file.accept, '');
 assert.strictEqual(file.multiple, true);
 
+// A model capability, not the bot's id, selects its thinking control.
+const panelsSrc = read('panels.js');
+assert(!panelsSrc.includes("id === 'lena'"), 'thinking control must not depend on a bot id');
+assert(panelsSrc.includes("b.model?.thinking_control === 'toggle'"));
+assert(panelsSrc.includes("b.model?.thinking_control === 'effort'"));
+
 window.close();
 console.log('web ui ok');
 process.exit(0);

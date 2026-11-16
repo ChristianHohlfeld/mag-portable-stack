@@ -814,10 +814,10 @@ int main(int argc, char **argv) {
             throw std::runtime_error("No editable field has focus; choose field n or selector from browser_look");
           if (focus.find("private") && focus.find("private")->asBool())
             throw std::runtime_error("Private input: use browser_login or browser_pay, never browser_type");
-          const std::string initial_value = str(c.eval(
+          const std::string initial_value = c.eval(
               "(()=>{const e=document.activeElement;return e&&"
               "(e.isContentEditable||e.tagName==='INPUT'||e.tagName==='TEXTAREA')?"
-              "String(e.isContentEditable?(e.innerText||''):(e.value||'')):''})()"));
+              "String(e.isContentEditable?(e.innerText||''):(e.value||'')):''})()").asStr();
           const bool append_mode = (!num || num->type != Val::NUM) && selector.empty();
           // Type in small chunks so the live view shows text appearing
           // (about 2.5 s at most, independent of the text length).
@@ -849,7 +849,10 @@ int main(int argc, char **argv) {
             // Both require visible proof; autocomplete/formatting changes are
             // reported to the model rather than silently declared verified.
             auto normalize = [](std::string v) {
-              replace_all(v, "\\r\\n", "\\n");
+              for (size_t i = 0; i + 1 < v.size();) {
+                if (v[i] == '\\r' && v[i + 1] == '\\n') v.erase(i, 1);
+                else ++i;
+              }
               return v;
             };
             const std::string actual = normalize(str(check, "value"));

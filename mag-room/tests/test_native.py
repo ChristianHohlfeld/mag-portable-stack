@@ -464,6 +464,37 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.noah.chats()), previous, "explicit mentions must not wake a paused model")
         self.assertEqual([b["enabled"] for b in r.state()["bots"] if b["id"] == "noah"], [False])
 
+    def test_paused_bot_discards_interrupted_turn_on_restart(self):
+        """A prior at_work marker must not revive a paused bot across deploys
+        or silently replay that request when the owner later resumes it."""
+        r = self.room
+        r.stop()
+        bots = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "bots.json"
+        config = json.loads(bots.read_text())
+        for b in config:
+            if b["id"] == "noah":
+                b["enabled"] = False
+        bots.write_text(json.dumps(config))
+        wire = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "noah.json"
+        self.assertTrue(wire.exists(), "warmup should have written Noah's wire")
+        state = json.loads(wire.read_text())
+        state["at_work"] = {"reason": "human", "tries": 0}
+        state["fresh"] = False
+        wire.write_text(json.dumps(state))
+        r.start()
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), 0, "paused model must not resume a prior turn")
+        after = json.loads(wire.read_text())
+        self.assertNotIn("at_work", after)
+        self.assertFalse(after.get("fresh", False))
+        self.assertIn("discarded interrupted turn while paused", (r.tmp / "magroom.log").read_text())
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": True})[0], 200)
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), 0, "unpausing alone may not replay old work")
+        r.say("@Noah neue Frage")
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), 1, "only a new explicit request should resume the bot")
+
     def test_speaker_labels_are_plain_and_copied_tags_are_cleaned(self):
         r = self.room
         r.lena.reply = lambda body: "Hallo [Chris], [Noah · Di 10.11. 01:51] meinte das auch. Siehe [Doku](https://example.org)."

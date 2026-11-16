@@ -3132,6 +3132,11 @@ private:
       cancel = b.cancel;
       t.epoch = clear_epoch_;
     }
+    bool autonomous_round = reason == "autonomous";
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      autonomous_round = autonomous_round || (reason == "bot" && auto_burst_);
+    }
     const std::string name = jstr(me, "name");
     const Val tools = tools_for(me);
     // What the plugins take at the head of the prompt is not taken from the conversation.
@@ -3141,7 +3146,11 @@ private:
 
     std::string note;
     if (reason == "bot")
-      note = "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
+      note = autonomous_round
+          ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: Antworte dem anderen Bot natürlich, "
+            "kurz und direkt. Greife seine Frage oder These auf, stelle ggf. eine Anschlussfrage. "
+            "Keine Aufgaben ausführen, keine Werkzeuge verwenden. Wenn die Unterhaltung erschöpft ist, PASS.)"
+          : "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
     if (reason == "autonomous") {
@@ -3181,12 +3190,23 @@ private:
     // the room that starts takes the turn up again (see work()).
     AtWork at_work(*this, b, reason, tries);
     if (reason == "bot") {
-      // The gate belongs to the message that was just appended.
-      Val &last = b.wire["messages"].arr->back();
-      if (jstr(last, "role") == "user") {
-        const std::string notes = jstr(last, "_note").empty() ? note : jstr(last, "_note") + "\n\n" + note;
-        last["_note"] = notes;
-        last["content"] = render_items(last["_items"], notes);
+      // The other bot's newest line has already been appended. A separate
+      // final user-role note is unambiguously an internal conversation
+      // directive, NEVER a new Chris message or a background task. Append at
+      // the END so the existing cached prefix remains untouched.
+      if (autonomous_round) {
+        Val invite = Val::object();
+        invite["role"] = "user";
+        invite["content"] = note;
+        invite["_auto_chat"] = true;
+        b.wire["messages"].push(invite);
+      } else {
+        Val &last = b.wire["messages"].arr->back();
+        if (jstr(last, "role") == "user") {
+          const std::string notes = jstr(last, "_note").empty() ? note : jstr(last, "_note") + "\n\n" + note;
+          last["_note"] = notes;
+          last["content"] = render_items(last["_items"], notes);
+        }
       }
       save_wire(b);
     }
@@ -3756,6 +3776,13 @@ private:
         }
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
+        } else if (autonomous_round) {
+          // Immutable permission boundary for unattended conversations.
+          // Tool schemas stay identical for llama.cpp's shared KV prefix,
+          // but not one browser/shell/phone/plugin or read-only operation is
+          // actually allowed to run without a human request.
+          result = tools::fail("Im eigenständigen Bot-Gespräch sind Werkzeuge deaktiviert. Nur miteinander reden.");
+          t.stop_after = true;
         } else if (!lead.empty()) {
           std::string who = lead;
           const Val all = room_.bots();
@@ -4410,9 +4437,13 @@ private:
       if (group_chat::conversation_rests(passes_, active))
         for (auto &o : bots_)
           if (o->reason != "human") o->want = false;
+      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
       return;
     }
-    if (!visible) return;
+    if (!visible) {
+      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
+      return;
+    }
     passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.
@@ -4425,7 +4456,10 @@ private:
       return;
     }
     b.continues = 0;
-    if (limit > 0 && bot_turns_ >= limit) return;
+    if (limit > 0 && bot_turns_ >= limit) {
+      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
+      return;
+    }
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
       if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name

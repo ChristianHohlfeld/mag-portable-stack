@@ -810,9 +810,9 @@ int main(int argc, char **argv) {
                                    "const priv=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test("
                                    "[type,e.autocomplete||'',e.name||'',e.id||''].join(' '));"
                                    "return {editable:!!edit,private:!!priv}})()");
-          if (!jbool(focus, "editable"))
+          if (!(focus.find("editable") && focus.find("editable")->asBool()))
             throw std::runtime_error("No editable field has focus; choose field n or selector from browser_look");
-          if (jbool(focus, "private"))
+          if (focus.find("private") && focus.find("private")->asBool())
             throw std::runtime_error("Private input: use browser_login or browser_pay, never browser_type");
           // Type in small chunks so the live view shows text appearing
           // (about 2.5 s at most, independent of the text length).
@@ -839,7 +839,7 @@ int main(int argc, char **argv) {
                                     "const edit=e.isContentEditable||t==='textarea'||"
                                     "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
                                     "return {editable:!!edit,value:edit?String(e.isContentEditable?(e.innerText||''):(e.value||'')):''}})()");
-            if (jbool(check, "editable") && str(check, "value") == text) {
+            if (check.find("editable") && check.find("editable")->asBool() && str(check, "value") == text) {
               verified = true;
               break;
             }

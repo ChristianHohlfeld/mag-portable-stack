@@ -2153,6 +2153,49 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
 
+    def test_generic_second_bot_review_is_read_only_and_persistent(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/status"
+        browser.title = "Statusbericht"
+        browser.text = "Der Status ist verifiziert."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        reviewers = []
+
+        def peer(body):
+            reviewers.append(body)
+            return "APPROVE: Der zitierte Status passt zur Aussage."
+
+        calls = []
+
+        def owner(body):
+            i = len(calls)
+            calls.append(body)
+            if i == 0:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "status", "need": "Status der Seite prüfen"}]}}]}
+            if i == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            proposal = {"summary": "Der Status ist verifiziert.", "proofs": [
+                {"id": "status", "url": browser.url, "quote": "Der Status ist verifiziert"}]}
+            if i == 2:
+                return {"tool_calls": [{"name": "goal_peer_review", "arguments": proposal}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": proposal}]}
+
+        r.noah.reply = peer
+        r.lena.reply = owner
+        r.say("@Lena Prüfe https://example.org/status")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(goal["peer_review"]["verdict"], "approved")
+        self.assertEqual(goal["peer_review"]["reviewer"], "noah")
+        self.assertEqual(len(reviewers), 1)
+        self.assertNotIn("tools", reviewers[0])
+        self.assertNotIn("tool_choice", reviewers[0])
+        self.assertEqual(len(r.noah.chats()), 1)
+
     def test_generic_goal_plan_rejects_early_finish_then_persists_progress(self):
         browser = FakeBrowser()
         browser.url = "https://example.org/status"

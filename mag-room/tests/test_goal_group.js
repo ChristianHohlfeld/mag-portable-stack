@@ -130,7 +130,14 @@ scroll.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -20, bubbles: true
 scroll.dispatchEvent(new window.Event('scroll'));
 test.upsert(first, false);
 assert.strictEqual(scroll.scrollTop, 580, 'reader is no longer pinned even within 70px of bottom');
+assert.strictEqual(document.getElementById('jump').hidden, false, 'reading position remains unpinned');
 assert.strictEqual(document.querySelector('.goal-browser'), originalBrowser, 'browser remains mounted after phase changes');
+// The finger has left the glass: momentum brings the reader back to the
+// end without another touch/wheel event. This must restore following.
+scroll.scrollTop = 600;
+scroll.dispatchEvent(new window.Event('scroll'));
+assert.strictEqual(document.getElementById('jump').hidden, true,
+                   'scroll momentum reaching the bottom must restore live following');
 
 window.close();
 console.log('goal group timeline ok (desktop state + 390px mobile rules)');

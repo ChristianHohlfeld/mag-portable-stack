@@ -261,7 +261,7 @@ for(const e of document.querySelectorAll(sel)){
  const tag=e.tagName.toLowerCase();
  // Textual sight never exposes credentials, payment data, PINs or codes.
  const fieldMeta=[e.type||'',e.autocomplete||'',e.name||'',e.id||''].join(' ');
- const privateField=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|\b(?:pin|otp)(?:code|number|value)?\b/i.test(fieldMeta) || /(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(fieldMeta);
+ const privateField=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:code|number|value)?(?:$|[^a-z0-9])/i.test(fieldMeta) || /(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(fieldMeta);
  const secret=e.type==='password'||privateField;
  const editable=tag==='textarea'||e.isContentEditable||(tag==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type));
  const kind=tag==='input'?(e.type||'text'):tag==='a'?'link':tag==='iframe'?'frame':(e.getAttribute('role')||tag);
@@ -682,7 +682,7 @@ int main(int argc, char **argv) {
                        ";if(!e||e===document.body)return null;e.scrollIntoView({block:'center'});"
                        "let r=e.getBoundingClientRect();"
                        "return {x:r.x,y:r.y,w:r.width,h:r.height,"
-                       "password:e.type==='password'||/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|\b(?:pin|otp)(?:code|number|value)?\b/i.test(e.autocomplete+' '+e.name+' '+e.id)||/(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(e.autocomplete+' '+e.name+' '+e.id),"
+                       "password:e.type==='password'||/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:code|number|value)?(?:$|[^a-z0-9])/i.test(e.autocomplete+' '+e.name+' '+e.id)||/(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(e.autocomplete+' '+e.name+' '+e.id),"
                        "vw:innerWidth,vh:innerHeight}})()");
         } else if (r.path == "/click") {
           std::string selector = value("selector"), text = value("text");
@@ -808,7 +808,7 @@ int main(int argc, char **argv) {
                                    "const edit=e.isContentEditable||t==='textarea'||"
                                    "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
                                    "const fieldMeta=[type,e.autocomplete||'',e.name||'',e.id||''].join(' ');"
-                                   "const priv=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|\b(?:pin|otp)(?:code|number|value)?\b/i.test(fieldMeta)||/(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(fieldMeta);"
+                                   "const priv=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:code|number|value)?(?:$|[^a-z0-9])/i.test(fieldMeta)||/(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(fieldMeta);"
                                    "return {editable:!!edit,private:!!priv}})()");
           if (!(focus.find("editable") && focus.find("editable")->asBool()))
             throw std::runtime_error("No editable field has focus; choose field n or selector from browser_look");

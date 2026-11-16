@@ -3351,8 +3351,15 @@ private:
           thoughts(res.reasoning);
         }
       }
-      // The thoughts of this call are complete: the message shows them tidied (they streamed in raw).
-      if (!t.id.empty() && t.reasoning.size() != thought0) show_thoughts(t);
+      // A capped request can contain a partially streamed native tool call.
+      // Reject the whole incomplete batch before any action is performed.
+      // A retry may regenerate it; never execute an empty/invalid suffix.
+      if (driving && res.finish == "length" &&
+          std::any_of(res.calls.begin(), res.calls.end(),
+                      [](const llm::ToolCall &c) { return !c.valid; })) {
+        logf("engine: " + b.id + " discarded incomplete native tool batch after length cap");
+        res.calls.clear();
+      }
       // A tool call the model wrote as markup (in its thoughts or its text) is a real call
       // when it is the only one, the tool is offered and the arguments match. Anything else,
       // while a goal is open, is an unfinished step. The markup itself never reaches the chat.
@@ -3391,7 +3398,10 @@ private:
         t.tail.clear();
         t.reasoning = mj::utf8_cut(t.reasoning, thought0);
         if (t.id.empty()) t.held.clear();
-        else room_.retake_text(t.id, text0, "");
+        else {
+          room_.retake_text(t.id, text0, "");
+          show_thoughts(t); // delete reasoning streamed before the token cap
+        }
         Val note = Val::object();
         note["role"] = "user";
         note["content"] = "(Notiz des Raums: Deine letzte Ausgabe wurde durch das Ausgabetoken-Limit "
@@ -3406,6 +3416,9 @@ private:
              std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
         continue;
       }
+      // Publish completed reasoning only after the token-cap retry decision.
+      // Raw streamed partial thoughts are replaced/cleared in the retry path.
+      if (!t.id.empty() && t.reasoning.size() != thought0) show_thoughts(t);
       // What the model produced is part of the log, also when it was cut off.
       const std::string content = strip_markers(res.content);
       if (!res.content.empty() || !res.calls.empty()) {

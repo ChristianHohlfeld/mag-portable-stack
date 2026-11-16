@@ -13,6 +13,7 @@
       "threads": 14,
       "port": 8191,
       "ctx": 65536,
+      "thinking_control": "toggle",
       "model": {
         "path": "/home/chris/models/gemma4-26b-a4b-uncensored/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
         "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
@@ -41,6 +42,7 @@
       "threads": 14,
       "port": 8192,
       "ctx": 65536,
+      "thinking_control": "toggle",
       "model": {
         "path": "/home/chris/models/gemma4-26b-a4b-uncensored/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
         "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",

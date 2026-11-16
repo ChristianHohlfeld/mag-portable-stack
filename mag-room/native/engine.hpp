@@ -339,6 +339,9 @@ public:
       b->goal_text.clear();
       b->goal_fix.clear();
       unlink(goal_pending_file(*b).c_str());
+      // A disabled owner may still hold the exclusive tool lead. Drop it
+      // when Stop/Pause releases the bot, so another bot can work normally.
+      if (lead_ == b->id) lead_.clear();
       std::error_code ec;
       std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
       write_atomic(room_.cfg.state_dir + "/goals/" + b->id + ".json.end", "end\n", 0600);
@@ -2796,6 +2799,16 @@ private:
     if (!found || !found->isObj()) return;
     const Val mark = *found;
     b.wire.obj->erase(std::remove_if(b.wire.obj->begin(), b.wire.obj->end(), [](const auto &kv) { return kv.first == "at_work"; }), b.wire.obj->end());
+    if (!jbool(room_.bot(b.id), "enabled", true)) {
+      // An interrupted request can still be marked at_work after Pause or
+      // a sudden deploy. It must not be re-armed at the next model warmup,
+      // nor replayed silently if the owner later resumes this bot.
+      b.wire["fresh"] = false;
+      b.cut_off = 0;
+      save_wire(b);
+      logf("engine: " + b.id + " discarded interrupted turn while paused; no replay");
+      return;
+    }
     const int tries = (int)jnum(mark, "tries");
     const bool unfinished_goal = goal::active(b.goal) && !exists(goal_mark(b));
     // If a browser action was in flight when the room died, the new process

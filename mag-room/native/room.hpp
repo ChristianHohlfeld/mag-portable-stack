@@ -693,7 +693,7 @@ private:
     // requested fast/default-off behavior. This marker makes it safe: a user
     // may explicitly enable Thinking later without the next deploy undoing it.
     if (!jbool(settings_, "thinking_default_off_v1", false)) {
-      for (auto &bot : bots_.asArr()) bot["thinking"] = false;
+      for (auto &bot : *bots_.arr) bot["thinking"] = false;
       settings_["thinking_default_off_v1"] = true;
       save_bots_locked();
       write_json(cfg.state_dir + "/settings.json", settings_);

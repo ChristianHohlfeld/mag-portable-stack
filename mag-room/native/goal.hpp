@@ -1042,6 +1042,7 @@ inline int shrink(Val &msgs, const Val &g, size_t budget) {
   }
   auto shielded = [&](size_t i) {
     if (i == 0 || i >= a.size()) return true;
+    if (jbool(a[i], "_memory_sync")) return true; // never discard stored memory data during an active goal
     if (i >= tail_from) return true;
     return anchored(a[i]);
   };

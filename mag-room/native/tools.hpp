@@ -138,6 +138,10 @@ inline Val schemas(bool has_vm, bool phone = false) {
     list.push(fn("goal_requirements", "Derive ALL independently verifiable user requirements before finishing. "
                   "Criteria are persisted per goal revision, and each one needs an observed page quote.",
                   R"MAG({"type":"object","properties":{"requirements":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"need":{"type":"string"}},"required":["id","need"]}}},"required":["requirements"]})MAG"));
+    list.push(fn("goal_peer_review", "Ask the other available bot for an independent READ-ONLY "
+                  "cross-check of a proposed result and its cited page evidence. This is optional, "
+                  "can be called before goal_finish, and never gives the reviewer tools or browser control.",
+                  R"MAG({"type":"object","properties":{"summary":{"type":"string"},"proofs":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"url":{"type":"string"},"quote":{"type":"string"}},"required":["id","url","quote"]}}},"required":["summary","proofs"]})MAG"));
     list.push(fn("goal_finish",
                   "Finish only after goal_requirements and page inspection. Each requirement needs a proof "
                   "with id, exact quote and URL of the SAME observed page. Unverified quotes reject finish. "
@@ -318,6 +322,7 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "browser_flow") return "Sichere Browserfolge";
   if (name == "goal_plan") return "Teilziele planen";
   if (name == "goal_step") return "Teilschritt aktualisieren";
+  if (name == "goal_peer_review") return "Zweitprüfung durch anderen Bot";
   if (name == "goal_requirements") return "Erfolgskriterien festlegen";
   if (name == "goal_finish") return "Schließt den Auftrag ab";
   if (name == "goal_blocked") return "Auftrag blockiert: " + one(jstr(args, "reason"), 80);

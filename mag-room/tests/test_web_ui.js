@@ -73,6 +73,12 @@ const file = choose('Datei');
 assert.strictEqual(file.accept, '');
 assert.strictEqual(file.multiple, true);
 
+const index = fs.readFileSync(path.join(root, '..', 'index.html'), 'utf8');
+assert(!index.includes('<div id="activity"></div>'), 'thinking must only occupy the header status');
+const panels = read('panels.js');
+assert(panels.includes("class: 'chip-stop'"), 'stopping a busy bot remains one tap away');
+assert(panels.includes("'/api/stop'"), 'header stop must hit backend stop endpoint');
+
 window.close();
 console.log('web ui ok');
 process.exit(0);

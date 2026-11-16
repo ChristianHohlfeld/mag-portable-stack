@@ -552,7 +552,8 @@ inline std::string provisional_sources(const Val &g) {
       if (++n >= 5) break;
     }
   if (n == 0) {
-    const std::string source = jstr(g["page"], "url");
+    const Val *page = g.find("page");
+    const std::string source = page ? jstr(*page, "url") : "";
     if (starts_with(source, "https://") || starts_with(source, "http://"))
       out += "\n- Gesehene Seite: " + clip(source, 380);
     else out += "\n- Keine überprüfbare Ziel-URL gespeichert.";

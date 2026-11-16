@@ -36,6 +36,7 @@ struct Ctx {
   std::function<std::string(const std::string &, const std::string &, std::string &)> model;
   size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
   std::function<void(const std::string &)> shot;         // a picture of the browser (JPEG) for this step
+  bool capture_browser_shot = true;                       // step image requested for UI or multimodal model
   std::string goal;                                      // the open task, so a look can prefer its elements
   int page_version = 0;                                  // element numbers belong to this look
 };
@@ -411,7 +412,10 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
     out += std::to_string(row.n) + " " + jstr(e, "kind") + " \"" + clip(jstr(e, "label"), 100) + "\"";
     if (!price.empty()) out += " " + clip(price, 40);
     if (!href.empty()) out += " " + clip(href, 120);
-    out += " (" + std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
+    // Numbered DOM elements are operated by index. Their pixel coordinates
+    // add no useful control information, but cost prompt tokens each step.
+    if (row.n <= 0 && e.find("x") && e.find("y"))
+      out += " (" + std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
     if (jbool(e, "password")) out += " Passwortfeld";
     if (jbool(e, "checked")) out += " an";
     out += "\n";
@@ -420,7 +424,7 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
   // DOM link inventory is separate from viewport click targets. It covers
   // actual hrefs further down the page and must not manufacture n indices.
   if (const Val *links = v.find("links"); links && links->isArr() && !links->asArr().empty()) {
-    struct LinkRow { int score; size_t order; const Val *value; };
+    struct LinkRow { int score; size_t order; bool matched_goal; const Val *value; };
     std::set<std::string> shown;
     for (const auto &row : ranked) {
       const std::string href = jstr(*row.e, "href");
@@ -433,34 +437,51 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
       if (!starts_with(href, "https://") && !starts_with(href, "http://")) continue;
       if (href.size() > 700 || shown.count(href)) continue;
       int score = (!jstr(link, "price").empty() ? 4 : 0) + (label.size() >= 20 ? 2 : 0);
+      bool matched_goal = false;
       std::string word;
       for (char c : goal_low + " ") {
         if (std::isalnum((unsigned char)c) || (unsigned char)c >= 0x80) word += c;
         else {
-          if (word.size() >= 4 && label.find(word) != std::string::npos) score += 5;
+          if (word.size() >= 4 && label.find(word) != std::string::npos) {
+            score += 5;
+            matched_goal = true;
+          }
           word.clear();
         }
       }
-      best.push_back({score, i, &link});
+      best.push_back({score, i, matched_goal, &link});
     }
     std::sort(best.begin(), best.end(), [](const LinkRow &a, const LinkRow &b) {
       return a.score != b.score ? a.score > b.score : a.order < b.order;
     });
     if (!best.empty()) {
       out += "Weitere echte Seitenlinks (auch unterhalb des sichtbaren Bereichs; keine Klicknummer):\n";
-      const size_t count = std::min<size_t>(6, best.size());
-      for (size_t i = 0; i < count; ++i) {
-        const Val &link = *best[i].value;
-        out += "- " + clip(jstr(link, "name"), 120);
+      // Avoid copying long unrelated navigation menus into every CPU
+      // decision. If no task terms match, retain a tiny fallback so a bot
+      // can still open a link on tasks without specific keywords.
+      const bool relevant = std::any_of(best.begin(), best.end(),
+                                        [](const LinkRow &v) { return v.matched_goal; });
+      const size_t limit = relevant ? 4 : 2;
+      size_t count = 0;
+      for (const auto &row : best) {
+        if (count >= limit) break;
+        if (relevant && !row.matched_goal) continue;
+        const Val &link = *row.value;
+        out += "- " + clip(jstr(link, "name"), 100);
         if (!jstr(link, "price").empty()) out += " | " + clip(jstr(link, "price"), 35);
         out += " | " + jstr(link, "url") + "\n";
+        ++count;
       }
       if (best.size() > count) out += "… " + std::to_string(best.size() - count) + " weitere echte URLs im Seiten-Snapshot\n";
     }
   }
-  out += "Text (Anfang):\n" + clip(jstr(v, "text"), 1200, "\n…[gekürzt]");
-  if (jstr(v, "text").size() > 1200)
-    out += "\nBei Bedarf browser_read für längeren Seitentext; alle DOM-Links bleiben als Belege gespeichert.";
+  // Interactive pages already expose their relevant content in numbered
+  // controls, titles and selected direct hrefs. Spend more text budget only
+  // when there are few usable DOM elements (e.g. article/document pages).
+  const size_t text_limit = ranked.size() >= 4 ? 550 : 1200;
+  out += "Text (Anfang):\n" + clip(jstr(v, "text"), text_limit, "\n…[gekürzt]");
+  if (jstr(v, "text").size() > text_limit)
+    out += "\nFür mehr Text browser_read; vollständige DOM-Links bleiben als Belege gespeichert.";
   return out;
 }
 
@@ -470,13 +491,18 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
 inline Result look(Ctx &ctx, const std::string &vm) {
   const auto r = ctx.guests.browser(vm, "GET", "/elements", "", 30, ctx.cancel);
   if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
-  const auto pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
+  // Text-only CPU goals need DOM text and numbered elements, not a JPEG
+  // download at every look/scroll. Keep images when the bot has vision or
+  // Chris explicitly enables step-shot capture for the room.
+  http::ClientResult pic;
+  if (ctx.capture_browser_shot)
+    pic = ctx.guests.browser(vm, "GET", "/screenshot.jpg?scale=0.5", "", 20, ctx.cancel);
   const Val v = jparse(r.body);
   Result out;
   out.ok = true;
   out.snapshot = v;
   out.text = page_for_model(v, ctx.goal, ctx.page_version > 0 ? ctx.page_version : 1);
-  if (pic.status == 200 && pic.body.size() > 100) {
+  if (ctx.capture_browser_shot && pic.status == 200 && pic.body.size() > 100) {
     if (ctx.shot) ctx.shot(pic.body);
     out.image = pic.body;
   }

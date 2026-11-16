@@ -5,6 +5,7 @@
   const { MAG } = window, { el, $, state: S } = MAG;
   let list, scroller, jump, activity, empty, olderBtn;
   let pinned = true, unread = 0, lastScrollTop = 0;
+  let userScrollUntil = 0, touchY = null;
   const nodes = new Map(); // message id -> article
   const dirty = new Set(); // "id:part" text parts waiting for a markdown pass
   const groupPrefs = new Map(); // goal ID / individual non-goal turn -> explicit user expansion
@@ -1313,11 +1314,29 @@
   // ---- wiring -------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity'); empty = $('#empty'); olderBtn = $('#older');
+    // Intent comes from user input, not from scrollTop alone: page shrink,
+    // scroll anchoring and programmatic positioning can all move upward.
+    const markScrollInput = () => { userScrollUntil = performance.now() + 500; };
+    scroller.addEventListener('wheel', markScrollInput, { passive: true });
+    scroller.addEventListener('pointerdown', markScrollInput, { passive: true });
+    scroller.addEventListener('touchstart', (e) => {
+      touchY = e.touches?.[0]?.clientY ?? null;
+    }, { passive: true });
+    scroller.addEventListener('touchmove', (e) => {
+      const y = e.touches?.[0]?.clientY;
+      if (touchY !== null && y != null && y > touchY + 2) markScrollInput();
+      if (y != null) touchY = y;
+    }, { passive: true });
+    scroller.addEventListener('keydown', (e) => {
+      if (['PageUp', 'ArrowUp', 'Home', 'PageDown', 'ArrowDown', 'End', ' '].includes(e.key)) markScrollInput();
+    });
     scroller.addEventListener('scroll', () => {
       const current = scroller.scrollTop;
-      const movedUp = current < lastScrollTop - 1;
+      const movedUpByUser = current < lastScrollTop - 1 && performance.now() < userScrollUntil;
       lastScrollTop = current;
-      const now = !movedUp && nearBottom();
+      // Once a reader deliberately scrolls upward, live messages must not
+      // yank the viewport to the bottom, even within the old 70px margin.
+      const now = !movedUpByUser && (pinned ? nearBottom() : nearBottom() && performance.now() < userScrollUntil);
       if (now !== pinned) { pinned = now; if (pinned) unread = 0; paintJump(); }
     }, { passive: true });
     jump.addEventListener('click', toBottom);

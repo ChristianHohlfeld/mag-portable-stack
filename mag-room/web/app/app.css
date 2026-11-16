@@ -303,6 +303,54 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .step .ask .what { font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user .bubble.routine .tag { display: block; font-size: 12px; opacity: .75; margin-bottom: 2px; }
 
+
+/* One task = one foldable log, independent from the live browser below it.
+   No extra cards in the chat. Active goals show only their latest step;
+   after completion the native <details> is closed until explicitly opened. */
+.goal-group { margin: 8px 0 6px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); min-width: 0; overflow: hidden; }
+.goal-group.running { border-color: color-mix(in srgb, var(--accent) 36%, var(--line)); }
+.goal-group.paused { border-color: color-mix(in srgb, var(--warn) 38%, var(--line)); }
+.goal-group > summary { list-style: none; display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px;
+  min-width: 0; min-height: 42px; padding: 8px 11px; cursor: pointer; touch-action: manipulation; }
+.goal-group > summary::-webkit-details-marker, .goal-browser > summary::-webkit-details-marker { display: none; }
+.goal-status-dot { height: 8px; width: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.goal-group.running .goal-status-dot { background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
+.goal-group.paused .goal-status-dot { background: var(--warn); }
+.goal-title { font-size: 13.5px; font-weight: 650; white-space: nowrap; }
+.goal-status, .goal-count, .goal-duration { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.goal-duration { margin-left: auto; }
+.goal-chevron { flex: none; color: var(--faint); display: grid; place-items: center; transition: transform .15s; }
+.goal-chevron svg { width: 16px; height: 16px; }
+.goal-group[open] > summary > .goal-chevron,
+.goal-browser[open] > summary > .goal-chevron { transform: rotate(90deg); }
+.goal-latest { flex: 1 0 100%; min-width: 0; color: var(--muted); font: 12px/1.35 var(--mono);
+  text-overflow: ellipsis; overflow: hidden; white-space: nowrap; padding-left: 16px; }
+.goal-group:not([open]) .goal-latest { display: none; }
+.goal-steps { border-top: 1px solid var(--line); }
+.goal-steps > .step { margin: 0; border: 0; border-radius: 0; background: transparent; }
+.goal-steps > .step + .step { border-top: 1px solid var(--line); }
+.goal-group.running:not(.history-open) .goal-steps > .step:not(.current),
+.goal-group.paused:not(.history-open) .goal-steps > .step:not(.current) { display: none; }
+.goal-steps > .step .body { max-height: 52vh; overflow: auto; }
+.goal-steps > .step .title { font-size: 12.5px; }
+.goal-browser { margin: 0 0 9px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; overflow: hidden; }
+.goal-browser > summary { display: flex; align-items: center; gap: 8px; padding: 8px 11px;
+  list-style: none; font-size: 12.5px; color: var(--text); min-height: 38px; cursor: pointer; touch-action: manipulation; }
+.goal-browser > summary > .goal-chevron { margin-left: auto; }
+.goal-browser-caption { color: var(--muted); margin-left: auto; font-size: 12px; }
+.goal-browser > summary > .goal-browser-caption + .goal-chevron { margin-left: 0; }
+.goal-browser-slot { min-width: 0; overflow: hidden; border-top: 1px solid var(--line); }
+.goal-browser-slot > .live { width: 100%; max-width: 100%; border: 0; border-radius: 0; }
+@media (max-width: 430px) {
+  .goal-group > summary { padding: 9px 10px; gap: 4px 6px; }
+  .goal-title { font-size: 13px; }
+  .goal-status, .goal-count, .goal-duration { font-size: 11.5px; }
+  .goal-latest { padding-left: 14px; font-size: 11.5px; }
+  .goal-steps > .step summary { gap: 5px; padding: 8px; }
+  .goal-steps > .step .title { min-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .goal-group.running .goal-status-dot { animation: none; } }
+
 /* ---- page card: a bot's HTML, running from the bot's own site ----------- */
 .page { margin: 8px 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
 .page .bar { display: flex; align-items: center; gap: 5px; padding: 6px; }

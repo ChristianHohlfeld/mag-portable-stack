@@ -48,6 +48,7 @@ jobs:
           npm install --prefix /tmp/mag-live-jsdom jsdom@26.1.0
           NODE_PATH=/tmp/mag-live-jsdom/node_modules MAG_SKIP_CHROME=1 node mag-room/tests/test_live_view.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_web_ui.js
+          NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_goal_group.js
       - name: Scenes (figures get the right skeleton; films survive restarts)
         run: |
           python3 ops/scene/tests/test_rig.py

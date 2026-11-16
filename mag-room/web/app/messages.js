@@ -4,10 +4,11 @@
 (function () {
   const { MAG } = window, { el, $, state: S } = MAG;
   let list, scroller, jump, activity, empty, olderBtn;
-  let pinned = true, unread = 0;
+  let pinned = true, unread = 0, lastScrollTop = 0;
   const nodes = new Map(); // message id -> article
   const dirty = new Set(); // "id:part" text parts waiting for a markdown pass
   const groupPrefs = new Map(); // goal ID / individual non-goal turn -> explicit user expansion
+  const browserPrefs = new Map(); // user explicitly opened/closed the live browser
   const goalPhases = new Map(); // last painted state to avoid redrawing groups on every status pulse
 
   // ---- markdown -----------------------------------------------------------
@@ -50,7 +51,8 @@
 
   // ---- scrolling ----------------------------------------------------------
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 70;
-  function toBottom() { scroller.scrollTop = scroller.scrollHeight; pinned = true; unread = 0; paintJump(); }
+  function setScrollTop(top) { scroller.scrollTop = top; lastScrollTop = scroller.scrollTop; }
+  function toBottom() { setScrollTop(scroller.scrollHeight); pinned = true; unread = 0; paintJump(); }
   function paintJump() {
     // A small round arrow above the composer; it carries words only when
     // something new arrived below.
@@ -58,12 +60,30 @@
     jump.classList.toggle('news', unread > 0);
     jump.lastChild.textContent = unread > 0 ? (unread === 1 ? 'Neue Nachricht' : unread + ' neue Nachrichten') : '';
   }
-  // Run a change to the timeline; follow it only when the reader was at the end.
+  // Preserve the element at the reader's viewport, even when a step group
+  // above it expands, shrinks or is repainted. Native scroll anchoring may
+  // already compensate; measure AFTER the mutation to avoid double shifts.
+  function preserveReadingPosition(change) {
+    const viewport = scroller.getBoundingClientRect();
+    const anchor = [...list.children].find((node) => {
+      const r = node.getBoundingClientRect();
+      return r.bottom > viewport.top + 1 && r.top < viewport.bottom - 1;
+    });
+    const before = anchor?.getBoundingClientRect().top;
+    const previous = scroller.scrollTop;
+    change();
+    if (anchor?.isConnected && before !== undefined) {
+      const moved = anchor.getBoundingClientRect().top - before;
+      if (Math.abs(moved) >= 1) setScrollTop(scroller.scrollTop + moved);
+    } else setScrollTop(previous);
+  }
+  // Follow updates only after a deliberate return to the bottom. Scrolling
+  // UP, even inside the old 70px threshold, immediately unpins the reader.
   function grow(change, isNewMessage) {
     const stick = pinned;
-    change();
-    if (stick) scroller.scrollTop = scroller.scrollHeight;
-    else if (isNewMessage) { unread++; paintJump(); }
+    if (stick) { change(); setScrollTop(scroller.scrollHeight); }
+    else preserveReadingPosition(change);
+    if (!stick && isNewMessage) { unread++; paintJump(); }
     else paintJump();
   }
   MAG.scrollToEnd = () => toBottom();
@@ -351,7 +371,12 @@
       if (node.open && !slot.firstChild) slot.append(liveIn(m.from, 'group-live-' + m.from));
       else if (!node.open) slot.replaceChildren();
     });
-    node.open = active;
+    node.querySelector(':scope > summary').addEventListener('click', () => {
+      // Do not reopen a browser Chris has deliberately closed just because
+      // a new browser step arrived (or the bot's status changed).
+      browserPrefs.set(key, !node.open);
+    });
+    node.open = browserPrefs.has(key) ? browserPrefs.get(key) : active;
     return node;
   }
   function taskPartLocation(m, index) {
@@ -370,17 +395,49 @@
     if (!fresh) return;
     const oldBrowser = article.querySelector('.goal-browser');
     const browser = goalBrowser(anchor);
-    // The live viewer's WebRTC node is reused, not recreated for every
-    // tool-state event. A closed task keeps a one-tap browser launcher.
-    const live = oldBrowser?.querySelector('.live');
-    if (live && browser?.open) browser.querySelector('.goal-browser-slot')?.append(live);
-    if (old) old.replaceWith(fresh);
-    else {
-      const body = article.querySelector(':scope > .body');
-      if (body) body.prepend(fresh);
-    }
-    if (oldBrowser) { if (browser) oldBrowser.replaceWith(browser); else oldBrowser.remove(); }
-    else if (browser) fresh.after(browser);
+    grow(() => {
+      if (old) {
+        // Preserve the details element and the user's reading/expansion state;
+        // rebuilding it on every tool event resets mobile scroll anchoring.
+        const oldSummary = old.querySelector(':scope > summary');
+        const oldSteps = old.querySelector(':scope > .goal-steps');
+        const nextSummary = fresh.querySelector(':scope > summary');
+        const nextSteps = fresh.querySelector(':scope > .goal-steps');
+        if (oldSummary && nextSummary) oldSummary.replaceChildren(...nextSummary.childNodes);
+        if (oldSteps && nextSteps) {
+          for (const previous of oldSteps.querySelectorAll('.step[data-message][data-part]')) {
+            const next = [...nextSteps.querySelectorAll('.step[data-message][data-part]')]
+              .find((candidate) => candidate.dataset.message === previous.dataset.message &&
+                                   candidate.dataset.part === previous.dataset.part);
+            if (!next) continue;
+            next.open = previous.open;
+            // Keep active WebRTC views alive if one sits in an approval step.
+            const live = previous.querySelector('.live');
+            if (live) {
+              const dest = next.querySelector('.live-slot') || next.querySelector('.ask');
+              if (dest) dest.append(live);
+            }
+          }
+          oldSteps.replaceChildren(...nextSteps.childNodes);
+        }
+        old.className = fresh.className;
+        old.dataset.status = fresh.dataset.status;
+        old.dataset.done = fresh.dataset.done;
+        old.dataset.since = fresh.dataset.since;
+        old.open = fresh.open;
+      } else {
+        const body = article.querySelector(':scope > .body');
+        if (body) body.prepend(fresh);
+      }
+      if (oldBrowser && browser) {
+        // The live browser's DOM node, player and connection stay mounted.
+        // Only change its state/label; never reset its user toggle.
+        oldBrowser.querySelector('.goal-browser-caption').textContent =
+          browser.querySelector('.goal-browser-caption').textContent;
+        oldBrowser.open = browser.open;
+      } else if (oldBrowser) oldBrowser.remove();
+      else if (browser) (old || fresh).after(browser);
+    });
     goalPhases.set(groupKey(m), groupInfo(m).state);
   }
 
@@ -1240,13 +1297,16 @@
   document.addEventListener('DOMContentLoaded', () => {
     scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity'); empty = $('#empty'); olderBtn = $('#older');
     scroller.addEventListener('scroll', () => {
-      const now = nearBottom();
+      const current = scroller.scrollTop;
+      const movedUp = current < lastScrollTop - 1;
+      lastScrollTop = current;
+      const now = !movedUp && nearBottom();
       if (now !== pinned) { pinned = now; if (pinned) unread = 0; paintJump(); }
     }, { passive: true });
     jump.addEventListener('click', toBottom);
     olderBtn.addEventListener('click', () => MAG.loadOlder().catch((x) => MAG.toast(x.message, true)));
     // The keyboard and the composer change the viewport: stay at the end.
-    new ResizeObserver(() => { if (pinned) scroller.scrollTop = scroller.scrollHeight; }).observe(scroller);
+    new ResizeObserver(() => { if (pinned) setScrollTop(scroller.scrollHeight); }).observe(scroller);
   });
   MAG.on('reset', renderAll);
   MAG.on('message', (m) => upsert(m, !nodes.has(m.id)));

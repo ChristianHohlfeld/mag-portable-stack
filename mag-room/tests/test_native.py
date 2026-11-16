@@ -1512,6 +1512,7 @@ class RoomContract(unittest.TestCase):
         go = threading.Event()
         r.lena.reply = lambda body: (go.wait(20), "Zu spät.")[1] if "Erzähl" in json.dumps(body["messages"][-1], ensure_ascii=False) else "Frisch."
         r.noah.reply = lambda body: "PASS"
+        noah_initial_actions = len(r.noah.slot_actions)
         (guests / "agent1").mkdir(parents=True, exist_ok=True)
         (guests / "agent1" / "notiz.txt").write_text("von gestern")
         # Lena is in the middle of an answer. Chris resets her: the turn ends at once, nothing waits for it.
@@ -1538,7 +1539,9 @@ class RoomContract(unittest.TestCase):
         self.assertEqual([m["text"] for m in r.messages() if m["id"] > asked["id"]], ["Frisch."])
         self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
         self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
-        self.assertNotIn("erase", [a for a, _ in r.noah.slot_actions])           # Noah was not touched
+        # Noah may erase an EMPTY slot while creating his first cold prefix at
+        # startup. Only actions after the initial warmup count as a bot reset.
+        self.assertNotIn("erase", [a for a, _ in r.noah.slot_actions[noah_initial_actions:]])  # Noah was not reset
         # The room is restarted in the middle of a reset (a deploy): it goes on, and a failure is said in words.
         (ctl / "hold").touch()
         self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)
@@ -2293,6 +2296,10 @@ class RoomContract(unittest.TestCase):
         # Simulate old prefix hash with identical settings signature.
         stored["prefix"] = "previous-release-tools-changed"
         wire.write_text(json.dumps(stored))
+        # The real deploy's new prefix filename has no saved slot. The fake
+        # llama does not distinguish filenames when restoring; invalidate its
+        # simulated checkpoint explicitly so restore fails and Save is tested.
+        r.lena.saved.clear()
         r.lena.slot_actions.clear()
         start = len(r.lena.requests)
         r.start()
@@ -2347,6 +2354,101 @@ class RoomContract(unittest.TestCase):
         self.assertEqual([a for a, _ in auxiliary], ["save", "restore"])
         self.assertEqual(len(r.lena.chats()), 2)
         self.assertIn("Rote Tasse", json.dumps(r.messages(), ensure_ascii=False))
+
+    def test_remember_appends_memory_without_rehashing_cpu_system_prefix(self):
+        """Remember must preserve the 11k-token warm prefix. New memories are
+        appended as data, never inserted into the beginning of the prompt."""
+        r = Room()
+        self.addCleanup(r.close)
+        calls = []
+        def reply(body):
+            calls.append(body)
+            if len(calls) == 1:
+                return {"tool_calls": [{"name": "remember", "arguments": {
+                    "fact": "Das bevorzugte Arbeitsformat ist Markdown"}}]}
+            if len(calls) == 2:
+                return "Gemerkt."
+            return "Ich erinnere mich daran."
+
+        r.lena.reply = reply
+        before = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        before_prefix = before["prefix"]
+        slot_calls = len(r.lena.slot_actions)
+        r.say("@Lena Merke dir: Das bevorzugte Arbeitsformat ist Markdown")
+        r.idle()
+        after_first = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        self.assertEqual(after_first["prefix"], before_prefix)
+        self.assertNotIn("Das bevorzugte Arbeitsformat ist Markdown", calls[0]["messages"][0]["content"])
+        r.say("@Lena Was ist mein bevorzugtes Arbeitsformat?")
+        r.idle()
+        after = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        self.assertEqual(after["prefix"], before_prefix)
+        self.assertEqual(calls[0]["messages"][0], calls[-1]["messages"][0])
+        memory_msgs = [m for m in calls[-1]["messages"] if
+                       "Gedächtnis-Nachtrag des Raums" in text_of(m.get("content"))]
+        self.assertEqual(len(memory_msgs), 1)
+        self.assertIn("bevorzugte Arbeitsformat", memory_msgs[0]["content"])
+        self.assertEqual(after["memory_items"][0]["text"], "Das bevorzugte Arbeitsformat ist Markdown")
+        self.assertNotIn("save", [a for a, _ in r.lena.slot_actions[slot_calls:]])
+        self.assertNotIn("restore", [a for a, _ in r.lena.slot_actions[slot_calls:]])
+
+    def test_length_cut_native_partial_tool_does_not_execute_incomplete_args(self):
+        """Partial native function arguments must NOT be mended into an empty
+        valid call. Retry at higher budget without exposing partial thoughts."""
+        browser = FakeBrowser()
+        browser.url = "https://example.org/initial"
+        browser.text = "Die Statusinformation ist bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = []
+        first_url = []
+
+        def reply(body):
+            calls.append(body)
+            n = len(calls)
+            if n == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "status", "need": "Statusseite prüfen"}]}}]}
+            if n == 2:
+                return {"reasoning": "UNVOLLSTÄNDIGER_GEDANKE",
+                        "raw_tool_calls": [{"name": "browser_open", "arguments":
+                                            '{"url":"https://example.org/trunca'}],
+                        "finish_reason": "length", "completion_tokens": 1536}
+            if n == 3:
+                first_url.append(browser.url)
+                return {"tool_calls": [{"name": "browser_open", "arguments": {
+                    "url": "https://example.org/verified"}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Status bestätigt.",
+                "proofs": [{"id": "status", "url": browser.url,
+                            "quote": "Statusinformation ist bestätigt"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/verified und prüfe die Statusinformation")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(first_url, ["https://example.org/initial"])
+        self.assertEqual([int(x["max_tokens"]) for x in calls], [1536, 1536, 3072, 3072])
+        self.assertTrue(all(x["tools"] == calls[0]["tools"] for x in calls))
+        self.assertNotIn("UNVOLLSTÄNDIGER_GEDANKE",
+                         " ".join(m.get("reasoning", "") for m in r.messages() if m.get("from") == "lena"))
+        self.assertIn("discarded incomplete native tool batch after length cap",
+                      (r.tmp / "magroom.log").read_text())
+        steps = [p["tool"] for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p.get("k") == "step"]
+        self.assertEqual(steps, ["goal_requirements", "browser_open", "goal_finish"])
+
+    def test_cpu_prefix_preflight_has_no_300_second_stall_limit(self):
+        # A 300+ s silent prefill must not be killed. Fake models are instant,
+        # so verify the explicit API budget; normal integration tests cover
+        # that a prefix is in fact saved and restored.
+        source = (ROOT / "mag-room" / "native" / "engine.hpp").read_text()
+        prefix = source[source.index("void warm_prefix("):source.index("void set_kv(", source.index("void warm_prefix("))]
+        self.assertIn("llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0)", prefix)
+        self.assertNotIn("{}, 900", prefix)
 
     def test_goal_length_before_tool_call_gets_extra_tokens_without_pausing(self):
         """A model that spends its 512-token envelope thinking can still act.

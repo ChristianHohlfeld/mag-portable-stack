@@ -126,6 +126,7 @@ Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 4
 scroll.scrollTop = 600;
 scroll.dispatchEvent(new window.Event('scroll'));
 scroll.scrollTop = 580;
+scroll.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -20, bubbles: true }));
 scroll.dispatchEvent(new window.Event('scroll'));
 test.upsert(first, false);
 assert.strictEqual(scroll.scrollTop, 580, 'reader is no longer pinned even within 70px of bottom');

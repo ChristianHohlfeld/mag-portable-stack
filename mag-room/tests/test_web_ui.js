@@ -54,6 +54,9 @@ document.getElementById('attach').click();
 const labels = [...document.querySelectorAll('.menu button')].map((b) => b.textContent.trim());
 assert.deepStrictEqual(labels, ['Galerie', 'Datei', 'Kamera', 'Foto zu 3D', 'Bild erzeugen', 'Video erzeugen']);
 assert.ok(!labels.includes('Datei oder Foto'));
+assert(!read('composer.js').includes('getUserMedia('), 'no second in-page camera implementation');
+assert(read('composer.js').includes("const shoot = (then) => pick('image/*', true, then)"), 'camera uses native capture');
+
 
 function choose(label) {
   document.querySelectorAll('input[type=file]').forEach((n) => n.remove());

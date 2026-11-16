@@ -2663,6 +2663,13 @@ private:
           b.wipe_pending = false;
           wiping = true;
           b.cancel = std::make_shared<Cancel>();
+        } else if (b.warm_pending) {
+          // A deployment may leave an already queued user goal. Prewarm the
+          // prefix FIRST; otherwise the first task itself pays for the entire
+          // cold 11k-token system/tool prompt and the checkpoint is never saved.
+          b.warm_pending = false;
+          warm = true;
+          b.cancel = std::make_shared<Cancel>();
         } else if (b.want && !b.resetting) {
           b.want = false;
           reason = b.reason;
@@ -2677,10 +2684,6 @@ private:
           }
           b.running = reason;
           b.acted = false;
-          b.cancel = std::make_shared<Cancel>();
-        } else if (b.warm_pending) {
-          b.warm_pending = false;
-          warm = true;
           b.cancel = std::make_shared<Cancel>();
         } else if (b.see_pending) {
           b.see_pending = false;
@@ -2716,15 +2719,19 @@ private:
         const Val me = room_.bot(b.id);
         double since = 0;
         if (jbool(me, "enabled", true) && model_state(b.id, &since) == "ready") {
+          const std::string previous_prefix = jstr(b.wire, "prefix");
           ensure_wire(b, me, false);
-          // Same server process as last time: its slot still holds this log.
-          // A fresh process has an empty slot: restore today's prefix (or
-          // evaluate it once); an ongoing conversation is rebuilt on the
-          // next turn from that prefix.
-          if (jnum(b.wire, "model_since", -2) != since) {
-            // The old branch silently ignored HTTP 400 on nonempty histories:
-            // then the first goal paid 10k+ uncached prompt tokens. Always
-            // rewarm on failed restore, even with an existing conversation.
+          const bool fresh_process = jnum(b.wire, "model_since", -2) != since;
+          const bool changed_prompt = !previous_prefix.empty() &&
+                                      previous_prefix != jstr(b.wire, "prefix");
+          // A new room release may change tools/system prompt while keeping
+          // the llama-server process alive. The model timestamp alone will
+          // NOT detect this: rewarm the new prefix before the next queued goal.
+          // If process and prompt are unchanged, preserve the full KV
+          // conversation rather than restoring the prefix on every restart.
+          if (fresh_process || changed_prompt) {
+            logf("engine: " + b.id + " prewarming before queued work (" +
+                 std::string(fresh_process ? "new model process" : "changed prompt/tools") + ")");
             warm_prefix(b, me, true);
             b.wire["model_since"] = since;
             save_wire(b);

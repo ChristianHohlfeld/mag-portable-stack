@@ -2289,7 +2289,7 @@ class RoomContract(unittest.TestCase):
         def reply(body):
             requests.append(body)
             if len(requests) == 1:
-                return {"reasoning": "Der Browser muss zunächst geöffnet werden. " * 30,
+                return {"reasoning": "Die aktuelle Seite ist noch nicht geprüft; ich brauche einen Browseraufruf.",
                         "finish_reason": "length", "completion_tokens": 1536}
             if len(requests) == 2:
                 return {"tool_calls": [{"name": "browser_open", "arguments": {"url": browser.url}}]}

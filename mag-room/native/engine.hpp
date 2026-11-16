@@ -83,6 +83,11 @@ public:
       if (const Val *back = b.find("restore"); back && jstr(*back, "state") == "running")
         if (Bot *rt = find(jstr(b, "id")); rt && !rt->resetting) rt->resetting = true, restoring.insert(rt->id);
     }
+    auto_enabled_ = jbool(room_.settings(), "auto_chat", false);
+    // Keep the last spontaneous conversation through a room-only deploy:
+    // restarting the web UI/server must not trigger another expensive CPU chat.
+    const std::string last = trim(slurp(room_.cfg.state_dir + "/auto-chat-last"));
+    try { auto_last_ms_ = std::stoll(last); } catch (...) { auto_last_ms_ = now_ms(); }
     for (auto &b : bots_) b->worker = std::thread([this, bot = b.get()] { work(*bot); });
     for (auto &b : bots_)
       if (restoring.count(b->id)) std::thread([this, bot = b->id] { run_restore(bot); }).detach();
@@ -169,6 +174,8 @@ public:
     };
     std::lock_guard<std::mutex> lk(mu_);
     round_limit_ = limit;
+    last_human_ms_ = now_ms();
+    auto_burst_ = false;
     bot_turns_ = 0;
     passes_ = 0;
     std::vector<std::string> owners;
@@ -466,7 +473,17 @@ public:
     return false;
   }
 
-  void settings_changed() { publish_bots(true); }
+  void settings_changed() {
+    const bool enabled = jbool(room_.settings(), "auto_chat", false);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      // Only a deliberate mode change can start a fresh autonomous session.
+      // Renaming or changing Thinking must not wake both expensive models.
+      if (enabled && !auto_enabled_) auto_last_ms_ = 0;
+      auto_enabled_ = enabled;
+    }
+    publish_bots(true);
+  }
 
   // Called when a bot's answer is complete: (bot name, text, seconds, failed).
   std::function<void(const std::string &, const std::string &, int64_t, bool)> on_answer;
@@ -793,6 +810,9 @@ private:
   uint64_t clear_epoch_ = 0;
   int bot_turns_ = 0, passes_ = 0;
   long round_limit_ = 0;
+  bool auto_enabled_ = false, auto_burst_ = false;
+  int64_t auto_last_ms_ = 0, last_human_ms_ = 0;
+  size_t auto_next_ = 0;
   std::set<std::string> audience_; // bots Chris mentioned with @ (empty = everybody)
   const long fuse_ = envl("MAG_ROOM_BOT_FUSE", 24);
   std::thread status_thread_;
@@ -905,7 +925,46 @@ private:
       }
       cv_.notify_all();
       publish_bots();
+      maybe_autonomous_chat();
     }
+  }
+
+  // A separate room-side trigger: conversation does not depend on a browser,
+  // UI client, open socket or a new message from Chris. It is opt-in, checks
+  // persisted bot pause flags and model readiness, and starts only while
+  // completely idle. Most importantly it has a long cooldown and short fuse.
+  void maybe_autonomous_chat() {
+    if (!jbool(room_.settings(), "auto_chat", false)) return;
+    const Val configured = room_.bots();
+    const Val models = models_snapshot();
+    const int64_t now = now_ms();
+    const int64_t every = std::max<int64_t>(5000, envl("MAG_ROOM_AUTO_CHAT_INTERVAL_S", 1200) * 1000LL);
+    std::lock_guard<std::mutex> lk(mu_);
+    if (stop_ || !auto_enabled_ || (auto_last_ms_ && now - auto_last_ms_ < every) ||
+        (last_human_ms_ && now - last_human_ms_ < 15000)) return;
+    for (auto &b : bots_)
+      if (!b->running.empty() || b->want || b->warming || b->warm_pending || b->reset_pending ||
+          b->wipe_pending || b->resetting || b->goal_on || b->goal_arm || b->cut_off > 0) return;
+    std::vector<Bot *> available;
+    for (auto &b : bots_) {
+      if (!jbool(room_.bot(b->id), "enabled", true)) continue;
+      const Val *model = models.find(b->id);
+      if (!model || jstr(*model, "state") != "ready" || silenced_.count(b->id)) continue;
+      available.push_back(b.get());
+    }
+    if (available.size() < 2 || configured.asArr().size() < 2) return;
+    Bot *starter = available[auto_next_++ % available.size()];
+    auto_burst_ = true;
+    bot_turns_ = 1; // the opening assistant also counts toward the short burst
+    passes_ = 0;
+    audience_.clear(); // an old @mention must not mute a new autonomous session
+    const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
+    round_limit_ = limit > 0 ? std::min<long>(limit, 4) : 4;
+    auto_last_ms_ = now;
+    write_atomic(room_.cfg.state_dir + "/auto-chat-last", std::to_string(now) + "\n", 0600);
+    starter->want = true;
+    starter->reason = "autonomous";
+    cv_.notify_all();
   }
 
   // ---- prompt log ---------------------------------------------------------
@@ -3084,6 +3143,11 @@ private:
       cancel = b.cancel;
       t.epoch = clear_epoch_;
     }
+    bool autonomous_round = reason == "autonomous";
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      autonomous_round = autonomous_round || (reason == "bot" && auto_burst_);
+    }
     const std::string name = jstr(me, "name");
     const Val tools = tools_for(me);
     // What the plugins take at the head of the prompt is not taken from the conversation.
@@ -3093,9 +3157,28 @@ private:
 
     std::string note;
     if (reason == "bot")
-      note = "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
+      note = autonomous_round
+          ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: Antworte dem anderen Bot natürlich, "
+            "kurz und direkt. Greife seine Frage oder These auf, stelle ggf. eine Anschlussfrage. "
+            "Keine Aufgaben ausführen, keine Werkzeuge verwenden. Wenn die Unterhaltung erschöpft ist, PASS.)"
+          : "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
+    if (reason == "autonomous") {
+      // This is explicitly not a message from Chris. Append the short
+      // initiative to the stored wire; changing an earlier prompt would
+      // invalidate the entire warm KV cache on the dual CPU servers.
+      Val invite = Val::object();
+      invite["role"] = "user";
+      invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: Der Raum ist ruhig. "
+          "Wenn du dem anderen Bot etwas Neues oder Interessantes zu sagen hast, "
+          "starte eine natürliche kurze Unterhaltung oder stelle eine konkrete Frage. "
+          "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. "
+          "Wenn dir nichts Sinnvolles einfällt, antworte PASS.)";
+      b.wire["messages"].push(invite);
+      b.wire["fresh"] = true;
+      save_wire(b);
+    }
     set_phase(b, "reading");
     // Something to answer: new messages now, or ones this bot already read
     // while it described an image for the other bot.
@@ -3118,12 +3201,23 @@ private:
     // the room that starts takes the turn up again (see work()).
     AtWork at_work(*this, b, reason, tries);
     if (reason == "bot") {
-      // The gate belongs to the message that was just appended.
-      Val &last = b.wire["messages"].arr->back();
-      if (jstr(last, "role") == "user") {
-        const std::string notes = jstr(last, "_note").empty() ? note : jstr(last, "_note") + "\n\n" + note;
-        last["_note"] = notes;
-        last["content"] = render_items(last["_items"], notes);
+      // The other bot's newest line has already been appended. A separate
+      // final user-role note is unambiguously an internal conversation
+      // directive, NEVER a new Chris message or a background task. Append at
+      // the END so the existing cached prefix remains untouched.
+      if (autonomous_round) {
+        Val invite = Val::object();
+        invite["role"] = "user";
+        invite["content"] = note;
+        invite["_auto_chat"] = true;
+        b.wire["messages"].push(invite);
+      } else {
+        Val &last = b.wire["messages"].arr->back();
+        if (jstr(last, "role") == "user") {
+          const std::string notes = jstr(last, "_note").empty() ? note : jstr(last, "_note") + "\n\n" + note;
+          last["_note"] = notes;
+          last["content"] = render_items(last["_items"], notes);
+        }
       }
       save_wire(b);
     }
@@ -3693,6 +3787,13 @@ private:
         }
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
+        } else if (autonomous_round) {
+          // Immutable permission boundary for unattended conversations.
+          // Tool schemas stay identical for llama.cpp's shared KV prefix,
+          // but not one browser/shell/phone/plugin or read-only operation is
+          // actually allowed to run without a human request.
+          result = tools::fail("Im eigenständigen Bot-Gespräch sind Werkzeuge deaktiviert. Nur miteinander reden.");
+          t.stop_after = true;
         } else if (!lead.empty()) {
           std::string who = lead;
           const Val all = room_.bots();
@@ -4361,8 +4462,9 @@ private:
   // Decides what a finished turn triggers.
   void after_turn(Bot &b, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig) {
     const Val bots = room_.bots();
-    const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
+    const long configured_limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
     std::lock_guard<std::mutex> lk(mu_);
+    const long limit = auto_burst_ ? (configured_limit > 0 ? std::min<long>(configured_limit, 4) : 4) : configured_limit;
     round_limit_ = limit;
     // Only a visible answer is a round; a PASS or a stopped turn gives it back.
     if (reason == "bot" && !visible && bot_turns_ > 0) --bot_turns_;
@@ -4374,9 +4476,13 @@ private:
       if (group_chat::conversation_rests(passes_, active))
         for (auto &o : bots_)
           if (o->reason != "human") o->want = false;
+      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
       return;
     }
-    if (!visible) return;
+    if (!visible) {
+      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
+      return;
+    }
     passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.
@@ -4389,7 +4495,10 @@ private:
       return;
     }
     b.continues = 0;
-    if (limit > 0 && bot_turns_ >= limit) return;
+    if (limit > 0 && bot_turns_ >= limit) {
+      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
+      return;
+    }
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
       if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name

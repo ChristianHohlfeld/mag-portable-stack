@@ -679,6 +679,9 @@ private:
     settings_ = read_json(cfg.state_dir + "/settings.json");
     if (!settings_.isObj()) settings_ = Val::object();
     if (!settings_.find("bot_rounds")) settings_["bot_rounds"] = cfg.bot_rounds;
+    // Autonomous conversations are explicitly opt-in; unlimited replies to
+    // a human message alone must not start unattended CPU inference.
+    if (!settings_.find("auto_chat")) settings_["auto_chat"] = false;
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");

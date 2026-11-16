@@ -386,7 +386,9 @@
           owner() ? toggle(b.enabled, (v) => call('PUT', '/api/bot/' + b.id, { enabled: v })) : null))));
 
       content.append(el('h3', { text: 'Gespräch' }), el('div', { class: 'card' },
-        row('Bots untereinander', 'Wie oft sich Lena und Noah nach einer Nachricht von dir gegenseitig antworten dürfen. Unbegrenzt ruht nach 24 Antworten ohne dich.',
+        row('Selbstständig unterhalten', 'Lena und Noah dürfen auch ohne neue Nachricht untereinander reden. Kurze Gesprächsblöcke mit Pause dazwischen; funktioniert ohne Browser und ohne geöffneten Chat.',
+          toggle(s.auto_chat === true, (v) => call('PUT', '/api/settings', { auto_chat: v }), !owner())),
+        row('Bots untereinander', 'Maximale Antworten pro Gespräch. Eigenständige Gesprächsblöcke sind auf vier Antworten begrenzt.',
           select(s.bot_rounds ?? 0, [[0, 'Unbegrenzt'], [1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner())),
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 

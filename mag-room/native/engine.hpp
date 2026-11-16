@@ -2404,6 +2404,8 @@ private:
       note["content"] = closing ? goal::tail(b.goal, true)
           : "AKTIVER AUFTRAG: " + jstr(b.goal, "text") + "\nERFOLG: " + jstr(b.goal, "done") +
             "\nBISHER: Der aktuelle Seitenstand steht im letzten Browser-Werkzeugergebnis. "
+            "Lege mit goal_requirements alle prüfbaren Anforderungen fest. Belege vor goal_finish jede Anforderung "
+            "mit einem genauen Zitat und der URL derselben beobachteten Seite. "
             "Arbeite bis goal_finish oder einem nachgewiesenen goal_blocked weiter; keine Ankündigung als Antwort.";
       b.wire["messages"].push(note);
       b.wire["goal_prompt_stamp"] = stamp;
@@ -2970,8 +2972,16 @@ private:
         t.asked_at = t.id.empty() ? 0 : room_.parts(t.id);
         describe_images(b, me);
         apply_goal_cmd(b); // a correction Chris wrote while the bot was working
-      }
-      if (b.ctx_tokens > budget) compact(b, 0.55);
+      } 
+      // Proactive bounded context for slow CPU prefill. Keep the static
+      // system prefix and the open goal; compress old browser observations.
+      if (goal_live(b) && b.wire["messages"].isArr()) {
+        size_t history_tokens = 0;
+        for (size_t i = 1; i < b.wire["messages"].asArr().size(); ++i)
+          history_tokens += goal::tokens_of(b.wire["messages"].asArr()[i]);
+        if (history_tokens > (size_t)std::max(2400L, envl("MAG_ROOM_GOAL_COMPACT_TRIGGER_TOKENS", 6000)))
+          compact(b, 0.60);
+      } else if (b.ctx_tokens > budget) compact(b, 0.55);
       const bool closing = t.wrap;
       t.wrap = false;
       const bool driving = goal_live(b) && !closing;

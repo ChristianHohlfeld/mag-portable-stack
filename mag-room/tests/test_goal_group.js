@@ -62,6 +62,15 @@ assert.strictEqual(groups[0].contains(document.querySelector('.goal-browser')), 
                    'live browser must be available BELOW the foldable step history');
 assert(document.querySelector('.goal-browser').open, 'live browser available while working');
 
+const originalBrowser = document.querySelector('.goal-browser');
+originalBrowser.querySelector('summary').click();
+assert.strictEqual(originalBrowser.open, false, 'reader can close live browser');
+test.upsert(first, false);
+assert.strictEqual(document.querySelector('.goal-browser'), originalBrowser, 'live browser DOM/connection survives refresh');
+assert.strictEqual(originalBrowser.open, false, 'new browser step must not reopen user-closed viewer');
+originalBrowser.querySelector('summary').click();
+assert.strictEqual(originalBrowser.open, true, 'reader can reopen live browser');
+
 // A human approval is inside the current step and must remain actionable.
 first.parts.push(step('consent', 'Braucht Freigabe', 'running', t + 4000, null, {
   id: 'approval1', server: 'example', tool: 'write', args: '{}',
@@ -109,5 +118,18 @@ assert(read('app.css').includes('@media (max-width: 430px)'), 'phone-specific co
 assert(read('app.css').includes('.goal-browser-slot > .live { width: 100%; max-width: 100%'),
        'live browser must remain inside available phone width');
 assert.strictEqual(document.getElementById('scroll').style.width, '390px');
+// Simulate a reader deliberately scrolling UP only 20px from bottom.
+// Live updates, including an in-place group repaint, must not yank the view.
+const scroll = document.getElementById('scroll');
+Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => 1000 });
+Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 400 });
+scroll.scrollTop = 600;
+scroll.dispatchEvent(new window.Event('scroll'));
+scroll.scrollTop = 580;
+scroll.dispatchEvent(new window.Event('scroll'));
+test.upsert(first, false);
+assert.strictEqual(scroll.scrollTop, 580, 'reader is no longer pinned even within 70px of bottom');
+assert.strictEqual(document.querySelector('.goal-browser'), originalBrowser, 'browser remains mounted after phase changes');
+
 window.close();
 console.log('goal group timeline ok (desktop state + 390px mobile rules)');

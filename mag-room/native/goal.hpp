@@ -453,6 +453,10 @@ inline void absorb(Val &g, const Val &page, int version) {
   else if (const Val *old = g.find("page"); old && jstr(*old, "url") == jstr(page, "url") && old->find("elements"))
     p["elements"] = *old->find("elements");
   else p["elements"] = Val::array();
+  if (const Val *links = page.find("links"); links && links->isArr()) p["links"] = *links;
+  else if (const Val *old = g.find("page"); old && jstr(*old, "url") == jstr(page, "url") && old->find("links"))
+    p["links"] = *old->find("links");
+  else p["links"] = Val::array();
   g["page"] = p;
   g["version"] = version;
   std::string add = jstr(page, "url") + "\n" + jstr(page, "title") + "\n" + clip(jstr(page, "text"), 2000);
@@ -471,6 +475,26 @@ inline void absorb(Val &g, const Val &page, int version) {
         cands.push(c);
       }
     }
+  // The browser sends two independent kinds of evidence: current viewport
+  // click targets and actual rendered DOM hyperlinks (possibly below fold).
+  // Record both. Never infer a URL from a title, price or shop-specific path.
+  if (const Val *links = p.find("links"); links && links->isArr()) {
+    std::set<std::string> recorded;
+    for (const auto &c : cands.asArr()) recorded.insert(jstr(c, "url"));
+    size_t added = 0;
+    for (const auto &link : links->asArr()) {
+      const std::string href = jstr(link, "url"), label = jstr(link, "name");
+      if ((!starts_with(href, "https://") && !starts_with(href, "http://")) || href.size() > 700) continue;
+      if (added++ < 48) add += "\n" + label + " " + href + " " + jstr(link, "price");
+      if (cands.asArr().size() < 12 && !label.empty() && recorded.insert(href).second) {
+        Val c = Val::object();
+        c["name"] = label;
+        c["url"] = href;
+        if (!jstr(link, "price").empty()) c["price"] = jstr(link, "price");
+        cands.push(c);
+      }
+    }
+  }
   g["candidates"] = cands;
   std::string seen = jstr(g, "seen") + "\n" + add;
   if (seen.size() > 80000) seen = seen.substr(seen.size() - 80000);
@@ -485,21 +509,32 @@ inline void absorb(Val &g, const Val &page, int version) {
       visible += "\n" + clip(jstr(e, "label"), 240);
       if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
     }
-  proof_page["text"] = clip(visible, 16000);
   // Preserve clickable URLs with their observed labels/prices on EACH
   // snapshot. A later navigation must not erase earlier result links.
   Val links = Val::array();
-  if (const Val *els = page.find("elements"); els && els->isArr())
-    for (const auto &e : els->asArr()) {
-      const std::string href = trim(jstr(e, "href"));
-      if (!starts_with(href, "https://") && !starts_with(href, "http://")) continue;
-      if (links.asArr().size() >= 24) break;
-      Val link = Val::object();
-      link["url"] = clip(href, 700);
-      link["name"] = clip(jstr(e, "label"), 180);
-      link["price"] = clip(jstr(e, "price"), 60);
-      links.push(link);
+  std::set<std::string> known;
+  const auto append_link = [&](const std::string &href, const std::string &label, const std::string &price) {
+    if ((!starts_with(href, "https://") && !starts_with(href, "http://")) ||
+        href.size() > 700 || links.asArr().size() >= 64 || !known.insert(href).second) return;
+    Val link = Val::object();
+    link["url"] = href;
+    link["name"] = clip(label, 180);
+    link["price"] = clip(price, 60);
+    links.push(link);
+  };
+  if (const Val *dom = p.find("links"); dom && dom->isArr())
+    for (const auto &link : dom->asArr()) {
+      append_link(jstr(link, "url"), jstr(link, "name"), jstr(link, "price"));
+      if (links.asArr().size() >= 48) break;
     }
+  if (const Val *els = p.find("elements"); els && els->isArr())
+    for (const auto &e : els->asArr())
+      append_link(jstr(e, "href"), jstr(e, "label"), jstr(e, "price"));
+  for (const auto &link : links.asArr()) {
+    visible += "\n" + jstr(link, "name");
+    if (!jstr(link, "price").empty()) visible += " " + jstr(link, "price");
+  }
+  proof_page["text"] = clip(visible, 16000);
   proof_page["links"] = links;
   if (!g["evidence_pages"].isArr()) g["evidence_pages"] = Val::array();
   g["evidence_pages"].push(proof_page);

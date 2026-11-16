@@ -1053,7 +1053,11 @@ private:
     {
       std::lock_guard<std::mutex> lk(models_mu_);
       if (const Val *m = models_.find(b.id)) {
-        model = jstr(*m, "file") + "|" + std::to_string((long long)jnum(*m, "ctx", 0));
+        // spec_hash covers pinned llama.cpp runtime revision, model launch
+        // options, drafter and projector. Old slot files may be incompatible
+        // after a runtime update despite identical weights and context size.
+        model = jstr(*m, "file") + "|" + std::to_string((long long)jnum(*m, "ctx", 0)) +
+                "|runtime=" + jstr(*m, "spec_hash");
         if (const Val *w = m->find("model")) model += "|" + std::to_string((long long)jnum(*w, "total", 0));
         for (const char *k : {"draft", "mmproj"})
           if (const Val *x = m->find(k)) model += std::string("|") + k + (jbool(*x, "active", false) ? "1" : "0");
@@ -1062,21 +1066,33 @@ private:
     return "prefix-" + jstr(b.wire, "prefix") + "-m" + sha256_hex(model).substr(0, 12) + ".bin";
   }
 
-  // Evaluates the system prefix once and saves that slot state, or restores
-  // it when the file of today exists. Only for an empty conversation.
+  // Restore a compatible prefix, or rebuild and save it when the checkpoint
+  // is missing or incompatible (including after a model/server upgrade).
+  // Works with nonempty conversations too: warm only the immutable system
+  // prefix; the next normal goal call appends the real conversation.
   void warm_prefix(Bot &b, const Val &me, bool slot_is_empty) {
-    if (b.wire["messages"].asArr().size() > 1) return;
+    if (!b.wire.find("messages") || !b.wire["messages"].isArr() ||
+        b.wire["messages"].asArr().empty()) return;
     std::lock_guard<std::mutex> inference(b.inference_mu);
     const std::string file = prefix_file(b);
     set_phase(b, "warming", "Systemprompt");
     std::string err;
-    if (slot_is_empty && llm::slot_restore(b.backend, file, &err)) {
-      set_kv(b, "warm");
-      set_phase(b, "idle");
-      return;
+    if (slot_is_empty) {
+      if (llm::slot_restore(b.backend, file, &err)) {
+        logf("engine: " + b.id + " prefix restored: " + file);
+        set_kv(b, "warm");
+        set_phase(b, "idle");
+        return;
+      }
+      logf("engine: " + b.id + " prefix restore failed: " + file + " (" +
+           clip(err, 240) + "); rebuilding from system text");
+      std::string erase_error;
+      if (!llm::slot_erase(b.backend, &erase_error))
+        logf("engine: " + b.id + " cannot erase failed prefix slot: " + clip(erase_error, 160));
     }
     Val body = Val::object();
-    Val msgs = b.wire["messages"];
+    Val msgs = Val::array();
+    msgs.push(b.wire["messages"].asArr().front());
     Val user = Val::object();
     user["role"] = "user";
     user["content"] = ".";
@@ -1099,9 +1115,18 @@ private:
       b.warming = false;
     }
     if (res.ok()) {
-      llm::slot_save(b.backend, file, &err);
-      set_kv(b, "warm");
+      err.clear();
+      if (llm::slot_save(b.backend, file, &err)) {
+        logf("engine: " + b.id + " prefix rebuilt and saved: " + file);
+        set_kv(b, "warm");
+      } else {
+        // An old incompatible file may prevent saving; never claim the slot
+        // is recoverable on the next restart if persistence failed.
+        logf("engine: " + b.id + " prefix save failed: " + file + " (" + clip(err, 240) + ")");
+        set_kv(b, "cold");
+      }
     } else {
+      logf("engine: " + b.id + " prefix prewarm failed: " + clip(res.error, 240));
       set_kv(b, "cold");
     }
     set_phase(b, "idle");
@@ -2697,12 +2722,10 @@ private:
           // evaluate it once); an ongoing conversation is rebuilt on the
           // next turn from that prefix.
           if (jnum(b.wire, "model_since", -2) != since) {
-            if (b.wire["messages"].asArr().size() <= 1) warm_prefix(b, me, true);
-            else {
-              std::string err;
-              std::lock_guard<std::mutex> inference(b.inference_mu);
-              llm::slot_restore(b.backend, prefix_file(b), &err);
-            }
+            // The old branch silently ignored HTTP 400 on nonempty histories:
+            // then the first goal paid 10k+ uncached prompt tokens. Always
+            // rewarm on failed restore, even with an existing conversation.
+            warm_prefix(b, me, true);
             b.wire["model_since"] = since;
             save_wire(b);
           } else {

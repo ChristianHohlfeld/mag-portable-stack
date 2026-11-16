@@ -388,6 +388,57 @@ inline bool args_ok(const Val &tools, const llm::ToolCall &call, std::string &wh
   return true;
 }
 
+// Local models sometimes write a complete tool call as a single JSON
+// document in ordinary text, despite tool_choice=required. Promote only an
+// explicit, standalone, schema-valid call. Never execute arbitrary prose,
+// JSON examples embedded in prose or unrecognized actions.
+inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &call) {
+  raw = trim(raw);
+  if (starts_with(raw, "```")) {
+    const size_t first = raw.find('\n');
+    if (first == std::string::npos) return false;
+    const size_t close = raw.find("```", first + 1);
+    if (close == std::string::npos || !trim(raw.substr(close + 3)).empty()) return false;
+    raw = trim(raw.substr(first + 1, close - first - 1));
+  }
+  if (raw.size() < 10 || raw.size() > 16000 || raw.front() != '{' || raw.back() != '}') return false;
+  const Val obj = jparse(raw);
+  if (!obj.isObj()) return false;
+  std::string name = jstr(obj, "name", jstr(obj, "tool", jstr(obj, "function")));
+  Val args = Val::object();
+  if (!name.empty()) {
+    const Val *arg = obj.find("arguments");
+    if (!arg) arg = obj.find("args");
+    if (!arg) arg = obj.find("parameters");
+    if (!arg) return false;
+    if (arg->isObj()) args = *arg;
+    else if (arg->type == Val::STR) args = jparse(arg->str);
+    else return false;
+  } else {
+    name = jstr(obj, "action");
+    if (name.empty()) return false;
+    for (const auto &kv : *obj.obj)
+      if (kv.first != "action") args[kv.first] = kv.second;
+  }
+  if (!args.isObj()) return false;
+  // Textual JSON is not native tool calling. Recover only read-only page
+  // observations and server-validated goal bookkeeping; never a shell,
+  // click, form submit, purchase, plugin write or other side effect.
+  static const std::set<std::string> safe = {
+      "goal_requirements", "goal_plan", "goal_step", "goal_finish",
+      "goal_blocked", "browser_look", "browser_read"};
+  if (!safe.count(name)) return false;
+  llm::ToolCall parsed;
+  parsed.id = "call_json_" + random_hex(5);
+  parsed.name = name;
+  parsed.arguments = mj::dump(args);
+  parsed.valid = true;
+  std::string why;
+  if (!args_ok(offered, parsed, why)) return false;
+  call = parsed;
+  return true;
+}
+
 // ---- page memory ------------------------------------------------------------
 inline void absorb(Val &g, const Val &page, int version) {
   if (!active(g) || !page.isObj()) return;
@@ -435,6 +486,21 @@ inline void absorb(Val &g, const Val &page, int version) {
       if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
     }
   proof_page["text"] = clip(visible, 16000);
+  // Preserve clickable URLs with their observed labels/prices on EACH
+  // snapshot. A later navigation must not erase earlier result links.
+  Val links = Val::array();
+  if (const Val *els = page.find("elements"); els && els->isArr())
+    for (const auto &e : els->asArr()) {
+      const std::string href = trim(jstr(e, "href"));
+      if (!starts_with(href, "https://") && !starts_with(href, "http://")) continue;
+      if (links.asArr().size() >= 24) break;
+      Val link = Val::object();
+      link["url"] = clip(href, 700);
+      link["name"] = clip(jstr(e, "label"), 180);
+      link["price"] = clip(jstr(e, "price"), 60);
+      links.push(link);
+    }
+  proof_page["links"] = links;
   if (!g["evidence_pages"].isArr()) g["evidence_pages"] = Val::array();
   g["evidence_pages"].push(proof_page);
   auto &pages = *g["evidence_pages"].arr;
@@ -499,6 +565,78 @@ inline bool url_seen(const Val &g, std::string url) {
   if (seen.find(url) != std::string::npos) return true;
   const auto q = url.find('?');
   return q != std::string::npos && seen.find(url.substr(0, q)) != std::string::npos;
+}
+
+// Prepare a small, provenance-labelled finishing context instead of forcing
+// another full browser exploration when a CPU model replies without a tool.
+// The model still chooses the answer; these are untrusted observations only.
+inline std::string finish_context(const Val &g) {
+  std::string out = "OFFENER AUFTRAG: " + clip(jstr(g, "text"), 500) + "\n";
+  if (const Val *req = g.find("requirements"); req && req->isArr() && !req->asArr().empty())
+    out += "Erfolgskriterien: " + clip(mj::dump(*req), 900) + "\n";
+  else out += "Zuerst goal_requirements mit allen Nutzerkriterien aufrufen.\n";
+  if (const Val *plan = g.find("plan"); plan && plan->isArr() && !plan->asArr().empty())
+    out += "Planstand: " + clip(mj::dump(*plan), 550) + "\n";
+  if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr()) {
+    const size_t start = pages->asArr().size() > 3 ? pages->asArr().size() - 3 : 0;
+    for (size_t i = start; i < pages->asArr().size(); ++i) {
+      const Val &p = pages->asArr()[i];
+      out += "QUELLE " + std::to_string(i + 1) + ": " + clip(jstr(p, "url"), 260) +
+             "\nSICHTBARER TEXT (Zitat exakt daraus): " + clip(jstr(p, "text"), 600) + "\n";
+      if (const Val *links = p.find("links"); links && links->isArr()) {
+        int count = 0;
+        for (const auto &link : links->asArr()) {
+          if (++count > 4) break;
+          out += "LINK " + clip(jstr(link, "name"), 100) + " | " +
+                 clip(jstr(link, "price"), 35) + " | " + clip(jstr(link, "url"), 200) + "\n";
+        }
+      }
+    }
+  }
+  const std::string instruction =
+      "\nNächster Schritt: exakt EINEN echten Werkzeugaufruf ausführen. Ist das Ergebnis belegt, "
+      "goal_finish mit proofs (id, wörtliches quote, URL derselben Quelle), und wenn konkrete "
+      "Links gefordert sind mit items (name, url, price). Fehlen Kriterien, goal_requirements; "
+      "fehlt eine überprüfte Ziel-URL, das zugehörige Link-Element öffnen und die Ziel-URL "
+      "beobachten. Keine URL oder Textstelle erfinden.";
+  return clip(out, 4000) + instruction;
+}
+
+// A failed or missing tool call must never discard witnessed clickable links.
+// Returning them is an explicitly provisional recovery, never a false "done".
+inline std::string provisional_sources(const Val &g) {
+  std::string out = "Abschluss noch nicht verifiziert. Diese tatsächlich beobachteten Links bleiben verfügbar:";
+  std::set<std::string> used;
+  int n = 0;
+  const auto add = [&](const Val &c, std::string &dest, std::set<std::string> &unique, int &count) {
+    const std::string url = trim(jstr(c, "url"));
+    if ((!starts_with(url, "https://") && !starts_with(url, "http://")) ||
+        !unique.insert(url).second) return;
+    dest += "\n- " + clip(jstr(c, "name"), 110) + " — " + clip(url, 300);
+    if (!jstr(c, "price").empty()) dest += " (" + clip(jstr(c, "price"), 45) + ")";
+    ++count;
+  };
+  if (const Val *cs = g.find("candidates"); cs && cs->isArr())
+    for (const auto &c : cs->asArr()) {
+      if (n >= 5) break;
+      add(c, out, used, n);
+    }
+  if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr())
+    for (auto it = pages->asArr().rbegin(); it != pages->asArr().rend() && n < 5; ++it)
+      if (const Val *links = it->find("links"); links && links->isArr())
+        for (const auto &link : links->asArr()) {
+          if (n >= 5) break;
+          add(link, out, used, n);
+        }
+  if (n == 0) {
+    const Val *page = g.find("page");
+    const std::string source = page ? jstr(*page, "url") : "";
+    if (starts_with(source, "https://") || starts_with(source, "http://"))
+      out += "\n- Gesehene Seite: " + clip(source, 380);
+    else out += "\n- Keine überprüfbare Ziel-URL gespeichert.";
+  }
+  out += "\nDer Auftrag bleibt offen; die Auswahl ist noch nicht als Ergebnis bestätigt.";
+  return out;
 }
 
 inline bool login_page(const Val &g) {

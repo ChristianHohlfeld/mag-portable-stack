@@ -2088,7 +2088,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(browser.clicks, [28])
         self.assertLess(len(seen), 12)  # the repeated plan stalled instead of looping
         said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
-        self.assertIn("hänge", said)
+        self.assertIn("Abschluss noch nicht verifiziert", said)
         self.assertEqual(r.noah.chats(), [])
         goal_path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
         goal = json.loads(goal_path.read_text())
@@ -2152,6 +2152,115 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena danke")
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
+
+    def test_goal_finishes_after_plain_text_via_grounded_narrow_tool_recovery(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.title = "Ergebnisübersicht"
+        browser.text = "Kandidat A, Breite 60 mm, Preis 6,99 EUR."
+        browser.elements = [{"n": 3, "kind": "link", "label": "Kandidat A, Breite 60 mm",
+                             "href": "https://example.org/item/3", "price": "6,99 EUR",
+                             "x": 100, "y": 150}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        seen = []
+
+        def reply(body):
+            i = len(seen)
+            seen.append(body)
+            if i == 0:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "choice", "need": "Breite und Preis belegen"}]}}]}
+            if i == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i == 2:
+                return "Ich habe einen passenden Artikel mit den verlangten Angaben gesehen."
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Kandidat A hat 60 mm Breite und kostet 6,99 EUR.",
+                "proofs": [{"id": "choice", "url": browser.url,
+                            "quote": "Breite 60 mm, Preis 6,99 EUR"}],
+                "items": [{"name": "Kandidat A, Breite 60 mm", "url": "https://example.org/item/3",
+                           "price": "6,99 EUR"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Suche auf https://example.org/results eine passende Option mit Breite, Preis und Link")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(seen), 4)
+        offered_before = {x["function"]["name"] for x in seen[2]["tools"]}
+        offered_after = {x["function"]["name"] for x in seen[3]["tools"]}
+        self.assertLess(len(offered_after), len(offered_before))
+        self.assertIn("goal_finish", offered_after)
+        self.assertNotIn("image_generate", offered_after)
+        self.assertIn("https://example.org/item/3", json.dumps(seen[3]["messages"], ensure_ascii=False))
+        self.assertEqual(goal["results"][0]["url"], "https://example.org/item/3")
+
+    def test_goal_non_tool_completion_pauses_with_witnessed_links_not_stalled(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.title = "Ergebnisübersicht"
+        browser.text = "Der verfügbare Kandidat hat einen sichtbaren Preis."
+        browser.elements = [{"n": 3, "kind": "link", "label": "Kandidat A",
+                             "href": "https://example.org/item/3", "price": "6,99 EUR",
+                             "x": 100, "y": 150}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        i = {"n": 0}
+
+        def reply(body):
+            i["n"] += 1
+            if i["n"] == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "result", "need": "Die gefundenen Details prüfen"}]}}]}
+            if i["n"] == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Ich arbeite an der Auswahl."
+
+        r.lena.reply = reply
+        r.say("@Lena Suche auf https://example.org/results eine Option mit Preis und Link")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertEqual(i["n"], 4)
+        said = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
+        self.assertIn("Abschluss noch nicht verifiziert", said)
+        self.assertIn("https://example.org/item/3", said)
+        self.assertNotIn("Ich hänge", said)
+
+    def test_standalone_json_goal_finish_executes_once_through_verification(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/overview"
+        browser.title = "Übersicht"
+        browser.text = "Das Dokument wurde sichtbar geprüft."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        i = {"n": 0}
+
+        def reply(body):
+            i["n"] += 1
+            if i["n"] == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "status", "need": "Prüfstatus nachweisen"}]}}]}
+            if i["n"] == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return json.dumps({"action": "goal_finish", "summary": "Das Dokument ist geprüft.",
+                               "proofs": [{"id": "status", "url": browser.url,
+                                           "quote": "Dokument wurde sichtbar geprüft"}]})
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe https://example.org/overview")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(i["n"], 3)
+        said = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
+        self.assertIn("Das Dokument ist geprüft.", said)
+        self.assertNotIn('{"action": "goal_finish"', said)
 
     def test_goal_evidence_must_quote_same_seen_page_for_every_requirement(self):
         browser = FakeBrowser()
@@ -2386,7 +2495,7 @@ class RoomContract(unittest.TestCase):
         r.idle()
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")
-        self.assertIn("hänge", " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena"))
+        self.assertIn("Abschluss noch nicht verifiziert", " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena"))
         before = len(r.noah.chats())
         r.say("Und?")
         r.idle()

@@ -70,6 +70,7 @@ class FakeBrowser:
         self.title = "leer"
         self.text = ""
         self.scroll = 0
+        self.screenshot_requests = 0
         self.password = False
         self.blocked = False
         self.clicks = []
@@ -116,6 +117,8 @@ class FakeBrowser:
             def do_GET(self):
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == "/screenshot.jpg":
+                    with fake.lock:
+                        fake.screenshot_requests += 1
                     return self._send(200, JPEG, "image/jpeg")
                 if parsed.path == "/navigate":
                     url = urllib.parse.parse_qs(parsed.query).get("url", ["about:blank"])[0]
@@ -2469,13 +2472,38 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena Untersuche https://example.org/large und prüfe die Dokumente")
         r.idle()
         observation = next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool")
-        self.assertLess(len(observation), 6200)
+        self.assertLess(len(observation), 3900)
         self.assertIn("Weitere echte Seitenlinks", observation)
         self.assertIn("browser_read", observation)
+        self.assertNotIn(" (100,", observation)  # index is enough; no redundant pixel coords
+        self.assertLessEqual(observation.count("\n- Dokument"), 2)  # no irrelevant link flood
+        self.assertEqual(browser.screenshot_requests, 0)  # text-only CPU goal
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         page = goal["evidence_pages"][-1]
         self.assertGreaterEqual(len(page["links"]), 20)
         self.assertIn("Sehr langer Seitentext", page["text"])
+
+    def test_browser_goal_step_screenshot_opt_in_still_captures_jpeg(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/article"
+        browser.text = "Dokument ist sichtbar."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_BROWSER_STEP_SHOTS="1")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+
+        def reply(body):
+            if len(r.lena.chats()) == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Ich benötige noch einen Beleg."
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe https://example.org/article")
+        r.idle()
+        self.assertGreaterEqual(browser.screenshot_requests, 1)
+        parts = [p for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p["k"] == "step"]
+        self.assertTrue(parts and parts[0].get("shot"))
 
     def test_goal_search_then_missing_calls_still_opens_browser_without_user_retry(self):
         """Regression: external search is not a page snapshot. Text-only
@@ -2544,19 +2572,25 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(all(x["tools"] == requests[0]["tools"] for x in requests))
         self.assertNotIn("results", goal)
 
-    def test_standalone_json_navigation_executes_once_without_extra_inference(self):
+    def test_standalone_json_navigation_requires_native_tool_call(self):
+        """Text-JSON must never open URLs or run searches on its own."""
         browser = FakeBrowser()
         browser.text = "Der Status wurde bestätigt."
         r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
         self.addCleanup(r.close)
         self.addCleanup(browser.close)
         calls = []
+        before = []
 
         def reply(body):
             calls.append(body)
             if len(calls) == 1:
                 return '{"action":"browser_open","url":"https://example.org/result"}'
             if len(calls) == 2:
+                before.append(browser.url)
+                return {"tool_calls": [{"name": "browser_open", "arguments": {
+                    "url": "https://example.org/result"}}]}
+            if len(calls) == 3:
                 return {"tool_calls": [{"name": "goal_requirements", "arguments": {
                     "requirements": [{"id": "state", "need": "Status aus Seite belegen"}]}}]}
             return {"tool_calls": [{"name": "goal_finish", "arguments": {
@@ -2569,7 +2603,8 @@ class RoomContract(unittest.TestCase):
         r.idle()
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(before, ["about:blank"])
         self.assertEqual(browser.url, "https://example.org/result")
         steps = [p for m in r.messages() if m.get("from") == "lena"
                  for p in m.get("parts") or [] if p["k"] == "step"]

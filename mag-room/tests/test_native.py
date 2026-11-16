@@ -332,6 +332,8 @@ class RoomContract(unittest.TestCase):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
         self.addCleanup(r.close)
         self.assertEqual(r.messages(), [])
+        r.lena.reply = lambda body: "Noah, welche neue Idee hast du?"
+        r.noah.reply = lambda body: "Ein interessanter Gedanke: Wir können uns ohne Chris unterhalten."
         self.assertEqual(r.api("PUT", "/api/settings", {
             "web": False, "auto_chat": True, "bot_rounds": 3})[0], 200)
         r.wait(lambda: any(m.get("from") == "lena" or m.get("from") == "noah"

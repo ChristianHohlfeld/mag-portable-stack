@@ -3426,6 +3426,9 @@ private:
       t.visible = true;
       ensure_message(b, t, reason);
       for (size_t i = 0; i < res.calls.size(); ++i) {
+        // A real tool call ended the consecutive no-call streak, even when
+        // the tool itself fails (e.g. network down or invalid arguments).
+        t.missing_tool_calls = 0;
         const auto &c = res.calls[i];
         Val args = jparse(c.arguments.empty() ? "{}" : c.arguments);
         const bool bad_args = !c.valid || !args.isObj();

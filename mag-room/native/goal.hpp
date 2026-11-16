@@ -596,6 +596,20 @@ inline bool url_seen(const Val &g, std::string url) {
   url = lower(trim(url));
   while (!url.empty() && url.back() == '/') url.pop_back();
   if (url.size() < 8 || url.compare(0, 4, "http") != 0) return false;
+  // Explicit URL provenance is stronger than checking whether an arbitrary
+  // string appears in a rolling page-text buffer.
+  if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr())
+    for (const auto &page : pages->asArr()) {
+      if (const Val *links = page.find("links"); links && links->isArr())
+        for (const auto &link : links->asArr()) {
+          std::string observed = lower(trim(jstr(link, "url")));
+          while (!observed.empty() && observed.back() == '/') observed.pop_back();
+          if (observed == url) return true;
+        }
+      std::string observed_page = lower(trim(jstr(page, "url")));
+      while (!observed_page.empty() && observed_page.back() == '/') observed_page.pop_back();
+      if (observed_page == url) return true;
+    }
   const std::string seen = lower(jstr(g, "seen"));
   if (seen.find(url) != std::string::npos) return true;
   const auto q = url.find('?');

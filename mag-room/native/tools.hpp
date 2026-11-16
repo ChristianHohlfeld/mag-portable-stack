@@ -9,6 +9,7 @@
 #include "vm.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <regex>
 #include <set>
 
@@ -638,6 +639,24 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       const Val *steps = args.find("steps");
       if (!steps || !steps->isArr() || steps->asArr().empty() || steps->asArr().size() > 4)
         return fail("browser_flow erwartet 1 bis 4 Schritte.");
+      // Validate the entire sequence BEFORE opening a URL or clicking.
+      // Otherwise a bad later step can leave the browser half-mutated.
+      for (size_t i = 0; i < steps->asArr().size(); ++i) {
+        const Val &step = steps->asArr()[i];
+        const std::string op = jstr(step, "op");
+        const double dy = jnum(step, "dy", 600);
+        const double seconds = jnum(step, "seconds", 1);
+        const bool open = i == 0 && op == "open" && ctx.web &&
+                          starts_with(jstr(step, "url"), "https://") &&
+                          jstr(step, "url").size() > 8;
+        const bool link = i == 0 && op == "link_click" && step.find("n") &&
+                          jnum(step, "n", -1) >= 0;
+        const bool scroll = op == "scroll" && std::isfinite(dy) && std::abs(dy) <= 5000;
+        const bool wait = op == "wait" && std::isfinite(seconds) &&
+                          seconds >= 0 && seconds <= 15;
+        if (!step.isObj() || !(open || link || scroll || wait))
+          return fail("Browserfolge vollständig abgelehnt: unsicherer oder ungültiger Teilschritt.");
+      }
       bool navigated = false;
       for (size_t i = 0; i < steps->asArr().size(); ++i) {
         if (ctx.cancel && ctx.cancel->stopped()) return fail("Abgebrochen (Stop).");

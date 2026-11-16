@@ -2153,6 +2153,45 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
 
+    def test_generic_goal_plan_rejects_early_finish_then_persists_progress(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/status"
+        browser.title = "Status"
+        browser.text = "Auftrag ist abgeschlossen und dokumentiert."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = []
+
+        def reply(body):
+            i = len(calls)
+            calls.append(body)
+            if i == 0:
+                return {"tool_calls": [{"name": "goal_plan", "arguments": {"steps": [
+                    {"id": "visit", "action": "Status-Seite ansehen"}]}}]}
+            if i == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {"requirements": [
+                    {"id": "status", "need": "Abschluss ist dokumentiert"}]}}]}
+            if i == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i == 3 or i == 5:
+                return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                    "summary": "Der Abschluss ist dokumentiert.",
+                    "proofs": [{"id": "status", "url": browser.url,
+                                "quote": "Auftrag ist abgeschlossen und dokumentiert"}]}}]}
+            return {"tool_calls": [{"name": "goal_step", "arguments": {
+                "id": "visit", "status": "done", "note": "Status auf der Seite gesehen"}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe https://example.org/status")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(goal["plan"][0]["status"], "done")
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m.get("parts") or []
+                 if p["k"] == "step" and p["tool"] == "goal_finish"]
+        self.assertEqual([p["state"] for p in steps], ["error", "ok"])
+
     def test_generic_goal_proofs_must_cover_all_requirements_at_same_seen_url(self):
         browser = FakeBrowser()
         browser.url = "https://example.org/report"

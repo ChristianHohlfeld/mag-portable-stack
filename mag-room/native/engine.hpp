@@ -1855,8 +1855,16 @@ private:
     }
     Cancel never;
     const Val tools = tools_for(me);
+    // A visual side request changes the same llama.cpp slot state even when
+    // its messages are NOT appended to the chat wire. Save the active slot
+    // once for the batch, then restore it after all captions, just like peer
+    // review. One extra file per bot is reused; never overwrite the warm
+    // prefix file with a divergent image-caption cache.
+    std::lock_guard<std::mutex> inference(b.inference_mu);
+    const std::string backup = "mag-aux-image-" + b.id + ".bin";
+    bool saved_slot = false;
     for (auto &job : todo) {
-      if (cancel && cancel->stopped()) return;
+      if (cancel && cancel->stopped()) break;
       // The same picture was posted and described before (or a moment ago, in this pass): it is the same description.
       Val now;
       if (room_.get(job.message, now)) {
@@ -1906,17 +1914,34 @@ private:
       if (!tools.asArr().empty()) body["tools"] = tools;
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = jbool(me, "thinking", false) ? 1500 : 320;
-      // After a deploy the server may have to read the whole log again before it gets to the picture.
-      std::lock_guard<std::mutex> inference(b.inference_mu);
+      if (!saved_slot) {
+        std::string error;
+        if (!llm::slot_save(b.backend, backup, &error)) {
+          logf("engine: " + b.id + " defer image caption: cannot preserve KV slot (" +
+               clip(error, 160) + ")");
+          return; // image remains undescribed; do not risk discarding conversation cache
+        }
+        saved_slot = true;
+      }
       const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
       if (!res.ok()) {
         // The model did not get to answer (stopped, too slow, away): the picture stays to be described.
         logf("engine: " + b.id + " could not describe " + job.name + ": " + (res.cancelled ? "cancelled" : res.error));
-        return;
+        break;
       }
       std::string text = trim(res.calls.empty() ? res.content : "");
       for (auto &c : text) if (c == '\n' || c == '\r') c = ' ';
       settle(job.message, job.file, clip(text, 900));
+    }
+    if (saved_slot) {
+      std::string error;
+      if (!llm::slot_restore(b.backend, backup, &error)) {
+        set_kv(b, "cold");
+        logf("engine: " + b.id + " image caption KV restore failed (" +
+             clip(error, 160) + "); next request will rebuild prompt");
+      } else {
+        set_kv(b, "warm");
+      }
     }
   }
 
@@ -2099,7 +2124,21 @@ private:
     body["chat_template_kwargs"] = template_kwargs(me);
     body["max_tokens"] = jbool(me, "thinking", false) ? 1200 : 40;
     std::lock_guard<std::mutex> inference(b.inference_mu);
+    const std::string backup = "mag-aux-image-" + b.id + ".bin";
+    std::string error;
+    if (!llm::slot_save(b.backend, backup, &error)) {
+      look.error = "Bildortung zurückgestellt: KV-Zustand konnte nicht gesichert werden.";
+      logf("engine: " + b.id + " cannot save image locator KV state: " + clip(error, 160));
+      return;
+    }
     const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
+    error.clear();
+    if (!llm::slot_restore(b.backend, backup, &error)) {
+      set_kv(b, "cold");
+      look.error = "Bildortung fehlgeschlagen: vorheriger KV-Zustand konnte nicht wiederhergestellt werden.";
+      logf("engine: " + b.id + " cannot restore image locator KV state: " + clip(error, 160));
+      return;
+    }
     if (!res.ok()) {
       logf("engine: " + b.id + " could not look for a thing: " + (res.cancelled ? "cancelled" : res.error));
       look.error = "Der Bot konnte gerade nicht hinsehen. Tippe das Objekt im Foto an.";

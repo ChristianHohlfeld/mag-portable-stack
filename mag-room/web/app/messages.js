@@ -7,6 +7,8 @@
   let pinned = true, unread = 0;
   const nodes = new Map(); // message id -> article
   const dirty = new Set(); // "id:part" text parts waiting for a markdown pass
+  const groupPrefs = new Map(); // goal ID / individual non-goal turn -> explicit user expansion
+  const goalPhases = new Map(); // last painted state to avoid redrawing groups on every status pulse
 
   // ---- markdown -----------------------------------------------------------
   if (window.marked) marked.setOptions({ gfm: true, breaks: true });
@@ -87,11 +89,11 @@
     enter: 'Enter drücken', what: 'Was', shop: 'Shop', amount_eur: 'Betrag (€)', action: 'Aktion', name: 'Name', scope: 'Umfang', fact: 'Notiz', title: 'Titel' };
   const INPUT_VALUE = { square: 'quadratisch', wide: 'quer', tall: 'hoch', first: 'erstes Bild', reference: 'Figur', newest: 'neuestes Video', true: 'ja', false: 'nein' };
   function stepTime(step) { return MAG.stopwatch((step.t1 || Date.now()) - (step.t0 || Date.now())); }
-  function buildStep(m, index) {
+  function buildStep(m, index, grouped = false) {
     const step = m.parts[index];
     // A plugin call that changes something waits here for a yes or a no (not one a restart ended).
     const ask = step.state === 'running' ? step.approval : null;
-    const node = el('details', { class: 'step ' + step.state + (ask ? ' asking' : ''), dataset: { part: index } });
+    const node = el('details', { class: 'step ' + step.state + (ask ? ' asking' : ''), dataset: { part: index, message: m.id } });
     const decide = (decision) => (e) => {
       e.preventDefault();
       e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { b.disabled = true; });
@@ -144,7 +146,7 @@
       const failed = step.state === 'error' ? el('div', { class: 'fail', text: (step.output || '').split('\n')[0].slice(0, 200) }) : null;
       const body = el('div', { class: 'body' }, failed);
       node.append(body);
-      if (S.you.role === 'owner') {
+      if (S.you.role === 'owner' && !grouped) {
         const slot = el('div', { class: 'live-slot' });
         body.prepend(slot);
         const swap = () => {
@@ -259,6 +261,128 @@
     return at;
   }
   const lastLines = (text) => text.replace(/\s+$/, '').split('\n').slice(-3).join('\n');
+
+
+  // ---- one compact task group for every run of tools ----------------------
+  // A browser goal can span several bot messages (after a retry/deploy).
+  // New messages carry the immutable server goal_id; legacy/unrelated tool
+  // turns get a separate per-message group instead of a page of step cards.
+  const groupKey = (m) => m.goal_id ? 'goal:' + m.from + ':' + m.goal_id : 'turn:' + m.id;
+  const stepsOf = (m) => (m.parts || []).map((p, i) => ({ m, p, i })).filter((x) => x.p.k === 'step');
+  function groupMembers(m) {
+    const key = groupKey(m);
+    return [...S.messages.values()].filter((x) => x.from === m.from && groupKey(x) === key)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+  function groupEntries(m) { return groupMembers(m).flatMap(stepsOf); }
+  function groupAnchor(m) {
+    return groupMembers(m).find((x) => (x.parts || []).some((p) => p.k === 'step')) || m;
+  }
+  function groupInfo(m) {
+    const entries = groupEntries(m), members = groupMembers(m), bot = MAG.bot(m.from),
+      goal = m.goal_id && bot?.goal?.id === m.goal_id ? bot.goal : null;
+    const unfinished = entries.some(({ p }) => p.state === 'running') || members.some((x) => x.state === 'streaming');
+    const pending = goal?.progress === 'paused' || goal?.progress === 'stalled';
+    const active = unfinished || (goal && (goal.state === 'pending' || goal.state === 'active') && !pending);
+    const ended = goal && ['done', 'blocked', 'ended'].includes(goal.state);
+    const failed = entries.some(({ p }) => ['error', 'timeout', 'cancelled'].includes(p.state)) || members.some((x) => x.state === 'error');
+    const state = pending ? 'paused' : active ? 'running' : ended ? (goal.state === 'done' ? 'done' : 'paused')
+      : failed && members.every((x) => x.state !== 'streaming') ? 'paused' : 'done';
+    const current = entries.findLastIndex(({ p }) => p.state === 'running' && p.approval)
+      >= 0 ? entries.findLastIndex(({ p }) => p.state === 'running' && p.approval)
+      : Math.max(0, entries.findLastIndex(({ p }) => p.state === 'running') >= 0
+          ? entries.findLastIndex(({ p }) => p.state === 'running') : entries.length - 1);
+    const first = entries[0]?.p.t0 || members[0]?.ts || Date.now();
+    const last = entries[entries.length - 1]?.p;
+    const finished = (state === 'running' || state === 'paused' && unfinished) ? Date.now()
+      : last?.t1 || last?.t0 || first;
+    return { entries, state, current, first, finished, last, hasBrowser: entries.some(({ p }) => isBrowser(p)),
+      awaitingApproval: entries.some(({ p }) => p.state === 'running' && p.approval) };
+  }
+  function goalGroup(m) {
+    const info = groupInfo(m), key = groupKey(m);
+    if (!info.entries.length) return null;
+    const manual = groupPrefs.get(key), active = info.state === 'running' || info.state === 'paused' && info.entries.some(({ p }) => p.state === 'running');
+    const node = el('details', { class: 'goal-group ' + info.state, dataset: { groupkey: key, since: info.first,
+      done: info.finished, status: info.state } });
+    const duration = el('span', { class: 'goal-duration', text: MAG.stopwatch(info.finished - info.first) });
+    const title = el('span', { class: 'goal-title', text: 'Auftragsschritte' });
+    const latest = el('span', { class: 'goal-latest', text: info.last?.title || info.last?.tool || '' });
+    const status = info.state === 'running' ? 'Läuft' : info.state === 'paused' ? 'Pausiert' : 'Abgeschlossen';
+    const count = info.entries.length === 1 ? '1 Schritt' : info.entries.length + ' Schritte';
+    node.append(el('summary', { 'aria-label': 'Auftragsschritte ' + status + ', ' + count },
+      el('span', { class: 'goal-status-dot' }),
+      title,
+      el('span', { class: 'goal-status', text: status }),
+      el('span', { class: 'goal-count', text: count }),
+      duration,
+      el('span', { class: 'goal-chevron', html: MAG.icons.chev }),
+      latest));
+    const body = el('div', { class: 'goal-steps' });
+    info.entries.forEach(({ m: owner, i }, j) => {
+      const step = buildStep(owner, i, true);
+      if (j === info.current) step.classList.add('current');
+      body.append(step);
+    });
+    node.append(body);
+    node.open = manual === undefined ? active : manual;
+    node.classList.toggle('history-open', manual === true);
+    node.querySelector(':scope > summary').addEventListener('click', () => {
+      // A human click, not a synthetic toggle event, is the only override.
+      const next = !node.open;
+      groupPrefs.set(key, next);
+      node.classList.toggle('history-open', next);
+    });
+    return node;
+  }
+  function goalBrowser(m) {
+    const info = groupInfo(m);
+    if (!info.hasBrowser || S.you.role !== 'owner') return null;
+    const key = groupKey(m), node = el('details', { class: 'goal-browser', dataset: { groupkey: key } });
+    const active = info.state === 'running' && !info.awaitingApproval;
+    node.append(el('summary', {}, el('span', { text: 'Live-Browser' }),
+      el('span', { class: 'goal-browser-caption', text: active ? 'Live bedienen' : 'Öffnen' }),
+      el('span', { class: 'goal-chevron', html: MAG.icons.chev })));
+    const slot = el('div', { class: 'goal-browser-slot' });
+    node.append(slot);
+    // The browser is deliberately BELOW, never inside the foldable step
+    // history. It stays accessible when the task summary is collapsed.
+    node.addEventListener('toggle', () => {
+      if (node.open && !slot.firstChild) slot.append(liveIn(m.from, 'group-live-' + m.from));
+      else if (!node.open) slot.replaceChildren();
+    });
+    node.open = active;
+    return node;
+  }
+  function taskPartLocation(m, index) {
+    return stepsOf(m).some(({ i }) => i === index) ? groupKey(m) : '';
+  }
+  function locateStep(m, index) {
+    const owner = groupAnchor(m), article = nodes.get(owner.id);
+    return article?.querySelector('.goal-group .step[data-message="' + m.id + '"][data-part="' + index + '"]')
+      || nodes.get(m.id)?.querySelector('.body > .step[data-part="' + index + '"]');
+  }
+  function refreshGroup(m) {
+    if (!(m.parts || []).some((p) => p.k === 'step') && !m.goal_id) return;
+    const anchor = groupAnchor(m), article = nodes.get(anchor.id);
+    if (!article) return;
+    const fresh = goalGroup(anchor), old = article.querySelector('.goal-group');
+    if (!fresh) return;
+    const oldBrowser = article.querySelector('.goal-browser');
+    const browser = goalBrowser(anchor);
+    // The live viewer's WebRTC node is reused, not recreated for every
+    // tool-state event. A closed task keeps a one-tap browser launcher.
+    const live = oldBrowser?.querySelector('.live');
+    if (live && browser?.open) browser.querySelector('.goal-browser-slot')?.append(live);
+    if (old) old.replaceWith(fresh);
+    else {
+      const body = article.querySelector(':scope > .body');
+      if (body) body.prepend(fresh);
+    }
+    if (oldBrowser) { if (browser) oldBrowser.replaceWith(browser); else oldBrowser.remove(); }
+    else if (browser) fresh.after(browser);
+    goalPhases.set(groupKey(m), groupInfo(m).state);
+  }
 
   // ---- pages: a bot's HTML, running in a frame from the bot's own site -----
   // Same fingerprint as the server (FNV-1a over the bytes without whitespace):
@@ -869,7 +993,19 @@
       node.append(m.model3d.kind === 'scene' ? buildScene(m) : build3d(m));
     } else {
       const body = el('div', { class: 'body' });
-      (m.parts || []).forEach((p, i) => body.append(buildPart(m, i)));
+      const anchor = groupAnchor(m);
+      let placed = false;
+      (m.parts || []).forEach((p, i) => {
+        if (p.k === 'step') {
+          if (!placed && anchor.id === m.id) {
+            placed = true;
+            const group = goalGroup(m);
+            if (group) body.append(group);
+            const browser = goalBrowser(m);
+            if (browser) body.append(browser);
+          }
+        } else body.append(buildPart(m, i));
+      });
       if (!(m.parts || []).length && m.text) body.append(markdown(m.role === 'bot' ? tidy(m.text) : m.text));
       node.append(body);
       placePages(m, body);
@@ -1006,8 +1142,10 @@
       old.querySelectorAll('details[open]').forEach((d) => {
         const twin = d.classList.contains('think') ? node.querySelector('.think')
           : d.classList.contains('codeblock') ? node.querySelectorAll('details.codeblock')[[...old.querySelectorAll('details.codeblock')].indexOf(d)]
+          : d.classList.contains('goal-group') ? node.querySelector('.goal-group')
+          : d.classList.contains('goal-browser') ? node.querySelector('.goal-browser')
           : node.querySelector('details[data-part="' + d.dataset.part + '"]');
-        if (twin) twin.open = true;
+        if (twin && (!d.classList.contains('goal-group') || groupPrefs.has(d.dataset.groupkey))) twin.open = true;
       });
       grow(() => { if (keep(old, node)) node = old; else old.replaceWith(node); });
     } else {
@@ -1017,6 +1155,7 @@
       grow(() => list.insertBefore(node, after), fresh && !after);
     }
     nodes.set(m.id, node);
+    if (m.goal_id && groupAnchor(m).id !== m.id) refreshGroup(m);
     empty.hidden = S.messages.size > 0;
     paintDays();
     MAG.speaking?.paint();
@@ -1081,9 +1220,13 @@
     activity.querySelectorAll('.act-row').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
     list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
-      const article = node.closest('.msg'), m = S.messages.get(article?.dataset.id);
+      const m = S.messages.get(node.dataset.message || node.closest('.msg')?.dataset.id);
       const step = m?.parts?.[+node.dataset.part];
-      if (step) node.querySelector('.time').textContent = stepTime(step);
+      if (step && node.querySelector('.time')) node.querySelector('.time').textContent = stepTime(step);
+    });
+    list.querySelectorAll('.goal-group.running').forEach((node) => {
+      const target = node.querySelector('.goal-duration');
+      if (target) target.textContent = MAG.stopwatch(Date.now() - +node.dataset.since);
     });
   }, 1000);
 
@@ -1101,13 +1244,28 @@
   });
   MAG.on('reset', renderAll);
   MAG.on('message', (m) => upsert(m, !nodes.has(m.id)));
-  MAG.on('gone', (id) => { nodes.get(id)?.remove(); nodes.delete(id); empty.hidden = S.messages.size > 0; paintDays(); });
+  MAG.on('gone', (id) => {
+    nodes.get(id)?.remove(); nodes.delete(id);
+    // The deleted message may have been the anchor for a multi-turn goal.
+    // Rebuild remaining groups using their next historical owner.
+    for (const m of S.messages.values()) {
+      if (!m.goal_id || !(m.parts || []).some((p) => p.k === 'step')) continue;
+      if (groupAnchor(m).id === m.id) upsert(m, false);
+    }
+    empty.hidden = S.messages.size > 0; paintDays();
+  });
   MAG.on('delta', (m, part) => { dirty.add(m.id + ':' + part); schedule(); });
   // A model's thoughts are its own: raw, often English, never shown in the chat (Chris, 2026-11-12).
   MAG.on('step', (m, part) => {
     const node = nodes.get(m.id);
     if (!node) return;
     flush();
+    if (taskPartLocation(m, part)) {
+      const anchor = groupAnchor(m);
+      if (!nodes.get(anchor.id)?.querySelector('.goal-group')) upsert(anchor, false);
+      else refreshGroup(m);
+      return;
+    }
     const body = node.querySelector('.body'), old = body.querySelector(':scope > [data-part="' + part + '"]'), fresh = buildStep(m, part);
     if (old) {
       fresh.open = old.open;
@@ -1125,7 +1283,7 @@
     markStreaming(node, m);
   });
   MAG.on('step_output', (m, part, text) => {
-    const node = nodes.get(m.id)?.querySelector('.body > [data-part="' + part + '"]');
+    const node = locateStep(m, part);
     if (!node) return;
     const out = node.querySelector('pre.out'), peek = node.querySelector('.peek');
     if (!out) return;
@@ -1136,7 +1294,14 @@
     });
     if (node.open && follow) out.scrollTop = out.scrollHeight;
   });
-  MAG.on('bots', paintActivity);
+  MAG.on('bots', () => {
+    paintActivity();
+    for (const m of S.messages.values()) {
+      if (!m.goal_id || groupAnchor(m).id !== m.id) continue;
+      const phase = groupInfo(m).state, key = groupKey(m);
+      if (goalPhases.get(key) !== phase) refreshGroup(m);
+    }
+  });
   MAG.on('older', () => {
     const before = scroller.scrollHeight;
     const ordered = [...S.messages.values()].sort((a, b) => (a.id < b.id ? -1 : 1));

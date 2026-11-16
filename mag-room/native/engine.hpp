@@ -1859,23 +1859,7 @@ private:
       }
       Val body = Val::object();
       body["messages"] = msgs;
-      if (!tools.asArr().empty()) {
-        if (driving && t.finish_recovery) {
-          // A full catalog can defeat "tool_choice=required" in local
-          // backends. Give the model a small, universal completion/recheck
-          // palette, not another many-minute generic deliberation.
-          static const std::set<std::string> finish_tools = {
-              "goal_finish", "goal_requirements", "goal_step",
-              "browser_look", "browser_read", "browser_click",
-              "browser_open", "browser_scroll", "goal_blocked"};
-          Val narrowed = Val::array();
-          for (const auto &def : tools.asArr()) {
-            const Val *fn = def.find("function");
-            if (fn && finish_tools.count(jstr(*fn, "name"))) narrowed.push(def);
-          }
-          body["tools"] = narrowed;
-        } else body["tools"] = tools;
-      }
+      if (!tools.asArr().empty()) body["tools"] = tools;
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = jbool(me, "thinking", false) ? 1500 : 320;
       // After a deploy the server may have to read the whole log again before it gets to the picture.
@@ -3038,7 +3022,23 @@ private:
            " tool_choice=" + (driving ? "required" : "auto") + " reason=" + reason);
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
-      if (!tools.asArr().empty()) body["tools"] = tools;
+      if (!tools.asArr().empty()) {
+        if (driving && t.finish_recovery) {
+          // A full catalog can defeat "tool_choice=required" in local
+          // backends. Give the model a small, universal completion/recheck
+          // palette, not another many-minute generic deliberation.
+          static const std::set<std::string> finish_tools = {
+              "goal_finish", "goal_requirements", "goal_step",
+              "browser_look", "browser_read", "browser_click",
+              "browser_open", "browser_scroll", "goal_blocked"};
+          Val narrowed = Val::array();
+          for (const auto &def : tools.asArr()) {
+            const Val *fn = def.find("function");
+            if (fn && finish_tools.count(jstr(*fn, "name"))) narrowed.push(def);
+          }
+          body["tools"] = narrowed;
+        } else body["tools"] = tools;
+      }
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = room_.cfg.max_tokens;
       if (driving) {

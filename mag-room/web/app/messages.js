@@ -5,6 +5,8 @@
   const { MAG } = window, { el, $, state: S } = MAG;
   let list, scroller, jump, activity, empty, olderBtn;
   let pinned = true, unread = 0;
+  let lastScrollTop = 0, touchY = null;
+  let inputDirection = 'none', inputUntil = 0; // only an explicit user gesture may re-pin
   const nodes = new Map(); // message id -> article
   const dirty = new Set(); // "id:part" text parts waiting for a markdown pass
   const groupPrefs = new Map(); // goal ID / individual non-goal turn -> explicit user expansion
@@ -49,22 +51,41 @@
   }
 
   // ---- scrolling ----------------------------------------------------------
-  const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 70;
-  function toBottom() { scroller.scrollTop = scroller.scrollHeight; pinned = true; unread = 0; paintJump(); }
+  // No 70px tolerance for *re*-pinning. A person who reads 20px up
+  // must stay there even when layout changes or an update shifts the page.
+  const atTrueEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 2;
+  function setScrollTop(top) {
+    scroller.scrollTop = top;
+    lastScrollTop = scroller.scrollTop; // programmatic scroll is never a user gesture
+  }
+  function toBottom() { setScrollTop(scroller.scrollHeight); pinned = true; unread = 0; paintJump(); }
   function paintJump() {
-    // A small round arrow above the composer; it carries words only when
-    // something new arrived below.
     jump.hidden = pinned;
     jump.classList.toggle('news', unread > 0);
     jump.lastChild.textContent = unread > 0 ? (unread === 1 ? 'Neue Nachricht' : unread + ' neue Nachrichten') : '';
   }
-  // Run a change to the timeline; follow it only when the reader was at the end.
+  // Keep the viewport anchored on the message the reader is looking at,
+  // even if a task history above gets rebuilt or expands in a live update.
+  function preserveReadingPosition(change) {
+    const viewport = scroller.getBoundingClientRect();
+    const anchor = [...list.children].find((node) => {
+      const r = node.getBoundingClientRect();
+      return r.bottom > viewport.top + 1 && r.top < viewport.bottom - 1;
+    });
+    const before = anchor?.getBoundingClientRect().top;
+    const previous = scroller.scrollTop;
+    change();
+    if (anchor?.isConnected && before !== undefined) {
+      const moved = anchor.getBoundingClientRect().top - before;
+      if (Math.abs(moved) >= 1) setScrollTop(scroller.scrollTop + moved);
+    } else setScrollTop(previous);
+  }
   function grow(change, isNewMessage) {
     const stick = pinned;
-    change();
-    if (stick) scroller.scrollTop = scroller.scrollHeight;
-    else if (isNewMessage) { unread++; paintJump(); }
-    else paintJump();
+    if (stick) { change(); setScrollTop(scroller.scrollHeight); }
+    else preserveReadingPosition(change);
+    if (!stick && isNewMessage) unread++;
+    paintJump();
   }
   MAG.scrollToEnd = () => toBottom();
 
@@ -1228,14 +1249,44 @@
   // ---- wiring -------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity'); empty = $('#empty'); olderBtn = $('#older');
+    // Scroll position alone is not intent: native anchoring or a group
+    // redraw can produce small downward scroll events. Only a fresh USER
+    // gesture toward the true bottom is allowed to re-enable follow mode.
+    const gesture = (dir) => {
+      inputDirection = dir;
+      inputUntil = performance.now() + 600;
+      if (dir === 'up' && pinned) { pinned = false; paintJump(); }
+    };
+    scroller.addEventListener('wheel', (e) => {
+      if (e.deltaY < -1) gesture('up');
+      else if (e.deltaY > 1) gesture('down');
+    }, { passive: true });
+    scroller.addEventListener('touchstart', (e) => { touchY = e.touches?.[0]?.clientY ?? null; }, { passive: true });
+    scroller.addEventListener('touchmove', (e) => {
+      const y = e.touches?.[0]?.clientY;
+      if (touchY !== null && y != null && Math.abs(y - touchY) > 2)
+        gesture(y > touchY ? 'up' : 'down');
+      if (y != null) touchY = y;
+    }, { passive: true });
+    scroller.addEventListener('keydown', (e) => {
+      if (['PageUp', 'ArrowUp', 'Home'].includes(e.key) || (e.key === ' ' && e.shiftKey)) gesture('up');
+      if (['PageDown', 'ArrowDown', 'End'].includes(e.key) || (e.key === ' ' && !e.shiftKey)) gesture('down');
+    });
     scroller.addEventListener('scroll', () => {
-      const now = nearBottom();
-      if (now !== pinned) { pinned = now; if (pinned) unread = 0; paintJump(); }
+      const current = scroller.scrollTop;
+      const up = current < lastScrollTop - 1, down = current > lastScrollTop + 1;
+      const userIntent = performance.now() <= inputUntil;
+      lastScrollTop = current;
+      if (up && userIntent && inputDirection === 'up' && pinned) {
+        pinned = false;
+        paintJump();
+      } else if (!pinned && down && userIntent && inputDirection === 'down' && atTrueEnd()) {
+        pinned = true; unread = 0; inputDirection = 'none'; paintJump();
+      }
     }, { passive: true });
     jump.addEventListener('click', toBottom);
     olderBtn.addEventListener('click', () => MAG.loadOlder().catch((x) => MAG.toast(x.message, true)));
-    // The keyboard and the composer change the viewport: stay at the end.
-    new ResizeObserver(() => { if (pinned) scroller.scrollTop = scroller.scrollHeight; }).observe(scroller);
+    new ResizeObserver(() => { if (pinned) setScrollTop(scroller.scrollHeight); }).observe(scroller);
   });
   MAG.on('reset', renderAll);
   MAG.on('message', (m) => upsert(m, !nodes.has(m.id)));

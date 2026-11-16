@@ -684,6 +684,7 @@ inline std::set<std::string> meaningful_words(std::string s) {
       "prüfe", "pruefe", "prüfen", "pruefen", "details", "gefundenen",
       "diese", "dieser", "dieses", "welche", "welcher", "welchen",
       "beste", "besten", "bestes", "einen", "einem", "einer", "eine",
+      "zwischen", "sowie", "mehrere", "nachweisen", "bestätigen", "bestaetigen",
       "alle", "zwei", "verschiedene", "diesem", "mit", "und", "oder",
       "auf", "aus", "bei", "von", "für", "zum", "zur", "der", "die", "das"};
   std::set<std::string> words;
@@ -756,8 +757,8 @@ inline bool discovery_only(const Val &g) {
   if (!jbool(g, "shopping")) return false;
   const std::string s = lower(jstr(g, "text"));
   return !(stem(s, "bestell") || stem(s, "kaufe") || stem(s, "bezahl") ||
-           stem(s, "buch") || stem(s, "abschließ") || stem(s, "abschliess") ||
-           stem(s, "versend") || stem(s, "schick") || stem(s, "lösch") ||
+           stem(s, "buche") || stem(s, "abschließ") || stem(s, "abschliess") ||
+           stem(s, "versend") || (s.find("schick mir") != std::string::npos) || stem(s, "lösch") ||
            stem(s, "klick") || s.find("warenkorb") != std::string::npos);
 }
 // Grounded deterministic safety net ONLY when a local model twice fails to
@@ -792,6 +793,25 @@ inline bool witnessed_completion(Val &g, std::string &answer) {
           !has_measure(c.name)) criteria = false;
       for (const auto &range : ranges_in(need))
         if (!measure_in(c.name, range)) criteria = false;
+      // An arbitrary natural-language requirement is not satisfied merely
+      // because a product has a name and a URL. Every substantive term must
+      // occur in the witnessed item, or denote an observed generic facet.
+      const auto words = meaningful_words(need);
+      const auto in_name = meaningful_words(c.name);
+      for (const auto &word : words) {
+        if (word == "maßbereich" || word == "abmessungen" || word == "breite" ||
+            word == "höhe" || word == "länge" || word == "durchmesser" ||
+            word == "größe" || word == "dimensions") {
+          if (!has_measure(c.name)) criteria = false;
+        } else if (word == "preisangabe" || word == "kosten" || word == "betrag") {
+          if (c.price.empty()) criteria = false;
+        } else if (word == "website" || word == "webseite" || word == "url" ||
+                   word == "shoplink" || word == "quelle") {
+          if (!direct_link(c.url)) criteria = false;
+        } else if (!in_name.count(word)) {
+          criteria = false;
+        }
+      }
       // A requested ratio is not implied by a matching width.
       static const std::regex ratio(R"(\b\d+\s*:\s*\d+\b)");
       std::smatch match;

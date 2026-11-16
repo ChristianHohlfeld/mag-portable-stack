@@ -47,7 +47,10 @@
       stagedBox.append(el('div', { class: 'staged failed' }, MAG.icon(f.file ? 'image' : 'camera'),
         el('span', { class: 'nm', text: f.why }),
         el('button', { class: 'pill', text: f.file ? 'Erneut senden' : 'Noch einmal', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); f.again(); } }),
-        f.file ? null : el('button', { class: 'pill', text: 'Kamera-App', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); shoot(null, false); } }),
+        f.file ? null : el('button', { class: 'pill', text: 'Kamera-App', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); shoot(); } }),
+        f.cameraRecovery ? el('button', { class: 'pill', text: 'Kamera im Browser (Notlösung)', onclick: () => {
+          failed = failed.filter((x) => x !== f); paintStaged(); shootInPage();
+        } }) : null,
         el('button', { class: 'x', 'aria-label': 'Verwerfen', html: MAG.icons.x, onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); } })));
     if (modeImage) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Format' });
@@ -130,11 +133,10 @@
       paintStaged();
     }
   }
-  // A phone's own camera app takes the page out of view; a phone short of
-  // memory may even reload it, and the photo is gone with the old page. So
-  // the page notes that the camera is open, and when it comes back without a
-  // photo it says so and offers the camera inside the browser, which no
-  // reload can take away.
+  // Use the operating system's native camera chooser on mobile. It offers
+  // autofocus, zoom, image processing and familiar controls; no competing
+  // getUserMedia camera sheet. A browser reload during the camera hand-off
+  // cannot be prevented on every phone, so keep a recovery route via Gallery.
   function pick(accept, capture, then) {
     const chooser = el('input', { type: 'file', accept, multiple: !capture && !then, hidden: true });
     if (capture) {
@@ -146,7 +148,11 @@
       done();
       const files = [...chooser.files];
       chooser.remove();
-      if (capture && !files.length) failed.push({ file: null, why: 'Die Kamera hat kein Foto zurückgegeben.', again: () => shoot(then) }), paintStaged();
+      if (capture && !files.length) {
+        failed.push({ file: null, cameraRecovery: true, why: 'Die Kamera hat kein Foto zurückgegeben.', again: () => pick('image/*', true, then) });
+        paintStaged();
+        return;
+      }
       await addFiles(files, then);
       then?.();
     });
@@ -154,64 +160,44 @@
     document.body.append(chooser);
     chooser.click();
   }
-
-  // A photo from the camera, taken inside this page on the phone too: the
-  // phone's own camera app takes the page out of view, and Android often
-  // drops a page in the background, the photo with it (Chris, 2026-11-14).
-  // The camera in the page cannot be lost that way. It takes the photo at the
-  // camera's full resolution where the browser can (ImageCapture), else the
-  // picture of the stream. Without a camera or permission the camera app is
-  // the way, and it stays one tap away in the sheet ("Kamera-App").
-  async function shoot(then, inPage = true) {
-    if (!inPage || !navigator.mediaDevices?.getUserMedia) return pick('image/*', true, then);
-    let facing = 'environment', stream = null, closed = false;
+  // Native is ALWAYS the primary camera. Some Android browsers discard
+  // the tab while the native camera is foregrounded; in that case no
+  // JavaScript can recover an unreturned file. Offer a minimal in-page
+  // camera ONLY after that failure (never as the normal camera path).
+  async function shootInPage(then) {
+    if (!navigator.mediaDevices?.getUserMedia) return shoot(then);
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 2048 }, height: { ideal: 1536 } },
+      audio: false,
+    }); }
+    catch { return shoot(then); }
     const video = el('video', { autoplay: true, playsinline: true, muted: true });
-    const note = el('small', { class: 'note' });
-    const open = async () => {
-      stream?.getTracks().forEach((t) => t.stop());
-      stream = await navigator.mediaDevices.getUserMedia({ audio: false,
-        video: { facingMode: facing, width: { ideal: 4096 }, height: { ideal: 3072 } } });
-      if (closed) { stream.getTracks().forEach((t) => t.stop()); return; }
-      video.srcObject = stream;
-    };
-    try { await open(); }
-    catch { return pick('image/*', true, then); }        // no camera here, or no permission: the camera app
-    const take = async () => {
-      const track = stream?.getVideoTracks()[0];
-      let blob = null;
-      if (track && 'ImageCapture' in window) {
-        try { blob = await new ImageCapture(track).takePhoto(); } catch { blob = null; }
-      }
-      if (!blob && video.videoWidth) {
-        const canvas = el('canvas', { width: video.videoWidth, height: video.videoHeight });
-        canvas.getContext('2d').drawImage(video, 0, 0);
-        blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
-      }
-      return blob;
-    };
-    const sheet = MAG.sheet('Kamera', (content, _, close) => {
-      const shutter = el('button', { class: 'shutter', 'aria-label': 'Auslösen', onclick: async () => {
-        shutter.disabled = true;
-        note.textContent = 'Foto wird aufgenommen …';
-        const blob = await take();
+    video.srcObject = stream;
+    const sheet = MAG.sheet('Kamera (Notlösung)', (body, _, close) => {
+      const button = el('button', { class: 'pill', text: 'Foto aufnehmen', onclick: async () => {
+        button.disabled = true;
+        let blob = null;
+        const track = stream.getVideoTracks()[0];
+        if (track && 'ImageCapture' in window) {
+          try { blob = await new ImageCapture(track).takePhoto(); } catch {}
+        }
+        if (!blob && video.videoWidth) {
+          const canvas = el('canvas', { width: video.videoWidth, height: video.videoHeight });
+          canvas.getContext('2d').drawImage(video, 0, 0);
+          blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', .92));
+        }
         close();
-        if (blob) await addFiles([new File([blob], 'kamera-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jpg', { type: blob.type || 'image/jpeg' })], then);
-        else { failed.push({ file: null, why: 'Das Bild der Kamera ließ sich nicht festhalten.', again: () => shoot(then) }); paintStaged(); }
+        if (blob) await addFiles([new File([blob], 'kamera.jpg', { type: blob.type || 'image/jpeg' })], then);
+        else { failed.push({ file: null, cameraRecovery: true, why: 'Das Ersatzbild konnte nicht aufgenommen werden.', again: () => shootInPage(then) }); paintStaged(); }
         then?.();
       } });
-      content.append(el('div', { class: 'shoot' }, video,
-        el('div', { class: 'shoot-bar' },
-          el('button', { class: 'pill', text: 'Kamera-App', title: 'Mit der Kamera-App des Handys', onclick: () => { close(); pick('image/*', true, then); } }),
-          shutter,
-          el('button', { class: 'pill', text: 'Wechseln', title: 'Vorder- oder Rückkamera', onclick: () => {
-            facing = facing === 'environment' ? 'user' : 'environment';
-            open().catch(() => { note.textContent = 'Diese Kamera lässt sich nicht öffnen.'; });
-          } })),
-        note));
+      body.append(el('div', { class: 'shoot' }, video, el('div', { class: 'shoot-bar' }, button)));
     });
     sheet.classList.add('camera-sheet');
-    sheet.addEventListener('closed', () => { closed = true; stream?.getTracks().forEach((t) => t.stop()); });
+    sheet.addEventListener('closed', () => stream.getTracks().forEach((t) => t.stop()));
   }
+  const shoot = (then) => pick('image/*', true, then);
 
   // ---- which object of the photo ------------------------------------------
   const picture = (src) => new Promise((done, fail) => { const i = new Image(); i.onload = () => done(i); i.onerror = () => fail(new Error('Bild lässt sich nicht lesen')); i.src = src; });
@@ -429,7 +415,7 @@
       const opened = +sessionStorage.getItem('mag-camera');
       sessionStorage.removeItem('mag-camera');
       if (opened && Date.now() - opened < 10 * 60 * 1000)
-        failed.push({ file: null, why: 'Das Foto der Kamera kam nicht an: der Browser hat die Seite während der Aufnahme neu geladen.', again: () => shoot() });
+        failed.push({ file: null, cameraRecovery: true, why: 'Die Kamera-App wurde unterbrochen. Falls das Foto gespeichert wurde, wähle es aus der Galerie – sonst nutze die Kamera-Notlösung.', again: () => pick('image/png,image/jpeg,image/webp', false) });
     } catch { /* private mode */ }
     resize();
     paintStaged();

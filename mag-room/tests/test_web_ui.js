@@ -76,8 +76,9 @@ assert.strictEqual(file.multiple, true);
 // A model capability, not the bot's id, selects its thinking control.
 const panelsSrc = read('panels.js');
 assert(!panelsSrc.includes("id === 'lena'"), 'thinking control must not depend on a bot id');
-assert(panelsSrc.includes("b.model?.thinking_control === 'toggle'"));
+assert(panelsSrc.includes("['toggle', 'effort'].includes(b.model?.thinking_control)"), 'both thinking styles have an explicit off switch');
 assert(panelsSrc.includes("b.model?.thinking_control === 'effort'"));
+assert(panelsSrc.includes("!b.thinking"), 'effort is unavailable until Thinking is enabled');
 
 window.close();
 console.log('web ui ok');

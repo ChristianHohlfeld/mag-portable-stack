@@ -421,6 +421,13 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
       if (kv.first != "action") args[kv.first] = kv.second;
   }
   if (!args.isObj()) return false;
+  // Textual JSON is not native tool calling. Recover only read-only page
+  // observations and server-validated goal bookkeeping; never a shell,
+  // click, form submit, purchase, plugin write or other side effect.
+  static const std::set<std::string> safe = {
+      "goal_requirements", "goal_plan", "goal_step", "goal_finish",
+      "goal_blocked", "browser_look", "browser_read"};
+  if (!safe.count(name)) return false;
   llm::ToolCall parsed;
   parsed.id = "call_json_" + random_hex(5);
   parsed.name = name;

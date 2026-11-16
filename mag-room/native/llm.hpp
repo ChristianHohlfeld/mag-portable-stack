@@ -522,11 +522,13 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   opt.headers = be.headers();
   opt.headers.push_back({"Content-Type", "application/json"});
   opt.headers.push_back({"Accept", "text/event-stream"});
-  opt.timeout_s = budget_s;
+  // budget_s <= 0 is intentional for slow local CPU inference. Long
+  // prefill/reasoning can be silent for minutes while still making progress.
+  // Keep connection errors and explicit Stop cancellation, but do not turn
+  // elapsed wall time or a quiet stream into a false model failure.
+  opt.timeout_s = budget_s <= 0 ? 0 : budget_s;
   opt.connect_timeout_s = 5;
-  // The server sends progress and pings while it works; minutes of silence
-  // mean it is gone.
-  opt.stall_s = 300;
+  opt.stall_s = budget_s <= 0 ? 0 : 300;
   opt.cancel = cancel;
   opt.on_data = [&](const char *data, size_t n) {
     // Stop already happened: a late body (the model was still thinking) is not

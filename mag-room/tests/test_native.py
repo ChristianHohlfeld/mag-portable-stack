@@ -76,6 +76,7 @@ class FakeBrowser:
         self.scroll_texts = []
         self.scroll_i = 0
         self.elements = []
+        self.links = []  # real DOM hrefs, including rendered items below viewport
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -105,7 +106,8 @@ class FakeBrowser:
                             row["kind"] = "password"
                         els.append(row)
                     return {"url": fake.url, "title": fake.title, "text": fake.text, "scroll": fake.scroll,
-                            "height": 4000, "vh": 900, "blocked": fake.blocked, "elements": els}
+                            "height": 4000, "vh": 900, "blocked": fake.blocked, "elements": els,
+                            "links": list(fake.links)}
 
             def _read(self):
                 n = int(self.headers.get("Content-Length", "0") or 0)
@@ -2152,6 +2154,85 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena danke")
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
+
+    def test_dom_links_below_viewport_are_visible_and_prove_item_urls(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.title = "Ergebnisse"
+        browser.text = "Hier sind die Ergebnisse. Einzelheiten stehen im Dokument."
+        browser.elements = [{"n": 1, "kind": "search", "label": "Suche",
+                             "x": 350, "y": 30}]
+        browser.links = [
+            {"name": "Passendes Material, Flachmaß 65 mm", "url": "https://example.org/item/65",
+             "price": "7,89 EUR"},
+            {"name": "Anderes Material, Flachmaß 60 mm", "url": "https://example.org/item/60",
+             "price": "6,99 EUR"}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        captured = []
+
+        def reply(body):
+            captured.append(body)
+            if len(captured) == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "item", "need": "Konkretes Material mit Preis und Link belegen"}]}}]}
+            if len(captured) == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Passendes Material, 65 mm, für 7,89 EUR.",
+                "proofs": [{"id": "item", "url": browser.url, "quote": "Passendes Material, Flachmaß 65 mm"}],
+                "items": [{"name": "Passendes Material, Flachmaß 65 mm",
+                           "url": "https://example.org/item/65", "price": "7,89 EUR"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Suche auf https://example.org/results ein Material mit Preis und Link")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(goal["results"][0]["url"], "https://example.org/item/65")
+        self.assertIn("https://example.org/item/65", json.dumps(captured[2]["messages"]))
+        self.assertEqual(goal["evidence_pages"][-1]["links"][0]["url"], "https://example.org/item/65")
+        self.assertEqual(len(captured), 3)
+
+    def test_opt_in_mmproj_browser_look_and_scroll_reach_model_as_images(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/status"
+        browser.title = "Status"
+        browser.text = "Der Seitenstatus ist erfolgreich bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_VISION="lena", MAG_ROOM_GOAL_EYES="1")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        captured = []
+
+        def reply(body):
+            captured.append(body)
+            if len(captured) == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "status", "need": "Seitenstatus nachweisen"}]}}]}
+            if len(captured) == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if len(captured) == 3:
+                return {"tool_calls": [{"name": "browser_scroll", "arguments": {"dy": 300}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Die Statusseite wurde überprüft.",
+                "proofs": [{"id": "status", "url": browser.url,
+                            "quote": "Seitenstatus ist erfolgreich bestätigt"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/status und prüfe den Seitenstatus")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(captured), 4)
+        def has_image(request):
+            return any(isinstance(m.get("content"), list) and
+                       any(part.get("type") == "image_url" for part in m["content"])
+                       for m in request["messages"])
+        self.assertFalse(has_image(captured[1]))
+        self.assertTrue(has_image(captured[2]))  # browser_look screenshot
+        self.assertTrue(has_image(captured[3]))  # scroll screenshot
 
     def test_goal_finishes_after_plain_text_via_grounded_narrow_tool_recovery(self):
         browser = FakeBrowser()

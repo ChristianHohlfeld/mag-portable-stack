@@ -125,11 +125,18 @@ inline Val schemas(bool has_vm, bool phone = false) {
     list.push(fn("browser_scroll", "Scroll the page vertically; positive dy scrolls down.",
                  R"({"type":"object","properties":{"dy":{"type":"integer"}}})"));
     list.push(fn("browser_back", "Go back one page.", R"({"type":"object","properties":{}})"));
+    list.push(fn("browser_flow", "One browser decision, followed by up to three read-only operations, one final page observation. "
+                  "steps: first open(url), link_click(n from the current page), scroll(dy), or wait(seconds); "
+                  "after that only scroll/wait. No typing, submits, payments or multiple clicks.",
+                  R"MAG({"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["open","link_click","scroll","wait"]},"url":{"type":"string"},"n":{"type":"integer"},"dy":{"type":"integer"},"seconds":{"type":"number"}},"required":["op"]}}},"required":["steps"]})MAG"));
+    list.push(fn("goal_requirements", "Before finishing any browser goal, derive ALL independently checkable user requirements. "
+                  "IDs must be unique. Persist these criteria once; after a user correction derive them anew.",
+                  R"MAG({"type":"object","properties":{"requirements":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"need":{"type":"string"}},"required":["id","need"]}}},"required":["requirements"]})MAG"));
     list.push(fn("goal_finish",
-                 "End the open task. Call this only when it is actually done. summary is one or two German sentences for Chris. "
-                 "A shopping or search task also needs items: each name and the url as it stood on a page you looked at. "
-                 "A url you did not see is rejected and the task stays open. Do not invent products or links.",
-                 R"({"type":"object","properties":{"summary":{"type":"string","description":"the result, in German, one or two sentences"},"items":{"type":"array","description":"shopping or search: the concrete items from pages you actually saw","items":{"type":"object","properties":{"name":{"type":"string"},"url":{"type":"string"},"price":{"type":"string"}},"required":["name","url"]}}},"required":["summary"]})"));
+                  "End the open task only after goal_requirements and page inspection. For EACH saved requirement provide "
+                  "one proof: id, exact quote from the visible page and the observed URL. Missing/unseen quotes reject finish. "
+                  "Summary is one or two German sentences. Shopping/search also needs witnessed item names and URLs.",
+                  R"MAG({"type":"object","properties":{"summary":{"type":"string"},"proofs":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"url":{"type":"string"},"quote":{"type":"string"}},"required":["id","url","quote"]}},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"url":{"type":"string"},"price":{"type":"string"}},"required":["name","url"]}}},"required":["summary","proofs"]})MAG"));
     list.push(fn("goal_blocked",
                  "End the open task because it cannot go on: a login, a captcha, or something that needs Chris (consent). "
                  "Say why in German. This is the only other way to stop; a plan in the text does not end the task.",
@@ -360,8 +367,8 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
       int score = 0;
       if (jbool(e, "password")) score += 8;
       if (kind == "search" || kind == "text" || kind == "textarea" || kind == "email") score += 5;
-      if (!jstr(e, "price").empty() || label.find("€") != std::string::npos || label.find("eur") != std::string::npos) score += 4;
-      if (!href.empty()) score += 2;
+      if (!jstr(e, "price").empty()) score += 1;
+      if (!href.empty()) score += 3;
       if (kind == "button" || kind == "submit") score += 2;
       std::string word;
       for (char c : goal_low + " ") {
@@ -376,9 +383,9 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
     }
   std::vector<Row> ranked = rows;
   std::sort(ranked.begin(), ranked.end(), [](const Row &a, const Row &b) { return a.score != b.score ? a.score > b.score : a.n < b.n; });
-  if (ranked.size() > 40) ranked.resize(40);
+  if (ranked.size() > 24) ranked.resize(24);
   std::sort(ranked.begin(), ranked.end(), [](const Row &a, const Row &b) { return a.n < b.n; });
-  std::string out = "Seite-Version: " + std::to_string(version) + "\nSeite: " + jstr(v, "title") + "\nURL: " + jstr(v, "url") + "\n";
+  std::string out = "Seite-Version: " + std::to_string(version) + "\nSeite: " + clip(jstr(v, "title"), 140) + "\nURL: " + jstr(v, "url") + "\n";
   if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; goal_blocked oder browser_login.\n";
   const double height = jnum(v, "height"), vh = jnum(v, "vh", 900), scroll = jnum(v, "scroll");
   if (height > vh) out += "Gescrollt " + std::to_string((long)scroll) + " von " + std::to_string((long)(height - vh)) + " px\n";
@@ -386,12 +393,10 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
   for (auto &row : ranked) {
     const Val &e = *row.e;
     const std::string href = jstr(e, "href"), price = jstr(e, "price");
-    const bool product = !price.empty() || href.find("/dp/") != std::string::npos || href.find("/gp/") != std::string::npos;
-    out += std::to_string(row.n) + " " + jstr(e, "kind") + " \"" + jstr(e, "label") + "\"";
-    if (product) {
-      if (!price.empty()) out += " " + price;
-      if (!href.empty()) out += " " + href;
-    }
+    // All links and metadata matter, not merely an e-commerce URL shape.
+    out += std::to_string(row.n) + " " + jstr(e, "kind") + " \"" + clip(jstr(e, "label"), 100) + "\"";
+    if (!price.empty()) out += " " + clip(price, 40);
+    if (!href.empty()) out += " " + clip(href, 120);
     out += " (" + std::to_string((long)jnum(e, "x")) + "," + std::to_string((long)jnum(e, "y")) + ")";
     if (jbool(e, "password")) out += " Passwortfeld";
     if (jbool(e, "checked")) out += " an";
@@ -620,6 +625,37 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       return look(ctx, vm);
     };
     auto nav = [&](Result r) { r.navigated = true; return r; };
+    if (name == "browser_flow") {
+      const Val *steps = args.find("steps");
+      if (!steps || !steps->isArr() || steps->asArr().empty() || steps->asArr().size() > 4)
+        return fail("browser_flow erwartet 1 bis 4 Schritte.");
+      bool navigated = false;
+      for (size_t i = 0; i < steps->asArr().size(); ++i) {
+        if (ctx.cancel && ctx.cancel->stopped()) return fail("Abgebrochen (Stop).");
+        const Val &s = steps->asArr()[i];
+        const std::string op = jstr(s, "op");
+        http::ClientResult r;
+        if (op == "open" && i == 0 && ctx.web && starts_with(jstr(s, "url"), "https://")) {
+          r = ctx.guests.browser(vm, "GET", "/navigate?url=" + url_encode(jstr(s, "url")), "", 60, ctx.cancel);
+          navigated = true;
+        } else if (op == "link_click" && i == 0 && s.find("n")) {
+          Val body = Val::object(); body["n"] = jnum(s, "n");
+          r = ctx.guests.browser(vm, "POST", "/click", mj::dump(body), 45, ctx.cancel);
+          navigated = true;
+        } else if (op == "scroll") {
+          Val body = Val::object(); body["dy"] = std::to_string((int)jnum(s, "dy", 600));
+          r = ctx.guests.browser(vm, "POST", "/scroll", mj::dump(body), 30, ctx.cancel);
+        } else if (op == "wait") {
+          Val body = Val::object(); body["ms"] = std::clamp(jnum(s, "seconds", 1) * 1000, 100.0, 15000.0);
+          r = ctx.guests.browser(vm, "POST", "/wait", mj::dump(body), 30, ctx.cancel);
+        } else return fail("browser_flow: nur eine erste Navigation (https-URL oder geprüfter Link), danach scroll/wait.");
+        if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+      }
+      Result final_page = look(ctx, vm);
+      final_page.navigated = navigated;
+      if (final_page.ok) final_page.text = "Browser-Folge abgeschlossen (" + std::to_string(steps->asArr().size()) + " Schritte).\n" + final_page.text;
+      return final_page;
+    }
     if (name == "browser_open") {
       const std::string url = jstr(args, "url");
       if (url.empty()) return fail("url fehlt.");

@@ -2023,6 +2023,7 @@ class RoomContract(unittest.TestCase):
         """The 15.11 trace: a click written into the thoughts is done once, the
         goal and the page survive a 21k-token compact, and a plan is not a result."""
         browser = FakeBrowser()
+        browser.text = "Gefundene Artikel und ihre Eigenschaften"
         browser.scroll_texts = ["OLDDUMPzzzz " + ("alt " * 800), "MIDPAGE " + ("mitte " * 200), "LASTPAGEZZ " + ("neu " * 200)]
         r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port, MAG_ROOM_VISION="lena")
         self.addCleanup(r.close)
@@ -2104,21 +2105,26 @@ class RoomContract(unittest.TestCase):
         self.assertIn("Schrumpfschlauch", goal["text"])
         # A status question does not replace the goal. An unseen link is refused; a seen one finishes it.
         fin = {"n": 0}
+        proof = [{"id": "result", "url": "https://www.amazon.de/s?k=schrumpfschlauch", "quote": "Suche Schrumpfschlauch"}]
 
         def finish(body):
             fin["n"] += 1
             fin["last"] = body
             if fin["n"] == 1:
-                return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
-                    "summary": "Zwei Stück.", "items": [{"name": "Schrumpfschlauch", "url": "https://www.amazon.de/dp/B00SEEN"}]}}]}
+                return {"content": "", "tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "result", "need": "Zwei verschiedene Artikel belegen"}]}}]}
             if fin["n"] == 2:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
-                    "summary": "Zwei transparente Schrumpfschläuche.",
-                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
-                              {"name": "Fake", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
+                    "summary": "Zwei Stück.", "proofs": proof,
+                    "items": [{"name": "Schrumpfschlauch", "url": "https://www.amazon.de/dp/B00SEEN"}]}}]}
             if fin["n"] == 3:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
-                    "summary": "Zwei transparente Schrumpfschläuche.",
+                    "summary": "Zwei transparente Schrumpfschläuche.", "proofs": proof,
+                    "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
+                              {"name": "Fake", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
+            if fin["n"] == 4:
+                return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
+                    "summary": "Zwei transparente Schrumpfschläuche.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
                               {"name": "PVC transparent", "url": "https://www.amazon.de/dp/B00SEEN2", "price": "5,40 €"}]}}]}
             return "Ich habe zwei transparente Schrumpfschläuche 2s gefunden."
@@ -2147,6 +2153,46 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
 
+    def test_goal_evidence_must_quote_same_seen_page_for_every_requirement(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/report"
+        browser.text = "Alpha wurde im Bericht bestätigt; Beta ist noch offen."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = []
+
+        def reply(body):
+            i = len(calls)
+            calls.append(body)
+            if i == 0:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {"requirements": [
+                    {"id": "a", "need": "Alpha bestätigen"}, {"id": "b", "need": "Beta prüfen"}]}}]}
+            if i == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i == 2:
+                return {"tool_calls": [{"name": "goal_finish", "arguments": {"summary": "Alles geprüft", "proofs": [
+                    {"id": "a", "url": browser.url, "quote": "Alpha wurde"}]}}]}
+            if i == 3:
+                return {"tool_calls": [{"name": "goal_finish", "arguments": {"summary": "Alles geprüft", "proofs": [
+                    {"id": "a", "url": browser.url, "quote": "Alpha wurde"},
+                    {"id": "b", "url": "https://example.org/other", "quote": "Beta ist noch offen"}]}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {"summary": "Beide Aussagen geprüft", "proofs": [
+                {"id": "a", "url": browser.url, "quote": "Alpha wurde"},
+                {"id": "b", "url": browser.url, "quote": "Beta ist noch offen"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe die Aussagen auf https://example.org/report")
+        r.idle()
+        path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
+        goal = json.loads(path.read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(len(goal["requirements"]), 2)
+        self.assertEqual(len(goal["proofs"]), 2)
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m.get("parts") or []
+                 if p["k"] == "step" and p["tool"] == "goal_finish"]
+        self.assertEqual([p["state"] for p in steps], ["error", "error", "ok"])
+
     def test_correction_after_completed_goal_creates_new_generic_goal(self):
         browser = FakeBrowser()
         r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
@@ -2169,9 +2215,13 @@ class RoomContract(unittest.TestCase):
         def reply(body):
             calls.append(body)
             if len(calls) == 1:
+                return {"content": "", "tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "contact", "need": "Kontaktangaben auf der Seite belegen"}]}}]}
+            if len(calls) == 2:
                 return {"content": "", "tool_calls": [{"name": "browser_look", "arguments": {}}]}
             return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
-                "summary": "Die Seite enthält Überblick und Kontaktinformationen."}}]}
+                "summary": "Die Seite enthält Überblick und Kontaktinformationen.",
+                "proofs": [{"id": "contact", "url": "https://example.org/info", "quote": "Kontaktinformationen"}]}}]}
 
         r.lena.reply = reply
         r.say("@Lena Korrektur: Bitte zusätzlich die Kontaktinformationen prüfen.")
@@ -2181,7 +2231,7 @@ class RoomContract(unittest.TestCase):
         self.assertNotEqual(goal["id"], "earlier-completed")
         self.assertEqual(goal["supersedes"], "earlier-completed")
         self.assertEqual(goal["corrections"], ["@Lena Korrektur: Bitte zusätzlich die Kontaktinformationen prüfen."])
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertTrue(all(c.get("tool_choice") == "required" for c in calls))
         self.assertTrue(all(c.get("max_tokens") == 512 for c in calls))
         self.assertEqual(r.noah.chats(), [])
@@ -2201,6 +2251,47 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.lena.chats()[-1].get("max_tokens"), 512)
         out = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
         self.assertIn("Browser-Auftrag pausiert", out)
+
+    def test_generic_browser_flow_is_one_roundtrip_and_rejects_buttons(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/start"
+        browser.title = "Dokument"
+        browser.text = "Status des Dokuments ist geprüft."
+        browser.elements = [{"n": 7, "kind": "button", "label": "Anmeldung absenden",
+                             "href": "https://example.org/submit", "x": 100, "y": 100}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = []
+
+        def reply(body):
+            i = len(calls)
+            calls.append(body)
+            if i == 0:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if i == 1:
+                return {"tool_calls": [{"name": "browser_flow", "arguments": {"steps": [
+                    {"op": "link_click", "n": 7}, {"op": "scroll", "dy": 300}]}}]}
+            if i == 2:
+                return {"tool_calls": [{"name": "browser_flow", "arguments": {"steps": [
+                    {"op": "open", "url": "https://example.org/start"},
+                    {"op": "scroll", "dy": 300}, {"op": "wait", "seconds": 0.1}]}}]}
+            if i == 3:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {"requirements": [
+                    {"id": "status", "need": "Den angezeigten Dokumentstatus belegen"}]}}]}
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {"summary": "Status nachgewiesen.",
+                "proofs": [{"id": "status", "url": "https://example.org/start", "quote": "Dokuments ist geprüft"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Prüfe https://example.org/start")
+        r.idle()
+        steps = [p for m in r.messages() if m.get("from") == "lena" for p in m.get("parts") or []
+                 if p.get("k") == "step" and p.get("tool") == "browser_flow"]
+        self.assertEqual([p["state"] for p in steps], ["error", "ok"])
+        self.assertEqual(browser.clicks, [])
+        self.assertEqual(browser.scroll, 300)
+        self.assertEqual(json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())["state"], "done")
+        self.assertEqual(len(calls), 5)  # open, scroll and wait were ONE model decision
 
     def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):
         browser = FakeBrowser()

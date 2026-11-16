@@ -1019,11 +1019,16 @@ private:
       const bool empty_log = b.wire["messages"].asArr().size() <= 1;
       if (jstr(b.wire, "prefix") == hash) return false;
       if (!empty_log) {
-        if (jstr(b.wire, "sig") == sig) return false;
+        // Tool schemas and the compiled system prompt are part of the real
+        // llama.cpp prefix even when the owner's persona/settings signature
+        // stays unchanged. The old sig-only early return hid tool changes
+        // after a deploy and pointed at an obsolete saved KV checkpoint.
+        // Only change this on a *real* prefix hash mismatch.
         (*b.wire["messages"].arr)[0]["content"] = system;
         b.wire["prefix"] = hash;
         b.wire["sig"] = sig;
         save_wire(b);
+        logf("engine: " + b.id + " system/tool prefix changed; new checkpoint required");
         return false;
       }
     }

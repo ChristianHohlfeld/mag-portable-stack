@@ -320,6 +320,44 @@ class RoomContract(unittest.TestCase):
         self.room = Room()
         self.addCleanup(self.room.close)
 
+    def test_thinking_capability_survives_room_only_deploy_without_modeld_restart(self):
+        """The current release has explicit model capabilities, while the
+        already-running supervisor still publishes the old status schema."""
+        with tempfile.TemporaryDirectory(prefix="mag-thinking-config-") as tmp:
+            config = pathlib.Path(tmp) / "models.json"
+            config.write_text(json.dumps({"bots": {
+                "lena": {"thinking_control": "toggle"},
+                "noah": {"thinking_control": "effort"},
+            }}))
+            r = Room(MAG_ROOM_MODELS_CONFIG=str(config))
+            self.addCleanup(r.close)
+            def statuses():
+                return {b["id"]: b for b in r.state()["bots"]}
+            self.assertEqual(statuses()["lena"]["model"]["thinking_control"], "toggle")
+            self.assertEqual(statuses()["noah"]["model"]["thinking_control"], "effort")
+            # A status file emitted by an older modeld has no thinking_control.
+            status_file = pathlib.Path(r.env["MAG_MODELS_STATUS"])
+            status_file.write_text(json.dumps({"updated": time.time(), "bots": {
+                "lena": {"state": "ready", "since": 1},
+                "noah": {"state": "ready", "since": 1},
+            }}))
+            r.wait(lambda: statuses()["lena"]["model"].get("thinking_control") == "toggle",
+                   "legacy supervisor does not remove thinking toggle")
+            self.assertEqual(statuses()["noah"]["model"]["thinking_control"], "effort")
+            # An explicit, newer modeld capability takes precedence.
+            status_file.write_text(json.dumps({"updated": time.time(), "bots": {
+                "lena": {"state": "ready", "since": 1, "thinking_control": "none"},
+                "noah": {"state": "ready", "since": 1, "thinking_control": "effort"},
+            }}))
+            r.wait(lambda: statuses()["lena"]["model"].get("thinking_control") == "none",
+                   "explicit supervisor metadata must win")
+            # The displayed effort default is actually saved on first enable.
+            self.assertEqual(r.api("PUT", "/api/bot/noah", {"thinking": True})[0], 200)
+            saved = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "bots.json").read_text())
+            noah = next(bot for bot in saved if bot["id"] == "noah")
+            self.assertEqual(noah["effort"], "low")
+            self.assertTrue(noah["thinking"])
+
     def test_idle_room_calls_no_model(self):
         r = self.room
         time.sleep(1.5)

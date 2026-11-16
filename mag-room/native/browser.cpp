@@ -260,7 +260,7 @@ for(const e of document.querySelectorAll(sel)){
  if(top&&top!==e&&!e.contains(top)&&!top.contains(e))continue;
  const tag=e.tagName.toLowerCase();
  // Textual sight never exposes credentials, payment data, PINs or codes.
- const privateField=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test(
+ const privateField=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|(?:PIN|OTP)(?=$|[A-Z0-9])/i.test(
   [e.type||'',e.autocomplete||'',e.name||'',e.id||''].join(' '));
  const secret=e.type==='password'||privateField;
  const editable=tag==='textarea'||e.isContentEditable||(tag==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type));
@@ -682,7 +682,7 @@ int main(int argc, char **argv) {
                        ";if(!e||e===document.body)return null;e.scrollIntoView({block:'center'});"
                        "let r=e.getBoundingClientRect();"
                        "return {x:r.x,y:r.y,w:r.width,h:r.height,"
-                       "password:e.type==='password'||/password|secret|token|pin/i.test(e.autocomplete+' '+e.name+' '+e.id),"
+                       "password:e.type==='password'||/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|(?:PIN|OTP)(?=$|[A-Z0-9])/i.test(e.autocomplete+' '+e.name+' '+e.id),"
                        "vw:innerWidth,vh:innerHeight}})()");
         } else if (r.path == "/click") {
           std::string selector = value("selector"), text = value("text");
@@ -807,13 +807,18 @@ int main(int argc, char **argv) {
                                    "const t=e.tagName.toLowerCase(),type=String(e.type||'').toLowerCase();"
                                    "const edit=e.isContentEditable||t==='textarea'||"
                                    "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
-                                   "const priv=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test("
+                                   "const priv=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|(?:PIN|OTP)(?=$|[A-Z0-9])/i.test("
                                    "[type,e.autocomplete||'',e.name||'',e.id||''].join(' '));"
                                    "return {editable:!!edit,private:!!priv}})()");
           if (!(focus.find("editable") && focus.find("editable")->asBool()))
             throw std::runtime_error("No editable field has focus; choose field n or selector from browser_look");
           if (focus.find("private") && focus.find("private")->asBool())
             throw std::runtime_error("Private input: use browser_login or browser_pay, never browser_type");
+          const std::string initial_value = str(c.eval(
+              "(()=>{const e=document.activeElement;return e&&"
+              "(e.isContentEditable||e.tagName==='INPUT'||e.tagName==='TEXTAREA')?"
+              "String(e.isContentEditable?(e.innerText||''):(e.value||'')):''})()"));
+          const bool append_mode = (!num || num->type != Val::NUM) && selector.empty();
           // Type in small chunks so the live view shows text appearing
           // (about 2.5 s at most, independent of the text length).
           const std::string text = value("text");
@@ -839,7 +844,19 @@ int main(int argc, char **argv) {
                                     "const edit=e.isContentEditable||t==='textarea'||"
                                     "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
                                     "return {editable:!!edit,value:edit?String(e.isContentEditable?(e.innerText||''):(e.value||'')):''}})()");
-            if (check.find("editable") && check.find("editable")->asBool() && str(check, "value") == text) {
+            // Contenteditable commonly normalizes CRLF into LF. A previously
+            // focused field may append, while n/selector explicitly replaces.
+            // Both require visible proof; autocomplete/formatting changes are
+            // reported to the model rather than silently declared verified.
+            auto normalize = [](std::string v) {
+              replace_all(v, "\\r\\n", "\\n");
+              return v;
+            };
+            const std::string actual = normalize(str(check, "value"));
+            const std::string expected = normalize(text);
+            const std::string appended = normalize(initial_value + text);
+            if (check.find("editable") && check.find("editable")->asBool() &&
+                (actual == expected || (append_mode && actual == appended))) {
               verified = true;
               break;
             }

@@ -441,6 +441,7 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
 }
 
 // ---- page memory ------------------------------------------------------------
+inline bool direct_link(const std::string &url); // defined with evidence ranking below
 inline void absorb(Val &g, const Val &page, int version) {
   if (!active(g) || !page.isObj()) return;
   Val p = Val::object();
@@ -466,8 +467,11 @@ inline void absorb(Val &g, const Val &page, int version) {
     for (auto &e : els->asArr()) {
       const std::string href = jstr(e, "href"), price = jstr(e, "price"), label = jstr(e, "label");
       add += "\n" + label + " " + href + " " + price;
-      const bool product = !price.empty() || href.find("/dp/") != std::string::npos || href.find("/gp/") != std::string::npos;
-      if (product && cands.arr->size() < 12) {
+      // Product candidates are semantic titled links, not shop-specific URL
+      // paths and never an empty sponsored click or a tracking redirect.
+      const bool candidate = direct_link(href) && !trim(label).empty() &&
+                             (jstr(e, "kind") == "link" || !price.empty());
+      if (candidate && cands.arr->size() < 12) {
         Val c = Val::object();
         c["n"] = jnum(e, "n");
         c["name"] = label;
@@ -485,9 +489,9 @@ inline void absorb(Val &g, const Val &page, int version) {
     size_t added = 0;
     for (const auto &link : links->asArr()) {
       const std::string href = jstr(link, "url"), label = jstr(link, "name");
-      if ((!starts_with(href, "https://") && !starts_with(href, "http://")) || href.size() > 700) continue;
+      if (!direct_link(href) || trim(label).empty()) continue;
       if (added++ < 48) add += "\n" + label + " " + href + " " + jstr(link, "price");
-      if (cands.asArr().size() < 12 && !label.empty() && recorded.insert(href).second) {
+      if (cands.asArr().size() < 12 && recorded.insert(href).second) {
         Val c = Val::object();
         c["name"] = label;
         c["url"] = href;
@@ -510,8 +514,8 @@ inline void absorb(Val &g, const Val &page, int version) {
   Val links = Val::array();
   std::set<std::string> known;
   const auto append_link = [&](const std::string &href, const std::string &label, const std::string &price) {
-    if ((!starts_with(href, "https://") && !starts_with(href, "http://")) ||
-        href.size() > 700 || links.asArr().size() >= 128 || !known.insert(href).second) return;
+    if (!direct_link(href) || trim(label).empty() ||
+        links.asArr().size() >= 128 || !known.insert(href).second) return;
     Val link = Val::object();
     link["url"] = href;
     link["name"] = clip(label, 180);
@@ -892,6 +896,7 @@ inline std::string finish_context(const Val &g) {
       if (const Val *links = p.find("links"); links && links->isArr()) {
         int count = 0;
         for (const auto &link : links->asArr()) {
+          if (!direct_link(jstr(link, "url")) || trim(jstr(link, "name")).empty()) continue;
           if (++count > 4) break;
           out += "LINK " + clip(jstr(link, "name"), 100) + " | " +
                  clip(jstr(link, "price"), 35) + " | " + clip(jstr(link, "url"), 200) + "\n";

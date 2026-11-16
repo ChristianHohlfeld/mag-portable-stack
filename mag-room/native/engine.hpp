@@ -169,6 +169,18 @@ public:
     } else {
       for (auto &b : bots_)
         if ((b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
+      // An explicitly addressed correction targets that bot, even if another
+      // bot currently has an open goal. A completed goal can be superseded,
+      // while blocked/stopped goals are never silently restarted.
+      if (how.kind == goal::Kind::Correction && only) {
+        owners.clear();
+        for (auto &b : bots_) {
+          if (std::find(to.begin(), to.end(), b->id) == to.end()) continue;
+          const bool open = (b->goal_on || b->goal_arm) && !b->end_goal.load();
+          const bool completed = has_vm(b->id) && jstr(b->goal_public, "state") == "done";
+          if (open || completed) owners.push_back(b->id);
+        }
+      }
     }
     // A status question or a correction does not replace the bot that is on the task.
     // A new browser task claims that bot at once, before its first tool.
@@ -179,7 +191,8 @@ public:
       for (auto &b : bots_)
         if (b->running == "human" && b->acted && b->cancel && !b->cancel->stopped()) lead_ = b->id;
     }
-    if (how.kind == goal::Kind::Task && !owners.empty()) lead_ = owners[0];
+    if (!owners.empty() && (how.kind == goal::Kind::Task || how.kind == goal::Kind::Correction))
+      lead_ = owners[0];
     for (auto &id : how.hush) silenced_.insert(id);
     if (only)
       for (auto &id : to)
@@ -244,21 +257,38 @@ public:
       }
       b->reason = "human";
       if (!b->want) continue;
-      if (how.kind == goal::Kind::Task && std::find(owners.begin(), owners.end(), b->id) != owners.end()) {
+      const bool correct_done = how.kind == goal::Kind::Correction && only && addressed &&
+          !b->goal_on && !b->goal_arm && jstr(b->goal_public, "state") == "done" &&
+          std::find(owners.begin(), owners.end(), b->id) != owners.end();
+      if ((how.kind == goal::Kind::Task && std::find(owners.begin(), owners.end(), b->id) != owners.end()) || correct_done) {
+        // A completed goal is immutable history. An explicit correction starts
+        // a fresh task with the earlier request and the new constraint.
+        Val previous;
+        if (correct_done) {
+          previous = read_json(goal_file(*b));
+          if (jstr(previous, "state") != "done" || trim(jstr(previous, "text")).empty()) {
+            b->want = false;
+            continue;
+          }
+        }
         Val pending = Val::object();
         pending["kind"] = "begin";
         pending["id"] = jstr(message, "id", random_hex(8));
-        pending["text"] = said;
+        pending["text"] = correct_done ? jstr(previous, "text") : said;
         pending["corrections"] = Val::array();
+        if (correct_done) {
+          pending["corrections"].push(said);
+          pending["supersedes"] = jstr(previous, "id");
+        }
         if (!queue_goal(*b, pending)) { b->want = false; continue; }
         b->end_goal = false;
         unlink((room_.cfg.state_dir + "/goals/" + b->id + ".json.end").c_str());
         b->goal_cmd = 1;
-        b->goal_text = said;
+        b->goal_text = jstr(pending, "text");
         b->goal_fix.clear();
         b->goal_arm = true;
         b->goal_public["state"] = "pending";
-        b->goal_public["text"] = clip(said, 200);
+        b->goal_public["text"] = clip(jstr(pending, "text") + (correct_done ? "\nKorrektur: " + said : ""), 200);
       } else if (how.kind == goal::Kind::Correction && (b->goal_on || b->goal_arm)) {
         Val pending = read_json(goal_pending_file(*b));
         if (!pending.isObj()) {
@@ -2308,6 +2338,7 @@ private:
         throw std::runtime_error("Ungültiger persistierter Browser-Auftrag");
       if (kind == "begin" && jstr(b.goal, "pending_serial") != serial) {
         goal::begin(b.goal, b.id, jstr(pending, "text"));
+        if (!jstr(pending, "supersedes").empty()) b.goal["supersedes"] = jstr(pending, "supersedes");
         b.goal["pending_serial"] = serial;
         b.goal["pending_applied"] = 0;
         changed = true;
@@ -2966,6 +2997,9 @@ private:
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = room_.cfg.max_tokens;
       if (driving) {
+        // The CPU models need bounded tool decisions, not unbounded generation.
+        // Keep a configurable allowance for arbitrary browser workflows. Bound each request separately from the full task budget.
+        body["max_tokens"] = (double)std::max(128L, std::min(1024L, envl("MAG_ROOM_GOAL_MAX_TOKENS", 512)));
         body["tool_choice"] = "required";
         body["parallel_tool_calls"] = false;
         body["temperature"] = goal::envd("MAG_ROOM_GOAL_TEMP", 0.3);
@@ -2995,7 +3029,9 @@ private:
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
       set_phase(b, "reading");
-      const int budget_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
+      const int remaining_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
+      const int budget_s = driving ? std::min(remaining_s, (int)std::max(60L, envl("MAG_ROOM_GOAL_CALL_BUDGET_S", 180)))
+                                   : remaining_s;
       // Where this call's text and thoughts begin, should some of them have to be taken back.
       const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
       const size_t thought0 = t.reasoning.size();
@@ -3025,6 +3061,12 @@ private:
         }
         failed = true;
         error = llm::short_error(res.error);
+        if (driving) {
+          b.goal["progress"] = "stalled";
+          b.goal["error"] = "Modellaufruf gestoppt: " + clip(error, 200) + ". Auftrag bleibt offen.";
+          save_goal(b);
+          logf("engine: " + b.id + " browser goal stalled: " + clip(error, 160));
+        }
         break;
       }
       if (!res.guard.empty()) {
@@ -3597,6 +3639,13 @@ private:
       // A Stop without any output is not a PASS: it must not rest the room.
       after_turn(b, reason, false, !cancelled, false, "");
       return;
+    }
+    if (failed && goal_live(b) && trim(unshown).empty() &&
+        (t.id.empty() || room_.text_len(t.id) == 0)) {
+      // A timed-out model call may have created an empty streaming bubble.
+      // Always show the failure, including after earlier browser tool steps.
+      emit_text(b, t, "Browser-Auftrag pausiert: " + clip(error, 180) +
+                       ". Mit einer neuen Nachricht kann ich erneut versuchen.", name, reason, true);
     }
     emit_text(b, t, "", name, reason, true);
     ensure_message(b, t, reason);

@@ -2147,6 +2147,61 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertNotIn("tool_choice", r.lena.chats()[-1])
 
+    def test_correction_after_completed_goal_creates_new_generic_goal(self):
+        browser = FakeBrowser()
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_GOAL_MAX_TOKENS="512", MAG_ROOM_GOAL_CALL_BUDGET_S="180")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        r.stop()
+        goals = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals"
+        goals.mkdir(parents=True, exist_ok=True)
+        (goals / "lena.json").write_text(json.dumps({
+            "id": "earlier-completed", "owner": "lena", "state": "done", "progress": "done",
+            "text": "@Lena Öffne https://example.org und fasse die Seite zusammen",
+            "version": 3, "corrections": [], "summary": "Erster Bericht"}))
+        browser.url = "https://example.org/info"
+        browser.title = "Info-Seite"
+        browser.text = "Überblick und Kontaktinformationen"
+        r.start()
+        calls = []
+
+        def reply(body):
+            calls.append(body)
+            if len(calls) == 1:
+                return {"content": "", "tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "Die Seite enthält Überblick und Kontaktinformationen."}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Korrektur: Bitte zusätzlich die Kontaktinformationen prüfen.")
+        r.idle()
+        goal = json.loads((goals / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertNotEqual(goal["id"], "earlier-completed")
+        self.assertEqual(goal["supersedes"], "earlier-completed")
+        self.assertEqual(goal["corrections"], ["@Lena Korrektur: Bitte zusätzlich die Kontaktinformationen prüfen."])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(c.get("tool_choice") == "required" for c in calls))
+        self.assertTrue(all(c.get("max_tokens") == 512 for c in calls))
+        self.assertEqual(r.noah.chats(), [])
+
+    def test_failed_goal_request_stalls_instead_of_finishing_with_empty_reply(self):
+        r = Room(MAG_ROOM_GOAL_MAX_TOKENS="512")
+        self.addCleanup(r.close)
+        r.lena.reply = lambda body: {"http_error": "simulated inference failure"}
+        r.say("@Lena Öffne https://example.org und prüfe die Seite")
+        r.idle()
+        goal_file = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
+        goal = json.loads(goal_file.read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertEqual(goal["progress"], "stalled")
+        self.assertIn("simulated inference failure", goal["error"])
+        self.assertEqual(r.lena.chats()[-1].get("tool_choice"), "required")
+        self.assertEqual(r.lena.chats()[-1].get("max_tokens"), 512)
+        out = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
+        self.assertIn("Browser-Auftrag pausiert", out)
+
     def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):
         browser = FakeBrowser()
         r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port, MAG_ROOM_VISION="lena")

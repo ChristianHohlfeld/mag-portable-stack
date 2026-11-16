@@ -1232,6 +1232,7 @@ private:
     bool net = false;
     room_.update_settings([&](Val &s) {
       if (const Val *v = in.find("bot_rounds"); v && v->type == Val::NUM) s["bot_rounds"] = std::max(0.0, std::min(1000.0, v->num));
+      if (const Val *v = in.find("auto_chat"); v && v->type == Val::BOOL) s["auto_chat"] = v->b;
       if (const Val *v = in.find("web"); v && v->type == Val::BOOL) { s["web"] = v->b; net = true; }
       if (const Val *v = in.find("assist"); v && v->isObj()) s["assist"] = Assist::clean_rules(*v);
     });

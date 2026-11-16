@@ -2351,6 +2351,9 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(requests), 4)  # full palette, look, recovery, narrowed recovery
         self.assertEqual(goal["results"][0]["url"], "https://example.org/item/best")
         self.assertEqual(goal["results"][0]["price"], "7,49 EUR")
+        seen_urls = [link["url"] for page in goal["evidence_pages"] for link in page["links"]]
+        self.assertNotIn("https://example.org/sspa/click?x=7", seen_urls)
+        self.assertNotIn("https://example.org/redirect?to=/item/advert", seen_urls)
         self.assertEqual(goal["proofs"][0]["url"], browser.url)
         self.assertIn("60 mm Flachmaß", goal["proofs"][0]["quote"])
         said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")

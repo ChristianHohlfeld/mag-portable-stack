@@ -569,6 +569,11 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   for (auto &kv : calls) {
     if (kv.second.name.empty()) continue;
     if (kv.second.id.empty()) kv.second.id = "call_" + random_hex(6);
+    // When the model hit its output cap immediately after starting a tool
+    // call, even the empty argument stream used to be mended into valid "{}".
+    // That was a truncated call, not a valid zero-argument instruction.
+    if (out.finish == "length" && trim(kv.second.arguments).empty())
+      kv.second.valid = false;
     mend(kv.second);
     out.calls.push_back(kv.second);
   }

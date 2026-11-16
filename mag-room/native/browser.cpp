@@ -260,8 +260,8 @@ for(const e of document.querySelectorAll(sel)){
  if(top&&top!==e&&!e.contains(top)&&!top.contains(e))continue;
  const tag=e.tagName.toLowerCase();
  // Textual sight never exposes credentials, payment data, PINs or codes.
- const privateField=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test(
-  [e.type||'',e.autocomplete||'',e.name||'',e.id||''].join(' '));
+ const fieldMeta=[e.type||'',e.autocomplete||'',e.name||'',e.id||''].join(' ');
+ const privateField=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:code|number|value)?(?:$|[^a-z0-9])/i.test(fieldMeta) || /(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(fieldMeta);
  const secret=e.type==='password'||privateField;
  const editable=tag==='textarea'||e.isContentEditable||(tag==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type));
  const kind=tag==='input'?(e.type||'text'):tag==='a'?'link':tag==='iframe'?'frame':(e.getAttribute('role')||tag);
@@ -807,13 +807,18 @@ int main(int argc, char **argv) {
                                    "const t=e.tagName.toLowerCase(),type=String(e.type||'').toLowerCase();"
                                    "const edit=e.isContentEditable||t==='textarea'||"
                                    "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
-                                   "const priv=/password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|pin|otp/i.test("
-                                   "[type,e.autocomplete||'',e.name||'',e.id||''].join(' '));"
+                                   "const fieldMeta=[type,e.autocomplete||'',e.name||'',e.id||''].join(' ');"
+                                   "const priv=/password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:code|number|value)?(?:$|[^a-z0-9])/i.test(fieldMeta)||/(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/.test(fieldMeta);"
                                    "return {editable:!!edit,private:!!priv}})()");
           if (!(focus.find("editable") && focus.find("editable")->asBool()))
             throw std::runtime_error("No editable field has focus; choose field n or selector from browser_look");
           if (focus.find("private") && focus.find("private")->asBool())
             throw std::runtime_error("Private input: use browser_login or browser_pay, never browser_type");
+          const std::string initial_value = c.eval(
+              "(()=>{const e=document.activeElement;return e&&"
+              "(e.isContentEditable||e.tagName==='INPUT'||e.tagName==='TEXTAREA')?"
+              "String(e.isContentEditable?(e.innerText||''):(e.value||'')):''})()").asStr();
+          const bool append_mode = (!num || num->type != Val::NUM) && selector.empty();
           // Type in small chunks so the live view shows text appearing
           // (about 2.5 s at most, independent of the text length).
           const std::string text = value("text");
@@ -839,7 +844,20 @@ int main(int argc, char **argv) {
                                     "const edit=e.isContentEditable||t==='textarea'||"
                                     "(t==='input'&&!/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(type));"
                                     "return {editable:!!edit,value:edit?String(e.isContentEditable?(e.innerText||''):(e.value||'')):''}})()");
-            if (check.find("editable") && check.find("editable")->asBool() && str(check, "value") == text) {
+            // Contenteditable normalizes CRLF. Focused fields may append,
+            // but explicit number/selector replacement must match exactly.
+            auto normalize = [](std::string v) {
+              for (size_t i = 0; i + 1 < v.size();) {
+                if (v[i] == '\r' && v[i + 1] == '\n') v.erase(i, 1);
+                else ++i;
+              }
+              return v;
+            };
+            const std::string actual = normalize(str(check, "value"));
+            const std::string expected = normalize(text);
+            const std::string appended = normalize(initial_value + text);
+            if (check.find("editable") && check.find("editable")->asBool() &&
+                (actual == expected || (append_mode && actual == appended))) {
               verified = true;
               break;
             }

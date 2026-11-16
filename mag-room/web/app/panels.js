@@ -311,9 +311,20 @@
         name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
         content.append(el('h3', { text: 'Verhalten' }), el('div', { class: 'card' },
           row('Name', 'Buchstaben, Ziffern, Bindestrich. Die Website folgt dem Namen (name' + zone + '), frühere Namen leiten weiter.', name),
-          id === 'lena'
-            ? row('Nachdenken', 'Denkt vor der Antwort; gründlicher, langsamer', toggle(b.thinking, (v) => call('PUT', '/api/bot/' + id, { thinking: v })))
-            : row('Denktiefe', 'Wie lange vor der Antwort überlegt wird', select(b.effort, [['low', 'Kurz'], ['medium', 'Mittel'], ['high', 'Gründlich']], (v) => call('PUT', '/api/bot/' + id, { effort: v }))),
+          // The actual model capability decides the control, not a fixed
+          // Lena/Noah split. The effort dropdown never silently displays an
+          // unsaved setting: turning Thinking on saves "low" atomically.
+          ['toggle', 'effort'].includes(b.model?.thinking_control)
+            ? row('Nachdenken', 'Schneller ohne; nur bei Bedarf einschalten.',
+                toggle(b.thinking, (v) => call('PUT', '/api/bot/' + id,
+                  { thinking: v, ...(v && b.model?.thinking_control === 'effort'
+                    ? { effort: b.effort || 'low' } : {}) })))
+            : null,
+          b.model?.thinking_control === 'effort'
+            ? row('Denktiefe', 'Nur bei aktiviertem Nachdenken wirksam',
+                select(b.effort || 'low', [['low', 'Kurz'], ['medium', 'Mittel'], ['high', 'Gründlich']],
+                  (v) => call('PUT', '/api/bot/' + id, { effort: v }), !b.thinking))
+            : null,
           el('div', { class: 'set col' }, el('div', { class: 'txt' }, 'Art und Auftrag', el('small', { text: 'Persönlichkeit und feste Vorgaben, in eigenen Worten' })),
             el('textarea', { value: b.persona || '', placeholder: 'z. B. Antworte knapp und direkt.', onchange: (e) => call('PUT', '/api/bot/' + id, { persona: e.target.value }).then(() => MAG.toast('Gespeichert')) }))));
 

@@ -679,10 +679,31 @@ public:
     return ok;
   }
 
+  // A room deploy updates its own release files but intentionally does not
+  // restart mag-modeld or a running llama.cpp model. The supervisor's status
+  // can therefore predate the new optional thinking_control metadata. Read
+  // model capabilities from this *release's explicit model configuration*
+  // (never infer them from names/weights); valid supervisor metadata wins.
+  Val release_model_capabilities() const {
+    std::string file = env("MAG_ROOM_MODELS_CONFIG");
+    if (file.empty()) {
+      std::filesystem::path dir = std::filesystem::path(room_.cfg.web_dir).parent_path();
+      for (int depth = 0; depth < 2; ++depth, dir = dir.parent_path()) {
+        const std::filesystem::path candidate = dir / "ops/models/models.json";
+        if (exists(candidate.string())) { file = candidate.string(); break; }
+      }
+    }
+    if (file.empty()) return Val::object();
+    const Val conf = read_json(file);
+    if (const Val *bots = conf.find("bots"); bots && bots->isObj()) return *bots;
+    return Val::object();
+  }
+
   // Bot states for the snapshot and the `bots` event.
   Val status() {
     const Val cfg = room_.bots();
     const Val models = models_snapshot();
+    const Val capabilities = release_model_capabilities();
     std::lock_guard<std::mutex> lk(mu_);
     Val out = Val::array();
     for (auto &b : bots_) {
@@ -708,7 +729,16 @@ public:
       v["memory"] = conf.find("memory") ? (double)conf.find("memory")->size() : 0.0;
       v["plugins"] = conf.find("plugins") && conf.find("plugins")->isObj() ? *conf.find("plugins") : Val::object();
       const Val *m = models.find(b->id);
-      v["model"] = m ? *m : offline_model();
+      Val model = m ? *m : offline_model();
+      const std::string advertised = jstr(model, "thinking_control");
+      if (advertised != "toggle" && advertised != "effort" && advertised != "none") {
+        if (const Val *conf = capabilities.find(b->id); conf && conf->isObj()) {
+          const std::string control = jstr(*conf, "thinking_control");
+          if (control == "toggle" || control == "effort" || control == "none")
+            model["thinking_control"] = control;
+        }
+      }
+      v["model"] = model;
       v["vision"] = vision_of(b->id, m);
       v["busy"] = !b->running.empty();
       v["phase"] = b->phase;
@@ -1105,8 +1135,12 @@ private:
 
   Val template_kwargs(const Val &me) {
     Val k = Val::object();
-    k["enable_thinking"] = jbool(me, "thinking", false);
-    k["reasoning_effort"] = jstr(me, "effort", "low");
+    const bool thinking = jbool(me, "thinking", false);
+    k["enable_thinking"] = thinking;
+    // When Thinking is off, do not send an unrelated reasoning effort.
+    // A legacy client can enable it without saving the dropdown first:
+    // the backend and UI both choose the same explicit "low" default.
+    if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
     k["model_identity"] = "You are " + jstr(me, "name") + ", a helpful local AI assistant.";
     return k;
   }

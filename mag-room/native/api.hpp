@@ -1285,7 +1285,12 @@ private:
         }
       }
       if (const Val *v = in.find("enabled"); v && v->type == Val::BOOL) { b["enabled"] = v->b; disabled = !v->b; }
-      if (const Val *v = in.find("thinking"); v && v->type == Val::BOOL) b["thinking"] = v->b;
+      if (const Val *v = in.find("thinking"); v && v->type == Val::BOOL) {
+        b["thinking"] = v->b;
+        // Persist the displayed default even if the user only touched the
+        // Thinking switch; otherwise "Kurz" is only a visual placeholder.
+        if (v->b && jstr(b, "effort").empty()) b["effort"] = "low";
+      }
       if (const Val *v = in.find("effort"); v && (v->asStr() == "low" || v->asStr() == "medium" || v->asStr() == "high")) b["effort"] = v->asStr();
       if (const Val *v = in.find("persona"); v && v->type == Val::STR) b["persona"] = clip(v->str, 2000);
     });

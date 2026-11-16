@@ -83,6 +83,35 @@ const panels = read('panels.js');
 assert(panels.includes("class: 'chip-stop'"), 'stopping a busy bot remains one tap away');
 assert(panels.includes("'/api/stop'"), 'header stop must hit backend stop endpoint');
 
+// Both model-specific thinking variants have a real off switch. When
+// effort is enabled for the first time, the displayed "Kurz" is saved,
+// not merely a placeholder. Preserve the existing header Stop tests.
+assert(!panels.includes("id === 'lena'"), 'thinking UI must not depend on bot identity');
+assert(panels.includes("['toggle', 'effort'].includes(b.model?.thinking_control)"),
+       'all capable models get the off switch');
+assert(panels.includes("b.model?.thinking_control === 'effort'"), 'effort only where supported');
+assert(panels.includes("{ effort: b.effort || 'low' }"), 'enabling thinking must persist the visible default');
+assert(panels.includes("!b.thinking"), 'effort selector disabled until enabled');
+const engineSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'engine.hpp'), 'utf8');
+assert(engineSrc.includes('if (thinking) k["reasoning_effort"]'), 'off must not send effort');
+const apiSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'api.hpp'), 'utf8');
+assert(apiSrc.includes('if (v->b && jstr(b, "effort").empty()) b["effort"] = "low"'),
+       'old clients must save default effort when turning thinking on');
+
+// Keep ordinary fields usable and private credentials masked. This includes
+// the #615 privacy check without losing the prior Stop assertions.
+const browserSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'browser.cpp'), 'utf8');
+const privacyExpression = /password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:code|number|value)?(?:$|[^a-z0-9])/i;
+const privacyCamel = /(?:PIN|OTP|Pin|Otp)(?=$|[A-Z0-9])/;
+const privateField = (value) => privacyExpression.test(value) || privacyCamel.test(value);
+for (const field of ['shipping', 'shopping', 'shippingAddress', 'shoppingCart', 'coupon', 'recipient'])
+  assert(!privateField(field), field + ' must remain a normal field');
+for (const field of ['password', 'one-time-code', 'cc-number', 'cc-cvc', 'pin', 'user-PIN', 'account_otp', 'securityPIN', 'accountPin', 'otpCode'])
+  assert(privateField(field), field + ' must remain private');
+assert(!browserSrc.includes('cc-exp|pin|otp/i'), 'no broad substring PIN/OTP rule may remain');
+assert(browserSrc.includes('const bool append_mode'), 'typing into focused fields must permit append with proof');
+
+
 window.close();
 console.log('web ui ok');
 process.exit(0);

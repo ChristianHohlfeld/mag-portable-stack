@@ -505,18 +505,13 @@ inline void absorb(Val &g, const Val &page, int version) {
   Val proof_page = Val::object();
   proof_page["url"] = jstr(page, "url");
   std::string visible = clip(jstr(page, "text"), 6000);
-  if (const Val *els = page.find("elements"); els && els->isArr())
-    for (const auto &e : els->asArr()) {
-      visible += "\n" + clip(jstr(e, "label"), 240);
-      if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
-    }
   // Preserve clickable URLs with their observed labels/prices on EACH
   // snapshot. A later navigation must not erase earlier result links.
   Val links = Val::array();
   std::set<std::string> known;
   const auto append_link = [&](const std::string &href, const std::string &label, const std::string &price) {
     if ((!starts_with(href, "https://") && !starts_with(href, "http://")) ||
-        href.size() > 700 || links.asArr().size() >= 64 || !known.insert(href).second) return;
+        href.size() > 700 || links.asArr().size() >= 128 || !known.insert(href).second) return;
     Val link = Val::object();
     link["url"] = href;
     link["name"] = clip(label, 180);
@@ -526,7 +521,7 @@ inline void absorb(Val &g, const Val &page, int version) {
   if (const Val *dom = p.find("links"); dom && dom->isArr())
     for (const auto &link : dom->asArr()) {
       append_link(jstr(link, "url"), jstr(link, "name"), jstr(link, "price"));
-      if (links.asArr().size() >= 48) break;
+      if (links.asArr().size() >= 110) break;
     }
   if (const Val *els = p.find("elements"); els && els->isArr())
     for (const auto &e : els->asArr())
@@ -535,7 +530,15 @@ inline void absorb(Val &g, const Val &page, int version) {
     visible += "\n" + jstr(link, "name");
     if (!jstr(link, "price").empty()) visible += " " + jstr(link, "price");
   }
-  proof_page["text"] = clip(visible, 16000);
+  // Link labels first: the previous 16k truncation could hide product links
+  // behind unrelated viewport controls and make a verified answer impossible.
+  if (const Val *els = p.find("elements"); els && els->isArr())
+    for (const auto &e : els->asArr()) {
+      if (visible.size() > 36000) break;
+      visible += "\n" + clip(jstr(e, "label"), 240);
+      if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
+    }
+  proof_page["text"] = clip(visible, 40000);
   proof_page["links"] = links;
   if (!g["evidence_pages"].isArr()) g["evidence_pages"] = Val::array();
   g["evidence_pages"].push(proof_page);
@@ -727,7 +730,7 @@ inline std::vector<ObservedChoice> observed_choices(const Val &g) {
     for (const auto &link : links->asArr()) {
       const std::string url = trim(jstr(link, "url")), name = trim(jstr(link, "name"));
       const std::string price = trim(jstr(link, "price"));
-      if (!direct_link(url) || url == source || name.size() < 13 || !used.insert(lower(url)).second) continue;
+      if (!direct_link(url) || url == source || name.size() < 13 || used.count(lower(url))) continue;
       if (visible.find(name) == std::string::npos ||
           (!price.empty() && visible.find(name + " " + price) == std::string::npos)) continue;
       bool fits = true;
@@ -738,6 +741,7 @@ inline std::vector<ObservedChoice> observed_choices(const Val &g) {
       if (!words && ranges.empty()) continue; // "Kandidat A" alone is no recommendation
       ObservedChoice item{name, url, price, source, name + (price.empty() ? "" : " " + price),
                           words * 12 + (ranges.empty() ? 0 : 50) + (price.empty() ? 0 : 5)};
+      used.insert(lower(url));
       out.push_back(std::move(item));
     }
   }

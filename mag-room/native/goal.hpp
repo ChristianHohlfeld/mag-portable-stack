@@ -388,6 +388,50 @@ inline bool args_ok(const Val &tools, const llm::ToolCall &call, std::string &wh
   return true;
 }
 
+// Local models sometimes write a complete tool call as a single JSON
+// document in ordinary text, despite tool_choice=required. Promote only an
+// explicit, standalone, schema-valid call. Never execute arbitrary prose,
+// JSON examples embedded in prose or unrecognized actions.
+inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &call) {
+  raw = trim(raw);
+  if (starts_with(raw, "```")) {
+    const size_t first = raw.find('\n');
+    if (first == std::string::npos) return false;
+    const size_t close = raw.find("```", first + 1);
+    if (close == std::string::npos || !trim(raw.substr(close + 3)).empty()) return false;
+    raw = trim(raw.substr(first + 1, close - first - 1));
+  }
+  if (raw.size() < 10 || raw.size() > 16000 || raw.front() != '{' || raw.back() != '}') return false;
+  const Val obj = jparse(raw);
+  if (!obj.isObj()) return false;
+  std::string name = jstr(obj, "name", jstr(obj, "tool", jstr(obj, "function")));
+  Val args = Val::object();
+  if (!name.empty()) {
+    const Val *arg = obj.find("arguments");
+    if (!arg) arg = obj.find("args");
+    if (!arg) arg = obj.find("parameters");
+    if (!arg) return false;
+    if (arg->isObj()) args = *arg;
+    else if (arg->type == Val::STR) args = jparse(arg->str);
+    else return false;
+  } else {
+    name = jstr(obj, "action");
+    if (name.empty()) return false;
+    for (const auto &kv : *obj.obj)
+      if (kv.first != "action") args[kv.first] = kv.second;
+  }
+  if (!args.isObj()) return false;
+  llm::ToolCall parsed;
+  parsed.id = "call_json_" + random_hex(5);
+  parsed.name = name;
+  parsed.arguments = mj::dump(args);
+  parsed.valid = true;
+  std::string why;
+  if (!args_ok(offered, parsed, why)) return false;
+  call = parsed;
+  return true;
+}
+
 // ---- page memory ------------------------------------------------------------
 inline void absorb(Val &g, const Val &page, int version) {
   if (!active(g) || !page.isObj()) return;

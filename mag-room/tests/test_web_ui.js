@@ -73,6 +73,17 @@ const file = choose('Datei');
 assert.strictEqual(file.accept, '');
 assert.strictEqual(file.multiple, true);
 
+// Browser privacy checks must not reject ordinary fields such as shipping
+// or shopping merely because their names contain "pin".
+const browserSrc = fs.readFileSync(path.join(root, '..', 'native', 'browser.cpp'), 'utf8');
+const privacyExpression = /password|secret|token|one-time-code|cc-(?:number|csc|cvc|exp)|(?:^|[^a-z0-9])(?:pin|otp)(?:$|[^a-z0-9])|(?:PIN|OTP)(?=$|[A-Z0-9])/i;
+for (const field of ['shipping', 'shopping', 'shippingAddress', 'shoppingCart', 'coupon', 'recipient'])
+  assert(!privacyExpression.test(field), field + ' must remain a normal input');
+for (const field of ['password', 'one-time-code', 'cc-number', 'cc-cvc', 'pin', 'user-PIN', 'account_otp', 'securityPIN'])
+  assert(privacyExpression.test(field), field + ' must remain private');
+assert(!browserSrc.includes('cc-exp|pin|otp/i'), 'no broad substring PIN/OTP rule may remain');
+assert(browserSrc.includes('const bool append_mode'), 'typed text may append to a focused field');
+
 window.close();
 console.log('web ui ok');
 process.exit(0);

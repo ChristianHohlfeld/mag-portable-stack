@@ -9,6 +9,7 @@
 #include "vm.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <regex>
 #include <set>
 

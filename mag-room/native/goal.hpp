@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <set>
 
 namespace mag::goal {
 inline double envd(const char *key, double def) {
@@ -145,6 +146,8 @@ inline void begin(Val &g, const std::string &owner, const std::string &text) {
   next["version"] = 0;
   next["page"] = Val::object();
   next["candidates"] = Val::array();
+  next["requirements"] = Val::array();
+  next["evidence_pages"] = Val::array();
   next["error"] = "";
   next["seen"] = "";
   next["summary"] = "";
@@ -159,6 +162,7 @@ inline void correct(Val &g, const std::string &text) {
   g["revision"] = jnum(g, "revision") + 1;
   g["progress"] = "running";
   g["text"] = jstr(g, "text") + "\nKorrektur: " + line;
+  g["requirements"] = Val::array(); // a correction invalidates earlier criteria
   if (needs_items(line)) g["shopping"] = true;
 }
 
@@ -390,6 +394,62 @@ inline void absorb(Val &g, const Val &page, int version) {
   std::string seen = jstr(g, "seen") + "\n" + add;
   if (seen.size() > 80000) seen = seen.substr(seen.size() - 80000);
   g["seen"] = seen;
+  // Keep source provenance outside the compact model prompt. Each quote is
+  // matched only against the document at the SAME observed URL.
+  Val proof_page = Val::object();
+  proof_page["url"] = jstr(page, "url");
+  std::string visible = jstr(page, "title") + "\n" + clip(jstr(page, "text"), 12000);
+  if (const Val *els = page.find("elements"); els && els->isArr())
+    for (const auto &e : els->asArr()) {
+      visible += "\n" + clip(jstr(e, "label"), 240);
+      if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
+      if (!jstr(e, "href").empty()) visible += " " + clip(jstr(e, "href"), 240);
+    }
+  proof_page["text"] = clip(visible, 24000);
+  if (!g["evidence_pages"].isArr()) g["evidence_pages"] = Val::array();
+  g["evidence_pages"].push(proof_page);
+  auto &pages = *g["evidence_pages"].arr;
+  if (pages.size() > 24) pages.erase(pages.begin(), pages.begin() + (pages.size() - 24));
+}
+
+// Structural validation is deterministic. The model authors the criteria;
+// the server validates their unique IDs and the provenance of every quote.
+inline bool requirements_ok(const Val *requirements, std::string &why) {
+  if (!requirements || !requirements->isArr() || requirements->asArr().empty() || requirements->asArr().size() > 16) {
+    why = "1 bis 16 überprüfbare Anforderungen sind nötig."; return false;
+  }
+  std::set<std::string> ids;
+  for (const auto &r : requirements->asArr()) {
+    const std::string id = trim(jstr(r, "id")), need = trim(jstr(r, "need"));
+    if (!r.isObj() || id.empty() || id.size() > 40 || need.size() < 4 || need.size() > 300 || !ids.insert(id).second) {
+      why = "Jede Anforderung braucht eine eindeutige id und einen verständlichen Text."; return false;
+    }
+  }
+  return true;
+}
+inline bool proofs_ok(const Val &g, const Val *proofs, std::string &why) {
+  const Val *required = g.find("requirements");
+  if (!requirements_ok(required, why)) { why = "Lege zuerst mit goal_requirements alle Erfolgskriterien fest."; return false; }
+  if (!proofs || !proofs->isArr() || proofs->asArr().size() != required->asArr().size()) {
+    why = "Jede Anforderung braucht genau einen Seitenbeleg (id, url, quote)."; return false;
+  }
+  std::set<std::string> covered;
+  for (const auto &p : proofs->asArr()) {
+    const std::string id = trim(jstr(p, "id")), url = trim(jstr(p, "url")), quote = trim(jstr(p, "quote"));
+    if (id.empty() || url.empty() || quote.size() < 6 || quote.size() > 500 || !covered.insert(id).second) {
+      why = "Ungültiger oder doppelter Beleg (id, url, quote)."; return false;
+    }
+    bool known = false, found = false;
+    for (const auto &r : required->asArr()) if (jstr(r, "id") == id) known = true;
+    if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr())
+      for (const auto &page : pages->asArr())
+        if (jstr(page, "url") == url && jstr(page, "text").find(quote) != std::string::npos) found = true;
+    if (!known || !found) {
+      why = "Unbelegte Anforderung " + clip(id, 60) + ": Textstelle und URL müssen auf derselben gesehenen Seite stehen.";
+      return false;
+    }
+  }
+  return true;
 }
 
 inline bool has_element(const Val &g, long n) {

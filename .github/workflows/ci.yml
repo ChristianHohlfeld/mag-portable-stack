@@ -36,6 +36,7 @@ jobs:
         run: python3 ops/models/tests/test_modeld.py
       - name: Idol worker (jobs survive restarts, a cut-off photo is refused in words, every model gets its UVs)
         run: |
+          python3 ops/idol/tests/test_thermal.py
           python3 ops/idol/tests/test_worker.py
           python3 ops/idol/tests/test_unwrap.py
           python3 ops/idol/tests/test_surface.py

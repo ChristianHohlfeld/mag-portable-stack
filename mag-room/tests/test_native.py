@@ -328,6 +328,30 @@ class RoomContract(unittest.TestCase):
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
 
+    def test_autonomous_chat_can_start_without_human_or_browser(self):
+        r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
+        self.addCleanup(r.close)
+        self.assertEqual(r.messages(), [])
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "web": False, "auto_chat": True, "bot_rounds": 3})[0], 200)
+        r.wait(lambda: any(m.get("from") == "lena" or m.get("from") == "noah"
+                           for m in r.messages()), "spontaneous conversation", 25)
+        r.wait(lambda: any(m.get("from") == "noah" for m in r.messages()) and
+                       any(m.get("from") == "lena" for m in r.messages()),
+               "both bots speak without a browser", 30)
+        self.assertEqual([m for m in r.messages() if m.get("from") == "chris"], [])
+        self.assertLessEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_chat_respects_paused_bot(self):
+        r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
+        self.addCleanup(r.close)
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": False})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
+        time.sleep(6)
+        self.assertEqual(r.lena.chats(), [])
+        self.assertEqual(r.noah.chats(), [])
+
     def test_named_bot_answers_alone(self):
         r = self.room
         r.say("Lena, wie geht es dir?")

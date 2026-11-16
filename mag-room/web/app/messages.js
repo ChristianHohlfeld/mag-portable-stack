@@ -1207,20 +1207,10 @@
   }
 
   // ---- activity row: who is doing what right now --------------------------
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf deine Freigabe (Karte oben)', login: 'wartet auf deine Anmeldung (Karte oben)', paying: 'wartet an der Kasse auf dich (Karte oben)', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
-  function paintActivity() {
-    const rows = [];
-    for (const b of S.bots) {
-      if (!b.busy && b.phase === 'idle') continue;
-      let what = phases[b.phase] || 'arbeitet';
-      if (b.phase === 'reading' && b.total > 0) what += ' ' + Math.min(99, Math.round((b.processed / b.total) * 100)) + ' %';
-      rows.push(el('div', { class: 'act-row', dataset: { bot: b.id, since: b.phase_since } },
-        el('span', { class: 'dots' }, el('i'), el('i'), el('i')), el('b', { text: b.name }), el('span', { class: 'what', text: what }),
-        el('span', { class: 't', text: MAG.stopwatch(Date.now() - b.phase_since) }),
-        b.busy ? el('button', { class: 'stop', text: 'Stop', onclick: () => MAG.api('POST', '/api/stop', { bot: b.id }).catch((x) => MAG.toast(x.message, true)) }) : null));
-    }
-    grow(() => activity.replaceChildren(...rows));
-  }
+  // All model activity is displayed by the header chips. No growing
+  // activity card belongs in the timeline: it steals mobile reading space.
+  function paintActivity() {}
+
   setInterval(() => {
     if (!activity) return;
     activity.querySelectorAll('.act-row').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });

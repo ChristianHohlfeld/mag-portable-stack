@@ -679,7 +679,18 @@ public:
       v["memory"] = conf.find("memory") ? (double)conf.find("memory")->size() : 0.0;
       v["plugins"] = conf.find("plugins") && conf.find("plugins")->isObj() ? *conf.find("plugins") : Val::object();
       const Val *m = models.find(b->id);
-      v["model"] = m ? *m : offline_model();
+      Val model = m ? *m : offline_model();
+      // A room-only deployment does not restart the model supervisor.
+      // Its older status.json may not carry capabilities yet: derive only
+      // this temporary display fallback from the weight family, NEVER from
+      // bot id. The explicit modeld capability wins after supervisor update.
+      if (jstr(model, "thinking_control").empty()) {
+        const std::string family = lower(jstr(model, "file") + " " + jstr(model, "label"));
+        model["thinking_control"] =
+          family.find("gemma") != std::string::npos ? "toggle" :
+          family.find("gpt-oss") != std::string::npos ? "effort" : "none";
+      }
+      v["model"] = model;
       v["vision"] = vision_of(b->id, m);
       v["busy"] = !b->running.empty();
       v["phase"] = b->phase;

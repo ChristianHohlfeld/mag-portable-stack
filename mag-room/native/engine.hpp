@@ -1043,8 +1043,13 @@ private:
 
   Val template_kwargs(const Val &me) {
     Val k = Val::object();
-    k["enable_thinking"] = jbool(me, "thinking", false);
-    k["reasoning_effort"] = jstr(me, "effort", "low");
+    const bool thinking = jbool(me, "thinking", false);
+    k["enable_thinking"] = thinking;
+    // No bogus "reasoning_effort=low" on a fast nonthinking Gemma request.
+    // If the model supports effort controls, its own settings supply a
+    // nonempty effort value, instead of a hard-coded legacy default.
+    if (const std::string effort = jstr(me, "effort"); thinking && !effort.empty())
+      k["reasoning_effort"] = effort;
     k["model_identity"] = "You are " + jstr(me, "name") + ", a helpful local AI assistant.";
     return k;
   }

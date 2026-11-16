@@ -2404,6 +2404,7 @@ private:
       note["content"] = closing ? goal::tail(b.goal, true)
           : "AKTIVER AUFTRAG: " + jstr(b.goal, "text") + "\nERFOLG: " + jstr(b.goal, "done") +
             "\nBISHER: Der aktuelle Seitenstand steht im letzten Browser-Werkzeugergebnis. "
+            "Nutze goal_plan und goal_step für längere Aufträge; prüfe jeden Schritt nach Ausführung. "
             "Lege mit goal_requirements alle prüfbaren Anforderungen fest. Belege vor goal_finish jede Anforderung "
             "mit einem genauen Zitat und der URL derselben beobachteten Seite. "
             "Arbeite bis goal_finish oder einem nachgewiesenen goal_blocked weiter; keine Ankündigung als Antwort.";
@@ -2542,7 +2543,17 @@ private:
     const Val mark = *found;
     b.wire.obj->erase(std::remove_if(b.wire.obj->begin(), b.wire.obj->end(), [](const auto &kv) { return kv.first == "at_work"; }), b.wire.obj->end());
     const int tries = (int)jnum(mark, "tries");
-    const bool again = jstr(mark, "reason") == "human" && !jbool(mark, "seen") && tries < 3;
+    const bool interrupted_goal = goal::active(b.goal) && !b.end_goal.load() &&
+                                  !exists(goal_mark(b));
+    if (interrupted_goal) {
+      // The last click may already have happened. Resume only by observing,
+      // never by blindly replaying a side-effecting action after a deploy.
+      b.goal["needs_relook"] = true;
+      b.goal["progress"] = "recovering";
+      save_goal(b);
+    }
+    const bool again = (interrupted_goal || (jstr(mark, "reason") == "human" &&
+                        !jbool(mark, "seen"))) && tries < 3;
     if (again) b.wire["fresh"] = true; // read, not answered
     save_wire(b);
     if (!again) return;
@@ -3334,6 +3345,12 @@ private:
           result = {who + " erledigt diese Aufgabe schon. Mach sie nicht doppelt: ergänze höchstens kurz mit Worten, was " + who +
                         " fehlt, sonst antworte PASS.", false};
           t.yielded = true;
+        } else if (goal_live(b) && jbool(b.goal, "needs_relook") &&
+                   c.name != "browser_look" && c.name != "goal_requirements" &&
+                   c.name != "goal_plan") {
+          // An interrupted browser action must be reconciled with the live
+          // browser state before any further action or a successful finish.
+          result = tools::fail("Nach Neustart zuerst browser_look aufrufen. Keine vorige Aktion erneut ausführen.");
         } else if (bad_args) {
           result = tools::fail("Die Argumente dieses Aufrufs waren kein gültiges JSON-Objekt (unvollständig oder falsch geschlossen); er wurde nicht ausgeführt. "
                                "Rufe das Werkzeug noch einmal mit vollständigen Argumenten auf, wenn du es noch brauchst.");
@@ -3444,6 +3461,44 @@ private:
                             : "Chris hat die Bezahlung abgebrochen. Bestelle nicht.", false};
                 }
               }
+            } else if (c.name == "goal_plan") {
+              if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
+              else if (const Val *old = b.goal.find("plan"); old && old->isArr() && !old->asArr().empty())
+                result = tools::fail("Plan besteht bereits; Fortschritt mit goal_step aktualisieren.");
+              else {
+                std::string why;
+                const Val *steps = args.find("steps");
+                if (!goal::plan_valid(steps, why)) result = tools::fail(why);
+                else {
+                  Val plan = Val::array();
+                  for (const auto &st : steps->asArr()) {
+                    Val entry = st;
+                    entry["status"] = "pending";
+                    plan.push(entry);
+                  }
+                  b.goal["plan"] = plan;
+                  if (!save_goal(b)) result = tools::fail("Plan konnte nicht gespeichert werden.");
+                  else result = tools::told("Teilschritte gespeichert.", "Plan wird persistent verfolgt.");
+                }
+              }
+            } else if (c.name == "goal_step") {
+              if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
+              else {
+                const std::string id = trim(jstr(args, "id")), status = jstr(args, "status");
+                bool updated = false;
+                if (Val *plan = b.goal.find("plan"); plan && plan->isArr())
+                  for (auto &st : *plan->arr) {
+                    if (jstr(st, "id") != id || jstr(st, "status") != "pending") continue;
+                    if (status != "done" && status != "blocked") break;
+                    st["status"] = status;
+                    st["note"] = clip(jstr(args, "note"), 300);
+                    updated = true;
+                    break;
+                  }
+                if (!updated) result = tools::fail("Kein offener geplanter Schritt mit dieser id.");
+                else if (!save_goal(b)) result = tools::fail("Schritt konnte nicht gespeichert werden.");
+                else result = tools::told("Schritt " + id + " aktualisiert.", "Fortschritt gesichert.");
+              }
             } else if (c.name == "goal_requirements") {
               if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
               else if (const Val *prev = b.goal.find("requirements"); prev && prev->isArr() && !prev->asArr().empty())
@@ -3467,6 +3522,8 @@ private:
                 if (summary.empty()) result = tools::fail("summary fehlt: ein bis zwei Sätze auf Deutsch.");
                 else if (goal::login_page(b.goal))
                   result = tools::fail("Die Seite will eine Anmeldung oder ein Captcha. Das ist kein Ergebnis. Rufe goal_blocked auf (kind login oder captcha) oder browser_login.");
+                else if (!goal::plan_complete(b.goal))
+                  result = tools::fail("Der gespeicherte Plan hat noch nicht erledigte Teilschritte.");
                 else if (!goal::proofs_ok(b.goal, args.find("proofs"), proof_error))
                   result = tools::fail(proof_error);
                 else if (jbool(b.goal, "shopping")) {
@@ -3622,8 +3679,14 @@ private:
           t.blocked = true;
         t.tool_sig += c.name + ":" + c.arguments + ";";
         ++t.steps;
-        if (result.snapshot.isObj() && (goal_live(b) || jstr(b.goal, "state") == "blocked"))
+        if (result.snapshot.isObj() && (goal_live(b) || jstr(b.goal, "state") == "blocked")) {
           goal::absorb(b.goal, result.snapshot, look_version);
+          if (c.name == "browser_look" && result.ok && jbool(b.goal, "needs_relook")) {
+            b.goal["needs_relook"] = false;
+            b.goal["progress"] = "running";
+            b.goal["error"] = "";
+          }
+        }
         if (!result.ok && goal::active(b.goal)) b.goal["error"] = clip(result.text, 400);
         if (b.goal.isObj() && !jstr(b.goal, "state").empty()) save_goal(b);
         // goal_finish already posted the verified links; no second model call.

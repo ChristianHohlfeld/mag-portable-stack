@@ -132,9 +132,13 @@ class FakeLlama:
                             fake.pieces += 1
                     calls = calls + raw
                     n_prompt = int(answer.get("prompt_tokens", 105)) if isinstance(answer, dict) else 105
-                    emit({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}],
-                          "timings": {"prompt_n": n_prompt, "cache_n": 0, "predicted_n": len(pieces), "predicted_per_second": 20.0}})
-                    emit({"choices": [], "usage": {"prompt_tokens": n_prompt, "completion_tokens": len(pieces)}})
+                    finish = answer.get("finish_reason") if isinstance(answer, dict) else None
+                    if not finish:
+                        finish = "tool_calls" if calls else "stop"
+                    produced = int(answer.get("completion_tokens", len(pieces))) if isinstance(answer, dict) else len(pieces)
+                    emit({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                          "timings": {"prompt_n": n_prompt, "cache_n": 0, "predicted_n": produced, "predicted_per_second": 20.0}})
+                    emit({"choices": [], "usage": {"prompt_tokens": n_prompt, "completion_tokens": produced}})
                     emit("[DONE]")
                     self.wfile.write(b"0\r\n\r\n")
                     self.close_connection = True

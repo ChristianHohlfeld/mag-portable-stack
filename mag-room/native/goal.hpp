@@ -479,6 +479,21 @@ inline void absorb(Val &g, const Val &page, int version) {
       if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
     }
   proof_page["text"] = clip(visible, 16000);
+  // Preserve clickable URLs with their observed labels/prices on EACH
+  // snapshot. A later navigation must not erase earlier result links.
+  Val links = Val::array();
+  if (const Val *els = page.find("elements"); els && els->isArr())
+    for (const auto &e : els->asArr()) {
+      const std::string href = trim(jstr(e, "href"));
+      if (!starts_with(href, "https://") && !starts_with(href, "http://")) continue;
+      if (links.asArr().size() >= 24) break;
+      Val link = Val::object();
+      link["url"] = clip(href, 700);
+      link["name"] = clip(jstr(e, "label"), 180);
+      link["price"] = clip(jstr(e, "price"), 60);
+      links.push(link);
+    }
+  proof_page["links"] = links;
   if (!g["evidence_pages"].isArr()) g["evidence_pages"] = Val::array();
   g["evidence_pages"].push(proof_page);
   auto &pages = *g["evidence_pages"].arr;
@@ -551,33 +566,33 @@ inline bool url_seen(const Val &g, std::string url) {
 inline std::string finish_context(const Val &g) {
   std::string out = "OFFENER AUFTRAG: " + clip(jstr(g, "text"), 500) + "\n";
   if (const Val *req = g.find("requirements"); req && req->isArr() && !req->asArr().empty())
-    out += "Erfolgskriterien: " + clip(mj::dump(*req), 1400) + "\n";
+    out += "Erfolgskriterien: " + clip(mj::dump(*req), 900) + "\n";
   else out += "Zuerst goal_requirements mit allen Nutzerkriterien aufrufen.\n";
   if (const Val *plan = g.find("plan"); plan && plan->isArr() && !plan->asArr().empty())
-    out += "Planstand: " + clip(mj::dump(*plan), 700) + "\n";
+    out += "Planstand: " + clip(mj::dump(*plan), 550) + "\n";
   if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr()) {
     const size_t start = pages->asArr().size() > 3 ? pages->asArr().size() - 3 : 0;
     for (size_t i = start; i < pages->asArr().size(); ++i) {
       const Val &p = pages->asArr()[i];
-      out += "QUELLE " + std::to_string(i + 1) + ": " + clip(jstr(p, "url"), 380) +
-             "\nSICHTBARER TEXT (Zitat exakt daraus): " + clip(jstr(p, "text"), 850) + "\n";
+      out += "QUELLE " + std::to_string(i + 1) + ": " + clip(jstr(p, "url"), 260) +
+             "\nSICHTBARER TEXT (Zitat exakt daraus): " + clip(jstr(p, "text"), 600) + "\n";
+      if (const Val *links = p.find("links"); links && links->isArr()) {
+        int count = 0;
+        for (const auto &link : links->asArr()) {
+          if (++count > 4) break;
+          out += "LINK " + clip(jstr(link, "name"), 100) + " | " +
+                 clip(jstr(link, "price"), 35) + " | " + clip(jstr(link, "url"), 200) + "\n";
+        }
+      }
     }
   }
-  if (const Val *cs = g.find("candidates"); cs && cs->isArr() && !cs->asArr().empty()) {
-    out += "Gesehene Kandidaten (Link nur verwendbar, falls URL tatsächlich beobachtet):\n";
-    for (size_t i = 0; i < cs->asArr().size() && i < 8; ++i) {
-      const Val &c = cs->asArr()[i];
-      out += "- " + clip(jstr(c, "name"), 150) +
-             " | " + clip(jstr(c, "price"), 40) + " | " +
-             clip(jstr(c, "url"), 320) + "\n";
-    }
-  }
-  out += "Nächster Schritt muss ein ECHTER Werkzeugaufruf sein. Ist das Ergebnis durch diese Beobachtungen "
-         "belegt, nutze goal_finish mit proofs (id, exaktes quote, URL derselben Quelle) und bei konkreten "
-         "Links items (name, url, price). Sind Kriterien noch offen, nutze das passende Browserwerkzeug. "
-         "Ein Titel oder Preis ohne beobachtete Artikel-URL genügt nicht: öffne den zugehörigen Link, "
-         "beobachte dessen Ziel-URL und belege erst dann den Artikel. Keine Quellen erfinden.";
-  return clip(out, 5700);
+  const std::string instruction =
+      "\nNächster Schritt: exakt EINEN echten Werkzeugaufruf ausführen. Ist das Ergebnis belegt, "
+      "goal_finish mit proofs (id, wörtliches quote, URL derselben Quelle), und wenn konkrete "
+      "Links gefordert sind mit items (name, url, price). Fehlen Kriterien, goal_requirements; "
+      "fehlt eine überprüfte Ziel-URL, das zugehörige Link-Element öffnen und die Ziel-URL "
+      "beobachten. Keine URL oder Textstelle erfinden.";
+  return clip(out, 4000) + instruction;
 }
 
 // A failed or missing tool call must never discard witnessed clickable links.
@@ -586,15 +601,26 @@ inline std::string provisional_sources(const Val &g) {
   std::string out = "Abschluss noch nicht verifiziert. Diese tatsächlich beobachteten Links bleiben verfügbar:";
   std::set<std::string> used;
   int n = 0;
+  const auto add = [&](const Val &c, std::string &dest, std::set<std::string> &unique, int &count) {
+    const std::string url = trim(jstr(c, "url"));
+    if ((!starts_with(url, "https://") && !starts_with(url, "http://")) ||
+        !unique.insert(url).second) return;
+    dest += "\n- " + clip(jstr(c, "name"), 110) + " — " + clip(url, 300);
+    if (!jstr(c, "price").empty()) dest += " (" + clip(jstr(c, "price"), 45) + ")";
+    ++count;
+  };
   if (const Val *cs = g.find("candidates"); cs && cs->isArr())
     for (const auto &c : cs->asArr()) {
-      const std::string url = jstr(c, "url");
-      if (!starts_with(url, "https://") && !starts_with(url, "http://")) continue;
-      if (!used.insert(url).second) continue;
-      out += "\n- " + clip(jstr(c, "name"), 110) + " — " + clip(url, 300);
-      if (!jstr(c, "price").empty()) out += " (" + clip(jstr(c, "price"), 45) + ")";
-      if (++n >= 5) break;
+      if (n >= 5) break;
+      add(c, out, used, n);
     }
+  if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr())
+    for (auto it = pages->asArr().rbegin(); it != pages->asArr().rend() && n < 5; ++it)
+      if (const Val *links = it->find("links"); links && links->isArr())
+        for (const auto &link : links->asArr()) {
+          if (n >= 5) break;
+          add(link, out, used, n);
+        }
   if (n == 0) {
     const Val *page = g.find("page");
     const std::string source = page ? jstr(*page, "url") : "";

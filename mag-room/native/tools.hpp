@@ -129,6 +129,12 @@ inline Val schemas(bool has_vm, bool phone = false) {
                   "Only the first may open an https URL or click a previously observed LINK. "
                   "Remaining actions may only scroll or wait. One observation follows; never submit forms.",
                   R"MAG({"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["open","link_click","scroll","wait"]},"url":{"type":"string"},"n":{"type":"integer"},"dy":{"type":"integer"},"seconds":{"type":"number"}},"required":["op"]}}},"required":["steps"]})MAG"));
+    list.push(fn("goal_plan", "Set a bounded plan of up to 12 actions for this open goal. "
+                  "The plan is kept across restarts and each step must be marked done before goal_finish.",
+                  R"MAG({"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"action":{"type":"string"}},"required":["id","action"]}}},"required":["steps"]})MAG"));
+    list.push(fn("goal_step", "Record verified progress on one existing planned step; "
+                  "do not mark actions complete before actually checking the result.",
+                  R"MAG({"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["done","blocked"]},"note":{"type":"string"}},"required":["id","status"]})MAG"));
     list.push(fn("goal_requirements", "Derive ALL independently verifiable user requirements before finishing. "
                   "Criteria are persisted per goal revision, and each one needs an observed page quote.",
                   R"MAG({"type":"object","properties":{"requirements":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"need":{"type":"string"}},"required":["id","need"]}}},"required":["requirements"]})MAG"));
@@ -310,6 +316,8 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "browser_scroll") return "Scrollt";
   if (name == "browser_back") return "Zurück";
   if (name == "browser_flow") return "Sichere Browserfolge";
+  if (name == "goal_plan") return "Teilziele planen";
+  if (name == "goal_step") return "Teilschritt aktualisieren";
   if (name == "goal_requirements") return "Erfolgskriterien festlegen";
   if (name == "goal_finish") return "Schließt den Auftrag ab";
   if (name == "goal_blocked") return "Auftrag blockiert: " + one(jstr(args, "reason"), 80);

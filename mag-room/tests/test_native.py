@@ -2366,6 +2366,7 @@ class RoomContract(unittest.TestCase):
         for label, price in [
             ("PVC Schrumpfschlauch transparent 60 mm Flachmaß", ""),
             ("PVC Schrumpfschlauch transparent 70 mm Flachmaß", "7,49 EUR"),
+            ("PVC Schrumpfschlauch transparent Durchmesser 60 mm", "7,49 EUR"),
         ]:
             with self.subTest(label=label, price=price):
                 browser = FakeBrowser()

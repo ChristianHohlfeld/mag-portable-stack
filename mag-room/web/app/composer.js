@@ -48,6 +48,9 @@
         el('span', { class: 'nm', text: f.why }),
         el('button', { class: 'pill', text: f.file ? 'Erneut senden' : 'Noch einmal', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); f.again(); } }),
         f.file ? null : el('button', { class: 'pill', text: 'Kamera-App', onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); shoot(); } }),
+        f.cameraRecovery ? el('button', { class: 'pill', text: 'Kamera im Browser (Notlösung)', onclick: () => {
+          failed = failed.filter((x) => x !== f); paintStaged(); shootInPage();
+        } }) : null,
         el('button', { class: 'x', 'aria-label': 'Verwerfen', html: MAG.icons.x, onclick: () => { failed = failed.filter((x) => x !== f); paintStaged(); } })));
     if (modeImage) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Format' });
@@ -146,7 +149,7 @@
       const files = [...chooser.files];
       chooser.remove();
       if (capture && !files.length) {
-        failed.push({ file: null, why: 'Die Kamera hat kein Foto zurückgegeben.', again: () => pick('image/*', true, then) });
+        failed.push({ file: null, cameraRecovery: true, why: 'Die Kamera hat kein Foto zurückgegeben.', again: () => pick('image/*', true, then) });
         paintStaged();
         return;
       }
@@ -156,6 +159,43 @@
     chooser.addEventListener('cancel', () => { done(); chooser.remove(); });
     document.body.append(chooser);
     chooser.click();
+  }
+  // Native is ALWAYS the primary camera. Some Android browsers discard
+  // the tab while the native camera is foregrounded; in that case no
+  // JavaScript can recover an unreturned file. Offer a minimal in-page
+  // camera ONLY after that failure (never as the normal camera path).
+  async function shootInPage(then) {
+    if (!navigator.mediaDevices?.getUserMedia) return shoot(then);
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 2048 }, height: { ideal: 1536 } },
+      audio: false,
+    }); }
+    catch { return shoot(then); }
+    const video = el('video', { autoplay: true, playsinline: true, muted: true });
+    video.srcObject = stream;
+    const sheet = MAG.sheet('Kamera (Notlösung)', (body, _, close) => {
+      const button = el('button', { class: 'pill', text: 'Foto aufnehmen', onclick: async () => {
+        button.disabled = true;
+        let blob = null;
+        const track = stream.getVideoTracks()[0];
+        if (track && 'ImageCapture' in window) {
+          try { blob = await new ImageCapture(track).takePhoto(); } catch {}
+        }
+        if (!blob && video.videoWidth) {
+          const canvas = el('canvas', { width: video.videoWidth, height: video.videoHeight });
+          canvas.getContext('2d').drawImage(video, 0, 0);
+          blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', .92));
+        }
+        close();
+        if (blob) await addFiles([new File([blob], 'kamera.jpg', { type: blob.type || 'image/jpeg' })], then);
+        else { failed.push({ file: null, cameraRecovery: true, why: 'Das Ersatzbild konnte nicht aufgenommen werden.', again: () => shootInPage(then) }); paintStaged(); }
+        then?.();
+      } });
+      body.append(el('div', { class: 'shoot' }, video, el('div', { class: 'shoot-bar' }, button)));
+    });
+    sheet.classList.add('camera-sheet');
+    sheet.addEventListener('closed', () => stream.getTracks().forEach((t) => t.stop()));
   }
   const shoot = (then) => pick('image/*', true, then);
 
@@ -375,7 +415,7 @@
       const opened = +sessionStorage.getItem('mag-camera');
       sessionStorage.removeItem('mag-camera');
       if (opened && Date.now() - opened < 10 * 60 * 1000)
-        failed.push({ file: null, why: 'Die Kamera-App wurde unterbrochen. Falls das Foto gespeichert wurde, wähle es aus der Galerie.', again: () => pick('image/png,image/jpeg,image/webp', false) });
+        failed.push({ file: null, cameraRecovery: true, why: 'Die Kamera-App wurde unterbrochen. Falls das Foto gespeichert wurde, wähle es aus der Galerie – sonst nutze die Kamera-Notlösung.', again: () => pick('image/png,image/jpeg,image/webp', false) });
     } catch { /* private mode */ }
     resize();
     paintStaged();

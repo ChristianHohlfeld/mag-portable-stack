@@ -391,7 +391,7 @@ static int health(int port) {
 }
 
 struct Bot {
-  std::string id, label, unit, spec_hash;
+  std::string id, label, unit, spec_hash, thinking_control;
   int port = 0, numa = 0, ctx = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
 
@@ -701,6 +701,8 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     Val v = Val::object();
     v["state"] = b.state;
     v["label"] = b.label;
+    // Control describes what the model supports, independent of bot identity.
+    v["thinking_control"] = b.thinking_control;
     // The exact weights: file name without directory and ".gguf".
     std::string file = b.model.path.substr(b.model.path.find_last_of('/') + 1);
     if (file.size() > 5 && file.compare(file.size() - 5, 5, ".gguf") == 0) file.resize(file.size() - 5);
@@ -799,6 +801,8 @@ int main(int argc, char **argv) {
       b.unit = "mag-model@" + b.id + ".service";
       auto num = [&](const char *k) { auto p = kv.second.find(k); return p ? (int)p->asNum() : 0; };
       b.label = kv.second.find("label") ? kv.second.find("label")->asStr() : b.id;
+      b.thinking_control = kv.second.find("thinking_control") ? kv.second.find("thinking_control")->asStr() : "none";
+      if (b.thinking_control != "toggle" && b.thinking_control != "effort") b.thinking_control = "none";
       b.port = num("port");
       b.numa = num("numa");
       b.ctx = num("ctx");

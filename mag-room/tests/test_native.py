@@ -2312,6 +2312,192 @@ class RoomContract(unittest.TestCase):
         self.assertIn("https://example.org/item/3", said)
         self.assertNotIn("Ich hänge", said)
 
+    def test_witnessed_recovery_selects_best_grounded_offer_not_ads_or_wrong_size(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.title = "Suchtreffer"
+        browser.text = "Gefundene Angebote für transparente PVC-Schrumpfschläuche"
+        browser.elements = [{"n": 1, "kind": "search", "label": "Suche", "x": 200, "y": 40}]
+        browser.links = [
+            {"name": "", "url": "https://example.org/sspa/click?x=7", "price": "1,00 EUR"},
+            {"name": "Werbung: PVC Schrumpfschlauch 60 mm Flachmaß",
+             "url": "https://example.org/redirect?to=/item/advert", "price": "1,49 EUR"},
+            {"name": "PVC Schrumpfschlauch transparent 50 mm Flachmaß",
+             "url": "https://example.org/item/wrong", "price": "3,99 EUR"},
+            {"name": "ISOLATECH PVC Schrumpfschlauch transparent 60 mm Flachmaß",
+             "url": "https://example.org/item/best", "price": "7,49 EUR"},
+            {"name": "PVC Schrumpfschlauch transparent 65 mm Flachmaß",
+             "url": "https://example.org/item/other", "price": "9,79 EUR"}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        requests = []
+
+        def reply(body):
+            requests.append(body)
+            if len(requests) == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "choice", "need": "Maßbereich und Preis sowie Link belegen"}]}}]}
+            if len(requests) == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Ich vergleiche die sichtbaren Angebote."
+
+        r.lena.reply = reply
+        r.say("@Lena Suche auf https://example.org/results PVC Schrumpfschlauch transparent, 60–65 mm Flachmaß, mit Preis und Link")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(goal["progress"], "done")
+        self.assertEqual(len(requests), 4)  # full palette, look, recovery, narrowed recovery
+        self.assertEqual(goal["results"][0]["url"], "https://example.org/item/best")
+        self.assertEqual(goal["results"][0]["price"], "7,49 EUR")
+        seen_urls = [link["url"] for page in goal["evidence_pages"] for link in page["links"]]
+        self.assertNotIn("https://example.org/sspa/click?x=7", seen_urls)
+        self.assertNotIn("https://example.org/redirect?to=/item/advert", seen_urls)
+        self.assertEqual(goal["proofs"][0]["url"], browser.url)
+        self.assertIn("60 mm Flachmaß", goal["proofs"][0]["quote"])
+        said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
+        self.assertIn("Beste belegte Option", said)
+        self.assertIn("https://example.org/item/best", said)
+        self.assertIn("7,49 EUR", said)
+        self.assertNotIn("redirect?to=", said)
+        self.assertNotIn("sspa/click", said)
+        self.assertNotIn("Abschluss noch nicht verifiziert", said)
+        self.assertEqual(r.noah.chats(), [])
+
+    def test_witnessed_recovery_wont_invent_price_or_override_requested_measure(self):
+        for label, price in [
+            ("PVC Schrumpfschlauch transparent 60 mm Flachmaß", ""),
+            ("PVC Schrumpfschlauch transparent 70 mm Flachmaß", "7,49 EUR"),
+            ("PVC Schrumpfschlauch transparent Durchmesser 60 mm", "7,49 EUR"),
+        ]:
+            with self.subTest(label=label, price=price):
+                browser = FakeBrowser()
+                browser.url = "https://example.org/results"
+                browser.text = "Angebotsübersicht"
+                browser.links = [{"name": label, "url": "https://example.org/item/one",
+                                  **({"price": price} if price else {})}]
+                r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+                try:
+                    seen = {"n": 0}
+
+                    def reply(body):
+                        seen["n"] += 1
+                        if seen["n"] == 1:
+                            return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                                "requirements": [{"id": "details", "need": "Breite und Preis belegen"}]}}]}
+                        if seen["n"] == 2:
+                            return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+                        return "Die Auswahl ist noch offen."
+
+                    r.lena.reply = reply
+                    r.say("@Lena Suche auf https://example.org/results PVC Schrumpfschlauch transparent 60-65 mm Flachmaß mit Preis und Link")
+                    r.idle()
+                    goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+                    self.assertEqual(goal["state"], "active")
+                    self.assertEqual(goal["progress"], "paused")
+                    self.assertNotIn("results", goal)
+                finally:
+                    r.close()
+                    browser.close()
+
+    def test_witnessed_recovery_does_not_claim_purchase_from_search_page(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.text = "Produktangebote"
+        browser.links = [{"name": "Transparenter PVC Schrumpfschlauch 60 mm Flachmaß",
+                          "url": "https://example.org/item/a", "price": "7,49 EUR"}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        turn = {"n": 0}
+
+        def reply(body):
+            turn["n"] += 1
+            if turn["n"] == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "buy", "need": "Bestellung tatsächlich abschließen"}]}}]}
+            if turn["n"] == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Ich habe den Artikel gefunden."
+
+        r.lena.reply = reply
+        r.say("@Lena Bestelle auf https://example.org/results transparenten PVC Schrumpfschlauch 60 mm Flachmaß, mit Preis")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertNotIn("results", goal)
+
+    def test_witnessed_recovery_respects_unproven_non_product_requirement(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.text = "Ergebnisübersicht"
+        browser.links = [{"name": "Transparenter PVC Schrumpfschlauch 60 mm Flachmaß",
+                          "url": "https://example.org/item/a", "price": "7,49 EUR"}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        n = {"count": 0}
+
+        def reply(body):
+            n["count"] += 1
+            if n["count"] == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [
+                        {"id": "item", "need": "PVC Material mit Preis belegen"},
+                        {"id": "delivery", "need": "Lieferung bis morgen verbindlich bestätigen"}]}}]}
+            if n["count"] == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            return "Hier ist ein Angebot."
+
+        r.lena.reply = reply
+        r.say("@Lena Suche auf https://example.org/results PVC Schrumpfschlauch 60 mm Flachmaß mit Preis und Lieferung morgen")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "active")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertNotIn("results", goal)
+
+    def test_goal_finish_rejects_redirect_as_item_even_if_observed(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/results"
+        browser.text = "Material wird angeboten."
+        browser.links = [
+            {"name": "PVC Schrumpfschlauch 60 mm Flachmaß",
+             "url": "https://example.org/sspa/click?target=item", "price": "7,49 EUR"},
+            {"name": "PVC Schrumpfschlauch 60 mm Flachmaß",
+             "url": "https://example.org/item/direct", "price": "7,49 EUR"}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        n = {"count": 0}
+
+        def reply(body):
+            n["count"] += 1
+            if n["count"] == 1:
+                return {"tool_calls": [{"name": "goal_requirements", "arguments": {
+                    "requirements": [{"id": "item", "need": "Einen konkreten Artikel belegen"}]}}]}
+            if n["count"] == 2:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            url = "https://example.org/sspa/click?target=item" if n["count"] == 3 else "https://example.org/item/direct"
+            return {"tool_calls": [{"name": "goal_finish", "arguments": {
+                "summary": "PVC Schrumpfschlauch mit 60 mm Flachmaß.",
+                "proofs": [{"id": "item", "url": browser.url, "quote": "PVC Schrumpfschlauch 60 mm Flachmaß"}],
+                "items": [{"name": "PVC Schrumpfschlauch 60 mm Flachmaß", "url": url,
+                           "price": "7,49 EUR"}]}}]}
+
+        r.lena.reply = reply
+        r.say("@Lena Suche auf https://example.org/results PVC Schrumpfschlauch 60 mm Flachmaß")
+        r.idle()
+        goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(goal["state"], "done")
+        self.assertEqual(goal["results"][0]["url"], "https://example.org/item/direct")
+        steps = [p for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts") or [] if p["k"] == "step" and p["tool"] == "goal_finish"]
+        self.assertEqual([p["state"] for p in steps], ["error", "ok"])
+        self.assertIn("Weiterleitungslink", steps[0]["output"])
+
     def test_standalone_json_goal_finish_executes_once_through_verification(self):
         browser = FakeBrowser()
         browser.url = "https://example.org/overview"

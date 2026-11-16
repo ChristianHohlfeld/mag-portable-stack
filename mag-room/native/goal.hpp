@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <regex>
 #include <set>
 
 namespace mag::goal {
@@ -440,6 +441,7 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
 }
 
 // ---- page memory ------------------------------------------------------------
+inline bool direct_link(const std::string &url); // defined with evidence ranking below
 inline void absorb(Val &g, const Val &page, int version) {
   if (!active(g) || !page.isObj()) return;
   Val p = Val::object();
@@ -465,8 +467,11 @@ inline void absorb(Val &g, const Val &page, int version) {
     for (auto &e : els->asArr()) {
       const std::string href = jstr(e, "href"), price = jstr(e, "price"), label = jstr(e, "label");
       add += "\n" + label + " " + href + " " + price;
-      const bool product = !price.empty() || href.find("/dp/") != std::string::npos || href.find("/gp/") != std::string::npos;
-      if (product && cands.arr->size() < 12) {
+      // Product candidates are semantic titled links, not shop-specific URL
+      // paths and never an empty sponsored click or a tracking redirect.
+      const bool candidate = direct_link(href) && !trim(label).empty() &&
+                             (jstr(e, "kind") == "link" || !price.empty());
+      if (candidate && cands.arr->size() < 12) {
         Val c = Val::object();
         c["n"] = jnum(e, "n");
         c["name"] = label;
@@ -484,9 +489,9 @@ inline void absorb(Val &g, const Val &page, int version) {
     size_t added = 0;
     for (const auto &link : links->asArr()) {
       const std::string href = jstr(link, "url"), label = jstr(link, "name");
-      if ((!starts_with(href, "https://") && !starts_with(href, "http://")) || href.size() > 700) continue;
+      if (!direct_link(href) || trim(label).empty()) continue;
       if (added++ < 48) add += "\n" + label + " " + href + " " + jstr(link, "price");
-      if (cands.asArr().size() < 12 && !label.empty() && recorded.insert(href).second) {
+      if (cands.asArr().size() < 12 && recorded.insert(href).second) {
         Val c = Val::object();
         c["name"] = label;
         c["url"] = href;
@@ -504,18 +509,13 @@ inline void absorb(Val &g, const Val &page, int version) {
   Val proof_page = Val::object();
   proof_page["url"] = jstr(page, "url");
   std::string visible = clip(jstr(page, "text"), 6000);
-  if (const Val *els = page.find("elements"); els && els->isArr())
-    for (const auto &e : els->asArr()) {
-      visible += "\n" + clip(jstr(e, "label"), 240);
-      if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
-    }
   // Preserve clickable URLs with their observed labels/prices on EACH
   // snapshot. A later navigation must not erase earlier result links.
   Val links = Val::array();
   std::set<std::string> known;
   const auto append_link = [&](const std::string &href, const std::string &label, const std::string &price) {
-    if ((!starts_with(href, "https://") && !starts_with(href, "http://")) ||
-        href.size() > 700 || links.asArr().size() >= 64 || !known.insert(href).second) return;
+    if (!direct_link(href) || trim(label).empty() ||
+        links.asArr().size() >= 128 || !known.insert(href).second) return;
     Val link = Val::object();
     link["url"] = href;
     link["name"] = clip(label, 180);
@@ -525,7 +525,7 @@ inline void absorb(Val &g, const Val &page, int version) {
   if (const Val *dom = p.find("links"); dom && dom->isArr())
     for (const auto &link : dom->asArr()) {
       append_link(jstr(link, "url"), jstr(link, "name"), jstr(link, "price"));
-      if (links.asArr().size() >= 48) break;
+      if (links.asArr().size() >= 110) break;
     }
   if (const Val *els = p.find("elements"); els && els->isArr())
     for (const auto &e : els->asArr())
@@ -534,7 +534,15 @@ inline void absorb(Val &g, const Val &page, int version) {
     visible += "\n" + jstr(link, "name");
     if (!jstr(link, "price").empty()) visible += " " + jstr(link, "price");
   }
-  proof_page["text"] = clip(visible, 16000);
+  // Link labels first: the previous 16k truncation could hide product links
+  // behind unrelated viewport controls and make a verified answer impossible.
+  if (const Val *els = p.find("elements"); els && els->isArr())
+    for (const auto &e : els->asArr()) {
+      if (visible.size() > 36000) break;
+      visible += "\n" + clip(jstr(e, "label"), 240);
+      if (!jstr(e, "price").empty()) visible += " " + clip(jstr(e, "price"), 80);
+    }
+  proof_page["text"] = clip(visible, 40000);
   proof_page["links"] = links;
   if (!g["evidence_pages"].isArr()) g["evidence_pages"] = Val::array();
   g["evidence_pages"].push(proof_page);
@@ -616,6 +624,252 @@ inline bool url_seen(const Val &g, std::string url) {
   return q != std::string::npos && seen.find(url.substr(0, q)) != std::string::npos;
 }
 
+
+// Browser links are untrusted observations. A tracking/click URL is not a
+// verified destination. Do not recommend it, even when it has a product-like
+// title: the target must instead be observed on a subsequent browser page.
+inline bool redirect_wrapper(const std::string &url) {
+  const size_t scheme = url.find("://");
+  if (scheme == std::string::npos) return false;
+  const size_t start = url.find('/', scheme + 3);
+  if (start == std::string::npos) return false;
+  const size_t end = url.find_first_of("?#", start);
+  const std::string path = lower(url.substr(start, end == std::string::npos ? end : end - start));
+  size_t pos = 0;
+  while (pos < path.size()) {
+    const size_t slash = path.find('/', pos);
+    const std::string segment = path.substr(pos, slash == std::string::npos ? slash : slash - pos);
+    if (segment == "click" || segment == "adclick" || segment == "track" ||
+        segment == "outbound" || segment.find("redirect") != std::string::npos) return true;
+    if (slash == std::string::npos) break;
+    pos = slash + 1;
+  }
+  return false;
+}
+inline bool direct_link(const std::string &url) {
+  return (starts_with(url, "https://") || starts_with(url, "http://")) &&
+         url.size() <= 700 && !redirect_wrapper(url);
+}
+
+// Extract requirements as ordinary numeric ranges with units, rather than
+// prescribing any product category or website. When a range is requested,
+// candidate descriptions without an in-range observation cannot be selected.
+struct MeasureRange { double from, to; std::string unit; };
+inline double decimal(std::string s) {
+  replace_all(s, ",", ".");
+  return strtod(s.c_str(), nullptr);
+}
+inline std::vector<MeasureRange> ranges_in(const std::string &s) {
+  static const std::regex pattern(R"((\d+(?:[.,]\d+)?)\s*(?:-|–|—|bis|to)\s*(\d+(?:[.,]\d+)?)\s*([a-zA-Z%]{1,8}))", std::regex::icase);
+  std::vector<MeasureRange> ranges;
+  for (std::sregex_iterator it(s.begin(), s.end(), pattern), end; it != end; ++it) {
+    const double a = decimal((*it)[1].str()), b = decimal((*it)[2].str());
+    ranges.push_back({std::min(a,b), std::max(a,b), lower((*it)[3].str())});
+  }
+  return ranges;
+}
+inline bool measure_in(const std::string &title, const MeasureRange &range) {
+  static const std::regex pattern(R"((\d+(?:[.,]\d+)?)\s*([a-zA-Z%]{1,8}))", std::regex::icase);
+  for (std::sregex_iterator it(title.begin(), title.end(), pattern), end; it != end; ++it) {
+    const double n = decimal((*it)[1].str());
+    if (lower((*it)[2].str()) == range.unit && n >= range.from && n <= range.to) return true;
+  }
+  return false;
+}
+inline std::set<std::string> meaningful_words(std::string s) {
+  static const std::regex urls(R"(https?://[^\s]+)", std::regex::icase);
+  s = std::regex_replace(lower(s), urls, " ");
+  static const std::set<std::string> stop = {
+      "bitte", "suche", "suchen", "finde", "finden", "nenn", "nenne", "zeige",
+      "passend", "passende", "passenden", "option", "optionen", "artikel",
+      "produkt", "produkte", "angebot", "angebote", "ergebnis", "ergebnisse",
+      "preis", "preise", "link", "links", "seite", "seiten", "direkt",
+      "konkret", "konkrete", "konkretes", "beleg", "belege", "belegen",
+      "prüfe", "pruefe", "prüfen", "pruefen", "details", "gefundenen",
+      "diese", "dieser", "dieses", "welche", "welcher", "welchen",
+      "beste", "besten", "bestes", "einen", "einem", "einer", "eine",
+      "zwischen", "sowie", "mehrere", "nachweisen", "bestätigen", "bestaetigen",
+      "alle", "zwei", "verschiedene", "diesem", "mit", "und", "oder",
+      "auf", "aus", "bei", "von", "für", "zum", "zur", "der", "die", "das"};
+  std::set<std::string> words;
+  std::string word;
+  const auto add = [&]() {
+    if (word.size() >= 4 && !stop.count(word)) words.insert(word);
+    word.clear();
+  };
+  for (unsigned char c : s) {
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c >= 128) word += (char)c;
+    else add();
+  }
+  add();
+  return words;
+}
+inline int word_overlap(const std::set<std::string> &wanted, const std::string &title) {
+  const auto present = meaningful_words(title);
+  int count = 0;
+  for (const auto &w : wanted) if (present.count(w)) ++count;
+  return count;
+}
+inline bool has_measure(const std::string &title) {
+  static const std::regex measure(R"(\d+(?:[.,]\d+)?\s*[a-zA-Z%]{1,8})", std::regex::icase);
+  return std::regex_search(title, measure);
+}
+// A numeric match is not enough if it describes a different attribute
+// (e.g. a diameter where the user requested a flat width). These terms are
+// generic measurements, not knowledge of any shop or product type.
+inline bool same_measure_kind(const std::string &wanted, const std::string &observed) {
+  const std::string task = lower(wanted), label = lower(observed);
+  for (const char *kind : {"flachmaß", "breite", "durchmesser", "länge",
+                           "höhe", "tiefe", "gewicht", "kapazität", "volumen"}) {
+    if (stem(task, kind) && !stem(label, kind)) return false;
+  }
+  return true;
+}
+struct ObservedChoice {
+  std::string name, url, price, source, quote;
+  int score = 0;
+};
+// Scope to *observed link + label + price* on the same page. Do not scrape a
+// price from an unrelated snippet or invent a target from a tracking URL.
+inline std::vector<ObservedChoice> observed_choices(const Val &g) {
+  std::vector<ObservedChoice> out;
+  const Val *pages = g.find("evidence_pages");
+  if (!pages || !pages->isArr()) return out;
+  const std::string task = jstr(g, "text");
+  const auto terms = meaningful_words(task);
+  const auto ranges = ranges_in(task);
+  std::set<std::string> used;
+  for (auto it = pages->asArr().rbegin(); it != pages->asArr().rend(); ++it) {
+    const Val *links = it->find("links");
+    const std::string source = jstr(*it, "url"), visible = jstr(*it, "text");
+    if (!links || !links->isArr() || !direct_link(source)) continue;
+    for (const auto &link : links->asArr()) {
+      const std::string url = trim(jstr(link, "url")), name = trim(jstr(link, "name"));
+      const std::string price = trim(jstr(link, "price"));
+      if (!direct_link(url) || url == source || name.size() < 13 || used.count(lower(url))) continue;
+      if (visible.find(name) == std::string::npos ||
+          (!price.empty() && visible.find(name + " " + price) == std::string::npos)) continue;
+      bool fits = true;
+      for (const auto &range : ranges)
+        if (!measure_in(name, range)) { fits = false; break; }
+      if (!fits || !same_measure_kind(task, name)) continue;
+      const int words = word_overlap(terms, name);
+      if (!words && ranges.empty()) continue; // "Kandidat A" alone is no recommendation
+      ObservedChoice item{name, url, price, source, name + (price.empty() ? "" : " " + price),
+                          words * 12 + (ranges.empty() ? 0 : 50) + (price.empty() ? 0 : 5)};
+      used.insert(lower(url));
+      out.push_back(std::move(item));
+    }
+  }
+  std::stable_sort(out.begin(), out.end(), [](const ObservedChoice &a, const ObservedChoice &b) {
+    return a.score > b.score;
+  });
+  return out;
+}
+// Only read-only discovery can be closed from link evidence. Observed products
+// cannot prove that a purchase, form submission or other side effect occurred.
+inline bool discovery_only(const Val &g) {
+  if (!jbool(g, "shopping")) return false;
+  const std::string s = lower(jstr(g, "text"));
+  return !(stem(s, "bestell") || stem(s, "kaufe") || stem(s, "bezahl") ||
+           stem(s, "buche") || stem(s, "abschließ") || stem(s, "abschliess") ||
+           stem(s, "versend") || (s.find("schick mir") != std::string::npos) || stem(s, "lösch") ||
+           stem(s, "klick") || s.find("warenkorb") != std::string::npos);
+}
+// Grounded deterministic safety net ONLY when a local model twice fails to
+// emit a tool call. All facts and URLs come from saved browser observations.
+// Complex requirements or missing values keep the goal open instead.
+inline bool witnessed_completion(Val &g, std::string &answer) {
+  if (!active(g) || !discovery_only(g) || !plan_complete(g)) return false;
+  const auto choices = observed_choices(g);
+  const size_t needed = (size_t)std::max(1.0, jnum(g, "min_items", 1));
+  if (choices.size() < needed) return false;
+  const std::string task = lower(jstr(g, "text"));
+  const bool need_price = task.find("preis") != std::string::npos ||
+                          task.find("€") != std::string::npos;
+  // Never silently replace a model-derived success contract. A missing or
+  // invalid goal_requirements call means we cannot prove all user criteria.
+  Val requirements = g.find("requirements") ? *g.find("requirements") : Val::array();
+  std::string why;
+  if (!requirements_ok(&requirements, why)) return false;
+  const auto requested = ranges_in(jstr(g, "text"));
+  Val items = Val::array();
+  std::vector<ObservedChoice> picked;
+  for (const auto &c : choices) {
+    if ((need_price && c.price.empty()) || !direct_link(c.url)) continue;
+    // Do not satisfy one requirement merely because some unrelated page was
+    // opened. A named fact must be present in the candidate itself.
+    bool criteria = true;
+    for (const auto &req : requirements.asArr()) {
+      const std::string need = lower(jstr(req, "need"));
+      if (need.find("preis") != std::string::npos && c.price.empty()) criteria = false;
+      if ((need.find("maß") != std::string::npos || need.find("breite") != std::string::npos ||
+           need.find("größe") != std::string::npos || need.find("durchmesser") != std::string::npos) &&
+          !has_measure(c.name)) criteria = false;
+      for (const auto &range : ranges_in(need))
+        if (!measure_in(c.name, range)) criteria = false;
+      // An arbitrary natural-language requirement is not satisfied merely
+      // because a product has a name and a URL. Every substantive term must
+      // occur in the witnessed item, or denote an observed generic facet.
+      const auto words = meaningful_words(need);
+      const auto in_name = meaningful_words(c.name);
+      for (const auto &word : words) {
+        if (word == "maßbereich" || word == "abmessungen" || word == "breite" ||
+            word == "höhe" || word == "länge" || word == "durchmesser" ||
+            word == "größe" || word == "dimensions") {
+          if (!has_measure(c.name)) criteria = false;
+        } else if (word == "preisangabe" || word == "kosten" || word == "betrag") {
+          if (c.price.empty()) criteria = false;
+        } else if (word == "website" || word == "webseite" || word == "url" ||
+                   word == "shoplink" || word == "quelle") {
+          if (!direct_link(c.url)) criteria = false;
+        } else if (!in_name.count(word)) {
+          criteria = false;
+        }
+      }
+      // A requested ratio is not implied by a matching width.
+      static const std::regex ratio(R"(\b\d+\s*:\s*\d+\b)");
+      std::smatch match;
+      if (std::regex_search(need, match, ratio) && c.name.find(match.str()) == std::string::npos)
+        criteria = false;
+    }
+    if (!criteria) continue;
+    Val item = Val::object();
+    item["name"] = c.name; item["url"] = c.url;
+    if (!c.price.empty()) item["price"] = c.price;
+    items.push(item);
+    picked.push_back(c);
+    if (picked.size() >= needed) break;
+  }
+  if (picked.size() < needed) return false;
+  Val proofs = Val::array();
+  for (const auto &req : requirements.asArr()) {
+    Val proof = Val::object();
+    proof["id"] = jstr(req, "id");
+    proof["url"] = picked.front().source;
+    proof["quote"] = clip(picked.front().quote, 500);
+    proofs.push(proof);
+  }
+  Val before = g;
+  g["requirements"] = requirements;
+  if (!proofs_ok(g, &proofs, why)) { g = before; return false; }
+  std::string summary = "Beste belegte Option unter den gesehenen Treffern: " + picked.front().name + ".";
+  if (!requested.empty()) summary += " Die sichtbare Maßangabe liegt im gesuchten Bereich.";
+  else summary += " Die Bezeichnung stimmt mit dem Suchauftrag überein.";
+  answer = summary;
+  for (size_t i = 0; i < picked.size(); ++i) {
+    const auto &c = picked[i];
+    answer += "\n" + std::to_string(i + 1) + ". " + clip(c.name, 180);
+    if (!c.price.empty()) answer += " — Preis: " + clip(c.price, 45);
+    answer += " — " + clip(c.url, 700);
+  }
+  g["results"] = items;
+  g["proofs"] = proofs;
+  g["summary"] = summary;
+  end(g, "done");
+  return true;
+}
+
 // Prepare a small, provenance-labelled finishing context instead of forcing
 // another full browser exploration when a CPU model replies without a tool.
 // The model still chooses the answer; these are untrusted observations only.
@@ -626,6 +880,13 @@ inline std::string finish_context(const Val &g) {
   else out += "Zuerst goal_requirements mit allen Nutzerkriterien aufrufen.\n";
   if (const Val *plan = g.find("plan"); plan && plan->isArr() && !plan->asArr().empty())
     out += "Planstand: " + clip(mj::dump(*plan), 550) + "\n";
+  const auto matches = observed_choices(g);
+  for (size_t i = 0; i < matches.size() && i < 8; ++i) {
+    const auto &c = matches[i];
+    out += "RELEVANTER TREFFER " + std::to_string(i + 1) + ": " + clip(c.name, 180) +
+           " | Preis: " + clip(c.price, 45) + " | Direktlink: " + clip(c.url, 360) +
+           " | Quellseite: " + clip(c.source, 240) + "\n";
+  }
   if (const Val *pages = g.find("evidence_pages"); pages && pages->isArr()) {
     const size_t start = pages->asArr().size() > 3 ? pages->asArr().size() - 3 : 0;
     for (size_t i = start; i < pages->asArr().size(); ++i) {
@@ -635,6 +896,7 @@ inline std::string finish_context(const Val &g) {
       if (const Val *links = p.find("links"); links && links->isArr()) {
         int count = 0;
         for (const auto &link : links->asArr()) {
+          if (!direct_link(jstr(link, "url")) || trim(jstr(link, "name")).empty()) continue;
           if (++count > 4) break;
           out += "LINK " + clip(jstr(link, "name"), 100) + " | " +
                  clip(jstr(link, "price"), 35) + " | " + clip(jstr(link, "url"), 200) + "\n";
@@ -659,12 +921,19 @@ inline std::string provisional_sources(const Val &g) {
   int n = 0;
   const auto add = [&](const Val &c, std::string &dest, std::set<std::string> &unique, int &count) {
     const std::string url = trim(jstr(c, "url"));
-    if ((!starts_with(url, "https://") && !starts_with(url, "http://")) ||
+    if (!direct_link(url) || trim(jstr(c, "name")).empty() ||
         !unique.insert(url).second) return;
     dest += "\n- " + clip(jstr(c, "name"), 110) + " — " + clip(url, 300);
     if (!jstr(c, "price").empty()) dest += " (" + clip(jstr(c, "price"), 45) + ")";
     ++count;
   };
+  const auto ranked = observed_choices(g);
+  for (const auto &c : ranked) {
+    if (n >= 5) break;
+    Val item = Val::object();
+    item["name"] = c.name; item["url"] = c.url; item["price"] = c.price;
+    add(item, out, used, n);
+  }
   if (const Val *cs = g.find("candidates"); cs && cs->isArr())
     for (const auto &c : cs->asArr()) {
       if (n >= 5) break;

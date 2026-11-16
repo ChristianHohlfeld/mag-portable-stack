@@ -771,13 +771,9 @@ inline bool witnessed_completion(Val &g, std::string &answer) {
   const std::string task = lower(jstr(g, "text"));
   const bool need_price = task.find("preis") != std::string::npos ||
                           task.find("€") != std::string::npos;
+  // Never silently replace a model-derived success contract. A missing or
+  // invalid goal_requirements call means we cannot prove all user criteria.
   Val requirements = g.find("requirements") ? *g.find("requirements") : Val::array();
-  if (!requirements.isArr() || requirements.asArr().empty()) {
-    requirements = Val::array();
-    Val r = Val::object(); r["id"] = "observed_selection";
-    r["need"] = "Konkreten Treffer mit sichtbarem Namen und direktem Link belegen";
-    requirements.push(r);
-  }
   std::string why;
   if (!requirements_ok(&requirements, why)) return false;
   const auto requested = ranges_in(jstr(g, "text"));

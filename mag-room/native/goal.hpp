@@ -422,13 +422,22 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
       if (kv.first != "action") args[kv.first] = kv.second;
   }
   if (!args.isObj()) return false;
-  // Textual JSON is not native tool calling. Recover only read-only page
-  // observations and server-validated goal bookkeeping; never a shell,
-  // click, form submit, purchase, plugin write or other side effect.
+  // A local model may serialize a genuine read/navigation call as bare
+  // JSON even with tool_choice=required. Recover only a WHOLE standalone
+  // command with valid args. No typing, clicking, flow with clicks, consent,
+  // shell, purchase, form submit or plugin writes are promoted from text.
   static const std::set<std::string> safe = {
       "goal_requirements", "goal_plan", "goal_step", "goal_finish",
-      "goal_blocked", "browser_look", "browser_read"};
+      "goal_blocked", "browser_look", "browser_read", "browser_scroll",
+      "browser_wait", "browser_back", "browser_open", "web_search"};
   if (!safe.count(name)) return false;
+  // A text-only navigation requires a real HTTP(S) URL, not javascript:,
+  // file:, about: or a possible malicious pseudo-scheme.
+  if (name == "browser_open") {
+    const std::string url = trim(jstr(args, "url"));
+    if ((!starts_with(url, "https://") && !starts_with(url, "http://")) ||
+        url.find_first_of(" \t\r\n") != std::string::npos) return false;
+  }
   llm::ToolCall parsed;
   parsed.id = "call_json_" + random_hex(5);
   parsed.name = name;

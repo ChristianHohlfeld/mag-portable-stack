@@ -141,9 +141,13 @@
         onpointerdown: () => { explained = false; held = setTimeout(() => { explained = true; MAG.toast(tip); }, 550); },
         onpointerup: () => clearTimeout(held), onpointerleave: () => clearTimeout(held), oncontextmenu: (e) => e.preventDefault(),
         onclick: () => { if (explained) return; if (stopped) return botSheet(b.id); pause(b, b.enabled); } }, el('span', { class: 'dot' }));
+      const working = b.enabled && (b.busy || b.phase !== 'idle') && !['paused', 'stopped'].includes(b.model?.state);
       return el('div', { class: 'chip ' + cls + (nudged[b.id] > Date.now() ? ' nudge' : ''), dataset: { bot: b.id } }, dot,
         el('button', { class: 'open', 'aria-label': b.name + ': ' + text, title: b.name + ': ' + text, onclick: () => botSheet(b.id) },
-          el('span', { class: 'name', text: b.name }), cls === 'ready' ? null : el('span', { class: 'state', text })));
+          el('span', { class: 'name', text: b.name }), cls === 'ready' ? null : el('span', { class: 'state', text })),
+        working && owner() ? el('button', { class: 'chip-stop', 'aria-label': b.name + ' stoppen', title: b.name + ' stoppen',
+          onclick: () => MAG.api('POST', '/api/stop', { bot: b.id }).catch((err) => MAG.toast(err.message, true)) },
+          MAG.icon('stop')) : null);
     }));
     $('#clear').hidden = !owner();
     document.querySelector('.sheet')?.refresh?.();

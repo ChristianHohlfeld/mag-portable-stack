@@ -2657,9 +2657,16 @@ private:
     }
     while (cut < msgs.arr->size() - 1 && jstr((*msgs.arr)[cut], "role") != "user") ++cut;
     if (cut <= 1 || cut >= msgs.arr->size()) return;
+    // Old chat may be summarized, but long-term memory data must remain
+    // available without being moved into the immutable system prefix.
+    std::vector<Val> memory_keep;
+    for (size_t i = 1; i < cut; ++i)
+      if (jbool((*msgs.arr)[i], "_memory_sync")) memory_keep.push_back((*msgs.arr)[i]);
     msgs.arr->erase(msgs.arr->begin() + 1, msgs.arr->begin() + (long)cut);
+    msgs.arr->insert(msgs.arr->begin() + 1, memory_keep.begin(), memory_keep.end());
     save_wire(b);
-    logf("engine: " + b.id + " context compacted, dropped " + std::to_string(cut - 1) + " messages");
+    logf("engine: " + b.id + " context compacted, dropped " +
+         std::to_string(cut - 1 - memory_keep.size()) + " messages (memory retained)");
   }
 
   // A tool call whose arguments are no JSON object must not stand in a prompt

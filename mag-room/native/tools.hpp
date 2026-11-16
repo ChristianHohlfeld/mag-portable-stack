@@ -413,6 +413,47 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
     out += "\n";
   }
   if (rows.size() > ranked.size()) out += "… " + std::to_string(rows.size() - ranked.size()) + " weitere Elemente, nicht gezeigt\n";
+  // DOM link inventory is separate from viewport click targets. It covers
+  // actual hrefs further down the page and must not manufacture n indices.
+  if (const Val *links = v.find("links"); links && links->isArr() && !links->asArr().empty()) {
+    struct LinkRow { int score; size_t order; const Val *value; };
+    std::set<std::string> shown;
+    for (const auto &row : ranked) {
+      const std::string href = jstr(*row.e, "href");
+      if (!href.empty()) shown.insert(href);
+    }
+    std::vector<LinkRow> best;
+    for (size_t i = 0; i < links->asArr().size(); ++i) {
+      const Val &link = links->asArr()[i];
+      const std::string href = jstr(link, "url"), label = lower(jstr(link, "name"));
+      if (!starts_with(href, "https://") && !starts_with(href, "http://")) continue;
+      if (href.size() > 700 || shown.count(href)) continue;
+      int score = (!jstr(link, "price").empty() ? 4 : 0) + (label.size() >= 20 ? 2 : 0);
+      std::string word;
+      for (char c : goal_low + " ") {
+        if (std::isalnum((unsigned char)c) || (unsigned char)c >= 0x80) word += c;
+        else {
+          if (word.size() >= 4 && label.find(word) != std::string::npos) score += 5;
+          word.clear();
+        }
+      }
+      best.push_back({score, i, &link});
+    }
+    std::sort(best.begin(), best.end(), [](const LinkRow &a, const LinkRow &b) {
+      return a.score != b.score ? a.score > b.score : a.order < b.order;
+    });
+    if (!best.empty()) {
+      out += "Weitere echte Seitenlinks (auch unterhalb des sichtbaren Bereichs; keine Klicknummer):\n";
+      const size_t count = std::min<size_t>(10, best.size());
+      for (size_t i = 0; i < count; ++i) {
+        const Val &link = *best[i].value;
+        out += "- " + clip(jstr(link, "name"), 120);
+        if (!jstr(link, "price").empty()) out += " | " + clip(jstr(link, "price"), 35);
+        out += " | " + jstr(link, "url") + "\n";
+      }
+      if (best.size() > count) out += "… " + std::to_string(best.size() - count) + " weitere echte URLs im Seiten-Snapshot\n";
+    }
+  }
   out += "Text (Anfang):\n" + clip(jstr(v, "text"), 2500, "\n…[gekürzt]");
   return out;
 }

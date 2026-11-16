@@ -86,6 +86,8 @@ def main():
     (card / "pp_dpm_sclk").write_text("0\n")
     cap = card / "hwmon" / "hwmon0" / "power1_cap"
     cap.write_text("78000000\n")
+    gpu_busy = card / "gpu_busy_percent"
+    gpu_busy.write_text("0\n")
     cap_mtime = cap.stat().st_mtime_ns
     (tmp / "temp").write_text("70")
     env = dict(os.environ, MAG_IDOL_JOB_ROOT=str(root), MAG_IDOL_PORT=str(port), MAG_IDOL_PYTHON=str(stage),
@@ -95,6 +97,7 @@ def main():
                MAG_GPU_SYSFS=str(card),                             # its clock files, and not the real card
                MAG_GPU_HOLD_S="1", MAG_GPU_PLATEAU_S="2", MAG_GPU_PLATEAU_WINDOW_S="1",
                MAG_GPU_HOLD_MAX_S="8", MAG_GPU_THROTTLE_RESTORE_S="2",
+               MAG_GPU_HOLD_BUSY_S="2", MAG_GPU_HOLD_REARM_S="5",
                MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
     worker, wlog = [None], [None]
 
@@ -206,9 +209,10 @@ def main():
         assert call("POST", "/api/idol/select?x=2&y=0", PNG)[0] == 400 and call("POST", "/api/idol/select", b"not a picture")[0] == 415
         assert [p for p in root.iterdir() if p.name != image["id"]] == [], list(root.iterdir())
         assert call("GET", "/api/idol/health")[1]["resumable"] is True
-        # Clocks first. 83 °C keeps the three lowest sclk levels, 89 °C only the
-        # lowest, and a job is not held for that. The way back is one step, then
-        # auto after the card has stayed cool. The power cap file is never written.
+        # Clocks first. Immediate throttle up, but no downward transition
+        # near 88 C: a hysteresis latch prevents 1 Hz low/lowest oscillation.
+        # Restoration requires a separate cool dwell at each lower level.
+        # The fixed 78 W cap must never be written.
         (tmp / "temp").write_text("83")
         assert wait_clocks(lambda c: c[:2] == ("manual", "0 1 2"), "low sclk levels")[2] == "78000000\n"
         warm = order()
@@ -216,12 +220,31 @@ def main():
         assert s.get("cooling") is not True and clocks()[:2] == ("manual", "0 1 2"), (s, clocks())
         (tmp / "temp").write_text("89")
         assert wait_clocks(lambda c: c[:2] == ("manual", "0"), "lowest sclk level")[2] == "78000000\n"
-        (tmp / "temp").write_text("84")
-        assert wait_clocks(lambda c: c[:2] == ("manual", "0 1 2"), "one step back from the lowest level")
+        # Back and forth 80/89 should NEVER flip the mask on each sample.
+        for degree in ("84", "89", "80", "88", "84"):
+            (tmp / "temp").write_text(degree)
+            time.sleep(1.1)
+            assert clocks()[:2] == ("manual", "0"), (degree, clocks())
         (tmp / "temp").write_text("76")
-        time.sleep(0.4)                                 # the cool minute (here, 2 s) has not elapsed
+        assert wait_clocks(lambda c: c[:2] == ("manual", "0 1 2"), "low after sustained cooldown")[2] == "78000000\n"
+        (tmp / "temp").write_text("74")
+        time.sleep(0.4)
         assert clocks()[0] == "manual", clocks()
-        assert wait_clocks(lambda c: c[0] == "auto", "auto after it stayed cool")[2] == "78000000\n"
+        assert wait_clocks(lambda c: c[0] == "auto", "auto after second stable cooldown")[2] == "78000000\n"
+        # A fully busy, already-submitted GPU kernel must not be "cooled"
+        # by SIGSTOP: it continues on the MI50. Run it at lowest clocks.
+        gpu_busy.write_text("100\n")
+        (tmp / "temp").write_text("90")
+        busy_job = order()
+        s = wait(busy_job, lambda s: s["state"] == "running" and s.get("pid"), "busy GPU stage running")
+        assert s.get("cooling") is not True, s
+        assert wait_clocks(lambda c: c[:2] == ("manual", "0"), "lowest under busy load")[2] == "78000000\n"
+        time.sleep(1.2)
+        assert status(busy_job).get("cooling") is not True, status(busy_job)
+        assert wait(busy_job, lambda s: s["state"] == "done", "busy GPU job completes without SIGSTOP")["state"] == "done"
+        gpu_busy.write_text("0\n")
+        (tmp / "temp").write_text("74")
+        wait_clocks(lambda c: c[0] == "auto", "restored after high utilization")
         (tmp / "temp").write_text("89")
         wait_clocks(lambda c: c[1] == "0", "lowest again, to prove a stop restores auto")
         stop()
@@ -252,6 +275,20 @@ def main():
         s = wait(p, lambda s: s["state"] == "done", "done after a flat plateau")
         assert s.get("cooling") is False and (root / p / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
         assert any("hold ineffective" in ln for ln in said(p)), said(p)
+        # An emergency hold at 95 C may be ineffective because an active
+        # GPU kernel ignores SIGSTOP. Below emergency, let it finish rather
+        # than retaining the cooling overlay forever.
+        gpu_busy.write_text("100\n")
+        (tmp / "temp").write_text("95")
+        e_busy = order()
+        wait(e_busy, lambda s: s.get("cooling") is True, "emergency held while GPU busy")
+        (tmp / "temp").write_text("91")
+        s = wait(e_busy, lambda s: s.get("cooling") is False, "busy emergency hold released", 20)
+        assert s["state"] == "running" and "error" not in s, s
+        assert any("SIGSTOP cannot preempt a GPU kernel" in ln for ln in said(e_busy)), said(e_busy)
+        assert wait(e_busy, lambda s: s["state"] == "done", "busy stage eventually completes")["state"] == "done"
+        gpu_busy.write_text("0\n")
+        (tmp / "temp").write_text("70")
         # 0c. At 86 °C the plateau must not let go. That is still the danger zone.
         (tmp / "temp").write_text("95")
         z = order()

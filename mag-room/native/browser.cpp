@@ -272,7 +272,37 @@ for(const e of document.querySelectorAll(sel)){
  out.push({n:els.length,kind,label,x:Math.round(cx),y:Math.round(cy),href:href||undefined,price:price||undefined,password:secret||undefined,checked:(e.checked===true)||undefined});
  if(els.length>=150)break;}
 window.__magEls=els;
-return {url:location.href,title:document.title,scroll:Math.round(scrollY),height:document.documentElement.scrollHeight,vh:innerHeight,elements:out};})())JS";
+// Click targets are viewport-only. Search results may be below the fold:
+// retain real HTTP(S) hrefs from rendered DOM, without creating click IDs.
+const urls=new Set(),documentLinks=[];
+let scanned=0,order=0;
+for(const a of document.querySelectorAll('a[href]')){
+ if(++scanned>1200)break;
+ const r=a.getBoundingClientRect();
+ if(r.width<2||r.height<2)continue;
+ const st=getComputedStyle(a);
+ if(st.display==='none'||st.visibility==='hidden'||+st.opacity===0)continue;
+ let href='';
+ try{href=String(a.href||'')}catch(_){}
+ if(!/^https?:\/\//i.test(href)||href.length>700||urls.has(href))continue;
+ let label=(a.getAttribute('aria-label')||a.innerText||a.textContent||a.title||'').replace(/\s+/g,' ').trim().slice(0,160);
+ if(!label){const img=a.querySelector('img[alt]');if(img)label=(img.alt||'').trim().slice(0,160);}
+ if(!label)continue;
+ let price='';
+ try{
+  const host=a.closest('li,article,[role=listitem]')||a.parentElement;
+  const blob=String((host&&host.innerText)||a.innerText||'').slice(0,700).replace(/\s+/g,' ');
+  const pm=blob.match(/([0-9]{1,5}(?:[.,][0-9]{2})?\s?(?:€|EUR)|(?:€|EUR)\s?[0-9]{1,5}(?:[.,][0-9]{2})?)/);
+  if(pm)price=pm[1].slice(0,24);
+ }catch(_){}
+ urls.add(href);
+ documentLinks.push({name:label,url:href,price:price||undefined,
+  _score:(price?8:0)+(label.length>18?3:0)+(a.querySelector('img')?1:0)+(r.top>=0&&r.top<innerHeight?1:0),
+  _order:order++});
+}
+documentLinks.sort((a,b)=>b._score-a._score||a._order-b._order);
+const links=documentLinks.slice(0,180).map(({name,url,price})=>({name,url,price}));
+return {url:location.href,title:document.title,scroll:Math.round(scrollY),height:document.documentElement.scrollHeight,vh:innerHeight,elements:out,links};})())JS";
 #include "browser_udp.hpp"
 int main(int argc, char **argv) {
   try {

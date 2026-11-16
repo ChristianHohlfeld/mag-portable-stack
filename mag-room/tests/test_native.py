@@ -1512,6 +1512,7 @@ class RoomContract(unittest.TestCase):
         go = threading.Event()
         r.lena.reply = lambda body: (go.wait(20), "Zu spät.")[1] if "Erzähl" in json.dumps(body["messages"][-1], ensure_ascii=False) else "Frisch."
         r.noah.reply = lambda body: "PASS"
+        noah_initial_actions = len(r.noah.slot_actions)
         (guests / "agent1").mkdir(parents=True, exist_ok=True)
         (guests / "agent1" / "notiz.txt").write_text("von gestern")
         # Lena is in the middle of an answer. Chris resets her: the turn ends at once, nothing waits for it.
@@ -1538,7 +1539,9 @@ class RoomContract(unittest.TestCase):
         self.assertEqual([m["text"] for m in r.messages() if m["id"] > asked["id"]], ["Frisch."])
         self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
         self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
-        self.assertNotIn("erase", [a for a, _ in r.noah.slot_actions])           # Noah was not touched
+        # Noah may erase an EMPTY slot while creating his first cold prefix at
+        # startup. Only actions after the initial warmup count as a bot reset.
+        self.assertNotIn("erase", [a for a, _ in r.noah.slot_actions[noah_initial_actions:]])  # Noah was not reset
         # The room is restarted in the middle of a reset (a deploy): it goes on, and a failure is said in words.
         (ctl / "hold").touch()
         self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)
@@ -2293,6 +2296,10 @@ class RoomContract(unittest.TestCase):
         # Simulate old prefix hash with identical settings signature.
         stored["prefix"] = "previous-release-tools-changed"
         wire.write_text(json.dumps(stored))
+        # The real deploy's new prefix filename has no saved slot. The fake
+        # llama does not distinguish filenames when restoring; invalidate its
+        # simulated checkpoint explicitly so restore fails and Save is tested.
+        r.lena.saved.clear()
         r.lena.slot_actions.clear()
         start = len(r.lena.requests)
         r.start()

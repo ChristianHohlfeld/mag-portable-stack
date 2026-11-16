@@ -708,6 +708,8 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     v["port"] = b.port;
     v["numa"] = b.numa;
     v["ctx"] = b.ctx;
+    v["spec_hash"] = b.spec_hash; // identifies the active runtime/launch specification for prefix restore
+    v["slot_dir"] = g_state_dir + "/slots/" + b.id; // same directory passed to llama-server --slot-save-path
     v["detail"] = b.detail;
     v["model"] = artifact_json(b.model);
     if (b.draft.configured) {

@@ -422,9 +422,10 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
       if (kv.first != "action") args[kv.first] = kv.second;
   }
   if (!args.isObj()) return false;
-  // Textual JSON is not native tool calling. Recover only read-only page
-  // observations and server-validated goal bookkeeping; never a shell,
-  // click, form submit, purchase, plugin write or other side effect.
+  // Only recover *standalone* server-validated goal bookkeeping and
+  // inert page reads. A text JSON that names a navigation, search, scroll,
+  // wait, click, type, payment or write MUST NOT be promoted into an action.
+  // Ask the model for a genuine native tool call instead.
   static const std::set<std::string> safe = {
       "goal_requirements", "goal_plan", "goal_step", "goal_finish",
       "goal_blocked", "browser_look", "browser_read"};

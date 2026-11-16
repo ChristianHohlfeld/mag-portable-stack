@@ -3163,6 +3163,19 @@ private:
         } else if (found.markup && found.calls.size() != 1) {
           logf("engine: " + b.id + " markup was not one valid tool call");
         }
+        if (res.calls.empty()) {
+          llm::ToolCall json_call;
+          if (goal::text_tool_call(res.content, tools, json_call)) {
+            res.calls.push_back(json_call);
+            res.content.clear();
+            // Streaming had temporarily displayed the JSON; never keep it
+            // in the user's conversation or the model's assistant text.
+            t.tail.clear();
+            if (t.id.empty()) t.held.clear();
+            else room_.retake_text(t.id, text0, "");
+            logf("engine: " + b.id + " recovered standalone JSON tool call: " + json_call.name);
+          }
+        }
       }
       // What the model produced is part of the log, also when it was cut off.
       const std::string content = strip_markers(res.content);

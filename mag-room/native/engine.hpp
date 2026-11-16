@@ -3613,8 +3613,19 @@ private:
                         " fehlt, sonst antworte PASS.", false};
           t.yielded = true;
         } else if (bad_args) {
-          result = tools::fail("Die Argumente dieses Aufrufs waren kein gültiges JSON-Objekt (unvollständig oder falsch geschlossen); er wurde nicht ausgeführt. "
-                               "Rufe das Werkzeug noch einmal mit vollständigen Argumenten auf, wenn du es noch brauchst.");
+          std::string why = "Die Argumente dieses Aufrufs waren kein gültiges JSON-Objekt (unvollständig oder falsch geschlossen); er wurde nicht ausgeführt. "
+                            "Rufe den nötigen nativen Werkzeugaufruf mit einem vollständigen JSON-Objekt erneut auf.";
+          // A malformed goal_finish is NOT a failed proof and must not
+          // trigger any unverified automatic completion or task-specific fix.
+          if (c.name == "goal_finish" && goal_live(b)) {
+            why += " Gespeicherte Anforderungen bleiben unverändert (goal_requirements NICHT wiederholen):";
+            if (const Val *reqs = b.goal.find("requirements"); reqs && reqs->isArr())
+              for (const auto &req : reqs->asArr())
+                why += " " + clip(jstr(req, "id"), 55) + "=" + clip(jstr(req, "need"), 140) + ";";
+            why += " Nur echte beobachtete Seiten-URLs und exakte Zitate belegen eine ID; "
+                   "keine erfundenen Quellen, keine Werkzeug-JSON-Ausgabe im Text.";
+          }
+          result = tools::fail(why);
         } else {
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
           ctx.goal = jstr(b.goal, "text");
@@ -3817,8 +3828,16 @@ private:
               }
             } else if (c.name == "goal_requirements") {
               if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
-              else if (const Val *prev = b.goal.find("requirements"); prev && prev->isArr() && !prev->asArr().empty())
-                result = tools::fail("Anforderungen bereits gespeichert; nur eine Nutzerkorrektur setzt sie zurück.");
+              else if (const Val *prev = b.goal.find("requirements"); prev && prev->isArr() && !prev->asArr().empty()) {
+                // The criteria are immutable, but reading them repeatedly is
+                // idempotent and should not create an erroneous red step.
+                std::string current = "Anforderungen bereits gespeichert und unverändert:\n";
+                for (const auto &r : prev->asArr())
+                  current += "- " + clip(jstr(r, "id"), 60) + ": " + clip(jstr(r, "need"), 220) + "\n";
+                current += "Nicht erneut speichern. Prüfe die beobachteten Seiten; goal_finish "
+                           "erst mit realen URL-/Textbelegen für jede ID.";
+                result = tools::told(current, "Anforderungen bereits gespeichert; unverändert übernommen.");
+              }
               else {
                 std::string why;
                 const Val *requirements = args.find("requirements");

@@ -175,6 +175,31 @@ inline void end(Val &g, const std::string &state) {
   g["progress"] = state;
 }
 
+// An execution plan is separate from the model's success criteria. It is
+// persisted with the goal and never implicitly marks anything successful.
+inline bool plan_ok(const Val *steps, std::string &why) {
+  if (!steps || !steps->isArr() || steps->asArr().empty() || steps->asArr().size() > 12) {
+    why = "Ein Plan benötigt 1 bis 12 Schritte."; return false;
+  }
+  std::set<std::string> ids;
+  for (const auto &step : steps->asArr()) {
+    const std::string id = trim(jstr(step, "id"));
+    const std::string action = trim(jstr(step, "action"));
+    const std::string done = trim(jstr(step, "done_when"));
+    if (id.empty() || id.size() > 40 || action.size() < 3 || action.size() > 240 ||
+        done.size() < 3 || done.size() > 240 || !ids.insert(id).second) {
+      why = "Jeder Schritt braucht eindeutige id, action und done_when."; return false;
+    }
+  }
+  return true;
+}
+inline bool plan_complete(const Val &g) {
+  const Val *steps = g.find("plan");
+  if (!steps || !steps->isArr() || jnum(g, "plan_revision", -1) != jnum(g, "revision")) return true;
+  for (const auto &step : steps->asArr()) if (jstr(step, "state") != "done") return false;
+  return true;
+}
+
 // ---- raw tool-call markup ---------------------------------------------------
 // Gemma writes `<|tool_call>call:browser_click{n:28}<tool_call|>` into its
 // thoughts. The cleaner drops that. Args may use bare keys (`n:28`) or JSON.
@@ -374,6 +399,8 @@ inline void absorb(Val &g, const Val &page, int version) {
   p["blocked"] = jbool(page, "blocked");
   p["text"] = clip(jstr(page, "text"), 2500);
   if (const Val *els = page.find("elements"); els && els->isArr()) p["elements"] = *els;
+  else if (const Val *old = g.find("page"); old && jstr(*old, "url") == jstr(page, "url") && old->find("elements"))
+    p["elements"] = *old->find("elements");
   else p["elements"] = Val::array();
   g["page"] = p;
   g["version"] = version;

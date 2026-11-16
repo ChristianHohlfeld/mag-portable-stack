@@ -143,6 +143,11 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  R"({"type":"object","properties":{"reason":{"type":"string","description":"why, in German, one or two sentences"},"kind":{"type":"string","enum":["login","captcha","consent","other"]}},"required":["reason"]})"));
     list.push(fn("share_file", "Post a file from your VM in the chat so Chris can open or download it.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path"]})"));
+    list.push(fn("goal_plan", "Optional durable execution plan: up to 12 generic steps with a test of completion. "
+                  "Use it for multi-stage tasks, not for simple one-page visits.",
+                  R"MAG({"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"action":{"type":"string"},"done_when":{"type":"string"}},"required":["id","action","done_when"]}}},"required":["steps"]})MAG"));
+    list.push(fn("goal_step", "Mark one planned step as done or blocked. Done requires an exact visible quote and its seen page URL.",
+                  R"MAG({"type":"object","properties":{"id":{"type":"string"},"state":{"type":"string","enum":["done","blocked","pending"]},"note":{"type":"string"},"url":{"type":"string"},"quote":{"type":"string"}},"required":["id","state"]})MAG"));
   }
   list.push(fn("web_search", "Search the web (Brave) for current facts; returns sources with excerpts.",
                R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})"));
@@ -662,7 +667,17 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       return nav(acted(ctx.guests.browser(vm, "GET", "/navigate?url=" + url_encode(url), "", 60, ctx.cancel)));
     }
     if (name == "browser_look") return look(ctx, vm);
-    if (name == "browser_read") return browser_result(ctx.guests.browser(vm, "GET", "/read", "", 30, ctx.cancel), 9000);
+    if (name == "browser_read") {
+      const auto r = ctx.guests.browser(vm, "GET", "/read", "", 30, ctx.cancel);
+      Result out = browser_result(r, 9000);
+      // The full read participates in the same URL-scoped evidence ledger as
+      // /elements; the room never invents text that the controller did not send.
+      if (out.ok) {
+        Val page = jparse(r.body);
+        if (page.isObj() && !jstr(page, "url").empty()) out.snapshot = page;
+      }
+      return out;
+    }
     if (name == "browser_back") return nav(acted(ctx.guests.browser(vm, "GET", "/back", "", 30, ctx.cancel)));
     if (name == "browser_click") {
       Val body = Val::object();

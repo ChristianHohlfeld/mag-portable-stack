@@ -2263,6 +2263,7 @@ class RoomContract(unittest.TestCase):
         self.addCleanup(r.close)
         self.addCleanup(browser.close)
         calls = []
+        url_before_valid_flow = []
 
         def reply(body):
             i = len(calls)
@@ -2273,10 +2274,16 @@ class RoomContract(unittest.TestCase):
                 return {"tool_calls": [{"name": "browser_flow", "arguments": {"steps": [
                     {"op": "link_click", "n": 7}, {"op": "scroll", "dy": 300}]}}]}
             if i == 2:
+                # The first operation must NOT happen: a later operation is invalid.
+                return {"tool_calls": [{"name": "browser_flow", "arguments": {"steps": [
+                    {"op": "open", "url": "https://example.org/unintended-navigation"},
+                    {"op": "type", "text": "unsafe"}]}}]}
+            if i == 3:
+                url_before_valid_flow.append(browser.url)
                 return {"tool_calls": [{"name": "browser_flow", "arguments": {"steps": [
                     {"op": "open", "url": "https://example.org/start"},
                     {"op": "scroll", "dy": 300}, {"op": "wait", "seconds": 0.1}]}}]}
-            if i == 3:
+            if i == 4:
                 return {"tool_calls": [{"name": "goal_requirements", "arguments": {"requirements": [
                     {"id": "status", "need": "Den angezeigten Dokumentstatus belegen"}]}}]}
             return {"tool_calls": [{"name": "goal_finish", "arguments": {"summary": "Status nachgewiesen.",
@@ -2287,11 +2294,12 @@ class RoomContract(unittest.TestCase):
         r.idle()
         steps = [p for m in r.messages() if m.get("from") == "lena" for p in m.get("parts") or []
                  if p.get("k") == "step" and p.get("tool") == "browser_flow"]
-        self.assertEqual([p["state"] for p in steps], ["error", "ok"])
+        self.assertEqual([p["state"] for p in steps], ["error", "error", "ok"])
+        self.assertEqual(url_before_valid_flow, ["https://example.org/start"])
         self.assertEqual(browser.clicks, [])
         self.assertEqual(browser.scroll, 300)
         self.assertEqual(json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())["state"], "done")
-        self.assertEqual(len(calls), 5)  # open, scroll and wait were ONE model decision
+        self.assertEqual(len(calls), 6)  # open, scroll and wait were ONE model decision
     def test_generic_plan_progress_is_durable_and_requires_seen_evidence(self):
         browser = FakeBrowser()
         browser.url = "https://example.org/page"

@@ -22,6 +22,7 @@
 #include <atomic>
 
 #include <ctime>
+#include <mutex>
 #include <regex>
 #include <stdexcept>
 #include <thread>
@@ -723,6 +724,7 @@ private:
   struct Bot {
     std::string id;
     llm::Backend backend;
+    std::mutex inference_mu; // serializes that llama.cpp slot against peer review
     std::thread worker;
     long budget = 32000;
     // --- guarded by Engine::mu_ ---
@@ -1064,6 +1066,7 @@ private:
   // it when the file of today exists. Only for an empty conversation.
   void warm_prefix(Bot &b, const Val &me, bool slot_is_empty) {
     if (b.wire["messages"].asArr().size() > 1) return;
+    std::lock_guard<std::mutex> inference(b.inference_mu);
     const std::string file = prefix_file(b);
     set_phase(b, "warming", "Systemprompt");
     std::string err;
@@ -1130,7 +1133,12 @@ private:
       save_wire(b);
       set_phase(b, "resetting", "KV-Cache leeren");
       std::string err;
-      if (llm::slot_erase(b.backend, &err)) {
+      bool erased = false;
+      {
+        std::lock_guard<std::mutex> inference(b.inference_mu);
+        erased = llm::slot_erase(b.backend, &err);
+      }
+      if (erased) {
         result = "ok";
         set_kv(b, "empty");
         {
@@ -1855,6 +1863,7 @@ private:
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = jbool(me, "thinking", false) ? 1500 : 320;
       // After a deploy the server may have to read the whole log again before it gets to the picture.
+      std::lock_guard<std::mutex> inference(b.inference_mu);
       const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
       if (!res.ok()) {
         // The model did not get to answer (stopped, too slow, away): the picture stays to be described.
@@ -2041,6 +2050,7 @@ private:
     if (!tools.asArr().empty()) body["tools"] = tools;
     body["chat_template_kwargs"] = template_kwargs(me);
     body["max_tokens"] = jbool(me, "thinking", false) ? 1200 : 40;
+    std::lock_guard<std::mutex> inference(b.inference_mu);
     const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
     if (!res.ok()) {
       logf("engine: " + b.id + " could not look for a thing: " + (res.cancelled ? "cancelled" : res.error));
@@ -2657,7 +2667,11 @@ private:
           // next turn from that prefix.
           if (jnum(b.wire, "model_since", -2) != since) {
             if (b.wire["messages"].asArr().size() <= 1) warm_prefix(b, me, true);
-            else { std::string err; llm::slot_restore(b.backend, prefix_file(b), &err); }
+            else {
+              std::string err;
+              std::lock_guard<std::mutex> inference(b.inference_mu);
+              llm::slot_restore(b.backend, prefix_file(b), &err);
+            }
             b.wire["model_since"] = since;
             save_wire(b);
           } else {
@@ -3050,7 +3064,11 @@ private:
       const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
       const size_t thought0 = t.reasoning.size();
       const bool shown0 = t.visible;
-      llm::ChatResult res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
+      llm::ChatResult res;
+      {
+        std::lock_guard<std::mutex> inference(b.inference_mu);
+        res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
+      }
       t.last = res;
       t.completion += res.completion_tokens;
       logf("engine: " + b.id + " prefill prompt=" + std::to_string(res.prompt_tokens) +
@@ -3418,6 +3436,89 @@ private:
               } else {
                 result = {decision == "stopped" ? "abgebrochen (Stop)" : decision == "timeout" ? "Chris hat sich in 15 Minuten nicht angemeldet. Sag ihm kurz, dass du dort auf ihn wartest."
                           : "Chris hat die Anmeldung abgelehnt. Mach dort nicht weiter.", false};
+              }
+            } else if (c.name == "goal_peer_review") {
+              if (!goal_live(b)) result = tools::fail("Kein offener Auftrag für die Zweitprüfung.");
+              else {
+                Bot *peer = nullptr;
+                for (auto &candidate : bots_) if (candidate.get() != &b) { peer = candidate.get(); break; }
+                if (!peer || model_state(peer->id) != "ready" || !jbool(room_.bot(peer->id), "enabled", true))
+                  result = tools::fail("Der andere Bot ist nicht verfügbar.");
+                else {
+                  std::unique_lock<std::mutex> inference(peer->inference_mu, std::try_to_lock);
+                  bool busy = !inference.owns_lock();
+                  {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    busy = busy || !peer->running.empty() || peer->want || peer->warming || peer->resetting || peer->wipe_pending || peer->reset_pending;
+                  }
+                  if (busy) result = tools::fail("Der andere Bot arbeitet gerade; Zweitprüfung später erneut anfordern.");
+                  else {
+                    Val messages = Val::array(), sys = Val::object(), req = Val::object();
+                    sys["role"] = "system";
+                    sys["content"] = "Unabhängige Zweitprüfung. Lies die vorliegenden Angaben kritisch. "
+                        "Führe KEINE Aktionen aus, nutze KEINE Werkzeuge. Nenne fehlende Nachweise, "
+                        "Widersprüche oder unvollständige Anforderungen. Keine erfundenen Quellen. "
+                        "Antworte auf Deutsch in maximal sechs kurzen Sätzen.";
+                    messages.push(sys);
+                    Val material = Val::object();
+                    material["goal"] = clip(jstr(b.goal, "text"), 2800);
+                    material["proposed_summary"] = clip(jstr(args, "summary"), 2000);
+                    material["review_question"] = clip(jstr(args, "question"), 500);
+                    if (const Val *r = b.goal.find("requirements")) material["requirements"] = *r;
+                    if (const Val *r = b.goal.find("plan")) material["plan"] = *r;
+                    if (const Val *r = b.goal.find("evidence_pages"); r && r->isArr()) {
+                      Val pages = Val::array();
+                      size_t n = 0;
+                      for (const auto &p : r->asArr()) {
+                        if (n++ >= 8) break;
+                        Val page = Val::object();
+                        page["url"] = clip(jstr(p, "url"), 500);
+                        page["text"] = clip(jstr(p, "text"), 1600);
+                        pages.push(page);
+                      }
+                      material["evidence_pages"] = pages;
+                    }
+                    req["role"] = "user";
+                    req["content"] = mj::dump(material);
+                    messages.push(req);
+                    Val review_body = Val::object();
+                    review_body["messages"] = messages;
+                    review_body["max_tokens"] = (double)std::max(128L, std::min(512L, envl("MAG_ROOM_PEER_REVIEW_TOKENS", 256)));
+                    review_body["temperature"] = 0.0;
+                    review_body["chat_template_kwargs"] = template_kwargs(room_.bot(peer->id));
+                    // Snapshot the peer's entire warmed conversation KV state.
+                    // Restoring only its system prefix would make the next
+                    // turn prefill the complete conversation again on CPU.
+                    const std::string backup = "mag-peer-review-" + peer->id + ".bin";
+                    std::string backup_error;
+                    if (!llm::slot_save(peer->backend, backup, &backup_error)) {
+                      result = tools::fail("Zweitprüfung ohne gesicherten Peer-KV-Cache verweigert: " + clip(backup_error, 160));
+                    } else {
+                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {},
+                          (int)std::max(30L, std::min(180L, envl("MAG_ROOM_PEER_REVIEW_SECONDS", 120))));
+                      std::string restore_error;
+                      const bool restored = llm::slot_restore(peer->backend, backup, &restore_error);
+                      if (!restored) {
+                        llm::slot_erase(peer->backend, &restore_error);
+                        result = tools::fail("Peer-KV konnte nicht wiederhergestellt werden; Cache wurde sicher geleert.");
+                      } else if (!review.ok() || trim(review.content).empty())
+                        result = tools::fail("Unabhängige Zweitprüfung nicht verfügbar: " + clip(review.error, 160));
+                      else {
+                      Val entry = Val::object();
+                      entry["by"] = peer->id;
+                      entry["summary"] = clip(jstr(args, "summary"), 2000);
+                      entry["review"] = clip(trim(review.content), 2000);
+                      entry["goal_revision"] = jnum(b.goal, "revision");
+                      if (!b.goal["peer_reviews"].isArr()) b.goal["peer_reviews"] = Val::array();
+                      b.goal["peer_reviews"].push(entry);
+                      if (b.goal["peer_reviews"].arr->size() > 6) b.goal["peer_reviews"].arr->erase(b.goal["peer_reviews"].arr->begin());
+                      result = save_goal(b) ? tools::told("Unabhängige Zweitprüfung durch " + peer->id + ": " + trim(review.content),
+                                                        "Zweitprüfung gespeichert.")
+                                            : tools::fail("Zweitprüfung konnte nicht gespeichert werden.");
+                      }
+                    }
+                  }
+                }
               }
             } else if (c.name == "browser_pay" && assist && vm::valid_name(jstr(me, "vm"))) {
               // First the purchase, by Chris's rules (a consent card or his auto mode

@@ -141,6 +141,10 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  "End the open task because it cannot go on: a login, a captcha, or something that needs Chris (consent). "
                  "Say why in German. This is the only other way to stop; a plan in the text does not end the task.",
                  R"({"type":"object","properties":{"reason":{"type":"string","description":"why, in German, one or two sentences"},"kind":{"type":"string","enum":["login","captcha","consent","other"]}},"required":["reason"]})"));
+    list.push(fn("goal_peer_review", "Ask the OTHER bot for an independent, read-only review of the planned result "
+                  "using seen page excerpts and saved requirements; optionally ask a specific analytical subtask. "
+                  "No browser or shared actions. Its advice cannot override server-side checks.",
+                  R"MAG({"type":"object","properties":{"summary":{"type":"string","description":"the answer you plan to give the user"},"question":{"type":"string","description":"optional specific read-only review subtask"}},"required":["summary"]})MAG"));
     list.push(fn("share_file", "Post a file from your VM in the chat so Chris can open or download it.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path"]})"));
     list.push(fn("goal_plan", "Optional durable execution plan: up to 12 generic steps with a test of completion. "

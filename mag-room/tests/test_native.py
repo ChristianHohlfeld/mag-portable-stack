@@ -2328,6 +2328,34 @@ class RoomContract(unittest.TestCase):
         r.stop()
         r.start()
         self.assertEqual(json.loads(path.read_text())["plan"][0]["state"], "done")
+    def test_independent_peer_review_is_read_only_and_persisted(self):
+        r = Room(MAG_ROOM_PEER_REVIEW_SECONDS="40")
+        self.addCleanup(r.close)
+        r.noah.reply = lambda body: "Einzelne Anforderungen sind noch nicht belegt. Bitte die Quelle prüfen."
+        seen = {"calls": 0}
+
+        def lena(body):
+            seen["calls"] += 1
+            if seen["calls"] == 1:
+                return {"tool_calls": [{"name": "goal_peer_review", "arguments": {
+                    "summary": "Der Auftrag ist erledigt.",
+                    "question": "Welche Anforderungen sind unbelegt?"}}]}
+            return "Ich prüfe die verbleibenden Anforderungen."
+
+        r.lena.reply = lena
+        r.say("@Lena Prüfe https://example.org/seite")
+        r.idle()
+        reviews = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
+        self.assertEqual(reviews["state"], "active")
+        self.assertEqual(reviews["peer_reviews"][0]["by"], "noah")
+        self.assertIn("nicht belegt", reviews["peer_reviews"][0]["review"])
+        calls = r.noah.chats()
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("tools", calls[0])
+        self.assertIn("Welche Anforderungen sind unbelegt", calls[0]["messages"][1]["content"])
+        self.assertEqual(calls[0]["messages"][0]["role"], "system")
+        self.assertFalse(any(m["from"] == "noah" for m in r.messages()))
+
 
 
     def test_a_browser_goal_blocks_for_a_login_and_leaves_the_other_bot_out(self):

@@ -2835,6 +2835,7 @@ private:
 
   struct TurnState {
     std::string token = new_id(); // marks this turn's entries in the prompt log
+    std::string goal_id;          // stable task ID for grouping all continuation steps in the UI
     uint64_t epoch = 0;      // room generation (trash button) the turn belongs to
     std::string id;          // room message, created on first visible output
     std::string held;        // text not shown yet (could still become PASS)
@@ -2921,6 +2922,7 @@ private:
     m["parts"] = Val::array();
     m["attachments"] = Val::array();
     m["reason"] = reason;
+    if (!t.goal_id.empty()) m["goal_id"] = t.goal_id; // presentation only, steps retain their own audit entries
     if (const std::string thoughts = llm::tidy_thoughts(t.reasoning); !thoughts.empty()) m["reasoning"] = thoughts;
     t.id = jstr(room_.add(m), "id");
     if (Val *mark = b.wire.find("at_work"); mark && mark->isObj()) {
@@ -3118,6 +3120,9 @@ private:
     for (int step = 0; step <= room_.cfg.max_steps; ++step) {
       if (t.stop_after) break;
       apply_goal_cmd(b);
+      // A goal may finish partway through this turn. Preserve its original ID
+      // on the entire bot message, including the final goal_finish tool call.
+      if (t.goal_id.empty() && goal_live(b)) t.goal_id = jstr(b.goal, "id");
       if (cancel->stopped()) { cancelled = true; break; }
       if (step > 0 && append_unseen(b, me, true, "")) { // Chris wrote while the bot was working
         b.read_at_work = true;

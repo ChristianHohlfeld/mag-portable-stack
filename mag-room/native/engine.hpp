@@ -3315,6 +3315,23 @@ private:
             continue;
           }
           if (t.finish_recovery || t.stalls >= 2 || t.drives >= 4) {
+            // Tool calling failed twice. Read-only discovery may still be
+            // completed from witnessed labels, direct URLs and observed prices.
+            // Actions and unresolved requirements never auto-complete.
+            std::string grounded;
+            if (!goal::login_page(b.goal)) {
+              const Val saved = b.goal;
+              if (goal::witnessed_completion(b.goal, grounded)) {
+                if (save_goal(b)) {
+                  t.visible = true;
+                  emit_text(b, t, grounded, name, reason, true);
+                  t.stop_after = true;
+                  logf("engine: " + b.id + " goal finished from witnessed candidates after missing tool calls");
+                  break;
+                }
+                b.goal = saved;
+              }
+            }
             const std::string partial = goal::provisional_sources(b.goal);
             t.visible = true;
             emit_text(b, t, partial, name, reason, true);
@@ -3687,6 +3704,7 @@ private:
                       if (const size_t query = canonical.find('?'); query != std::string::npos) canonical.resize(query);
                       while (!canonical.empty() && canonical.back() == '/') canonical.pop_back();
                       if (item.empty() || url.empty()) bad = "Jeder Artikel braucht name und url.";
+                      else if (!goal::direct_link(url)) bad = "Werbe-/Weiterleitungslink ist keine geprüfte Artikel-URL. Öffne den Treffer, um die direkte Ziel-URL zu sehen.";
                       else if (!goal::url_seen(b.goal, url)) bad = "Die URL stand auf keiner gesehenen Seite: " + clip(url, 160) +
                          ". Öffne den entsprechenden Link im Browser und prüfe die tatsächliche Ziel-URL; keine URL erfinden.";
                       else if (!unique.insert(canonical).second) bad = "Doppelter Artikel-Link: keine zwei verschiedenen Produkte.";

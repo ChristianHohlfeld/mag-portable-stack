@@ -1212,8 +1212,7 @@
   function paintActivity() {}
 
   setInterval(() => {
-    if (!activity) return;
-    activity.querySelectorAll('.act-row').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
+    if (!list) return; // not mounted yet; the activity row was intentionally removed
     list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
       const m = S.messages.get(node.dataset.message || node.closest('.msg')?.dataset.id);

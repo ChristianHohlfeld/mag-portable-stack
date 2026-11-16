@@ -710,6 +710,17 @@ inline bool has_measure(const std::string &title) {
   static const std::regex measure(R"(\d+(?:[.,]\d+)?\s*[a-zA-Z%]{1,8})", std::regex::icase);
   return std::regex_search(title, measure);
 }
+// A numeric match is not enough if it describes a different attribute
+// (e.g. a diameter where the user requested a flat width). These terms are
+// generic measurements, not knowledge of any shop or product type.
+inline bool same_measure_kind(const std::string &wanted, const std::string &observed) {
+  const std::string task = lower(wanted), label = lower(observed);
+  for (const char *kind : {"flachmaß", "breite", "durchmesser", "länge",
+                           "höhe", "tiefe", "gewicht", "kapazität", "volumen"}) {
+    if (stem(task, kind) && !stem(label, kind)) return false;
+  }
+  return true;
+}
 struct ObservedChoice {
   std::string name, url, price, source, quote;
   int score = 0;
@@ -737,7 +748,7 @@ inline std::vector<ObservedChoice> observed_choices(const Val &g) {
       bool fits = true;
       for (const auto &range : ranges)
         if (!measure_in(name, range)) { fits = false; break; }
-      if (!fits) continue;
+      if (!fits || !same_measure_kind(task, name)) continue;
       const int words = word_overlap(terms, name);
       if (!words && ranges.empty()) continue; // "Kandidat A" alone is no recommendation
       ObservedChoice item{name, url, price, source, name + (price.empty() ? "" : " " + price),

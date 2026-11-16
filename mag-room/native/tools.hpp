@@ -394,7 +394,10 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
     }
   std::vector<Row> ranked = rows;
   std::sort(ranked.begin(), ranked.end(), [](const Row &a, const Row &b) { return a.score != b.score ? a.score > b.score : a.n < b.n; });
-  if (ranked.size() > 24) ranked.resize(24);
+  // Read-only full DOM remains in the persisted evidence ledger. The model
+  // only needs the high-value clickable viewport controls for its next act.
+  // On CPU the old 24 controls + 10 links + 2500 text chars cost ~2200 tokens.
+  if (ranked.size() > 16) ranked.resize(16);
   std::sort(ranked.begin(), ranked.end(), [](const Row &a, const Row &b) { return a.n < b.n; });
   std::string out = "Seite-Version: " + std::to_string(version) + "\nSeite: " + clip(jstr(v, "title"), 140) + "\nURL: " + jstr(v, "url") + "\n";
   if (jbool(v, "blocked")) out += "Achtung: Die Seite zeigt eine Prüfung (Captcha). Nicht wiederholt versuchen; goal_blocked oder browser_login.\n";
@@ -445,7 +448,7 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
     });
     if (!best.empty()) {
       out += "Weitere echte Seitenlinks (auch unterhalb des sichtbaren Bereichs; keine Klicknummer):\n";
-      const size_t count = std::min<size_t>(10, best.size());
+      const size_t count = std::min<size_t>(6, best.size());
       for (size_t i = 0; i < count; ++i) {
         const Val &link = *best[i].value;
         out += "- " + clip(jstr(link, "name"), 120);
@@ -455,7 +458,9 @@ inline std::string page_for_model(const Val &v, const std::string &goal, int ver
       if (best.size() > count) out += "… " + std::to_string(best.size() - count) + " weitere echte URLs im Seiten-Snapshot\n";
     }
   }
-  out += "Text (Anfang):\n" + clip(jstr(v, "text"), 2500, "\n…[gekürzt]");
+  out += "Text (Anfang):\n" + clip(jstr(v, "text"), 1200, "\n…[gekürzt]");
+  if (jstr(v, "text").size() > 1200)
+    out += "\nBei Bedarf browser_read für längeren Seitentext; alle DOM-Links bleiben als Belege gespeichert.";
   return out;
 }
 

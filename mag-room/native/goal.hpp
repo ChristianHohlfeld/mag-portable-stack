@@ -150,6 +150,7 @@ inline void begin(Val &g, const std::string &owner, const std::string &text) {
   next["plan"] = Val::array();
   next["needs_relook"] = false;
   next["evidence_pages"] = Val::array();
+  next["peer_review"] = Val::object();
   next["error"] = "";
   next["seen"] = "";
   next["summary"] = "";
@@ -166,6 +167,7 @@ inline void correct(Val &g, const std::string &text) {
   g["text"] = jstr(g, "text") + "\nKorrektur: " + line;
   g["requirements"] = Val::array(); // a correction invalidates earlier criteria
   g["plan"] = Val::array(); // the user changed what needs doing
+  g["peer_review"] = Val::object(); // superseded verdict is not reusable
   if (needs_items(line)) g["shopping"] = true;
 }
 

@@ -2429,8 +2429,10 @@ private:
       const auto &messages = *b.wire["messages"].arr;
       for (size_t i = messages.size(); i-- > 0;) {
         if (jstr(messages[i], "role") != "tool") continue;
-        if (jbool(messages[i], "_nav")) shot = jstr(messages[i], "_shot");
-        break;
+        if (jbool(messages[i], "_goal_vision") || jbool(messages[i], "_nav")) {
+          shot = jstr(messages[i], "_shot");
+          break;
+        }
       }
       const std::string shot_key = goal_id + ":" + shot;
       if (!shot.empty() && jstr(b.wire, "goal_last_shot") != shot_key) {
@@ -2441,7 +2443,7 @@ private:
           part["type"] = "image_url";
           part["image_url"] = url;
           parts.push(part);
-          parts.push(text_part("Screenshot nach der letzten Browser-Navigation."));
+          parts.push(text_part("Screenshot der letzten Browserbeobachtung (für visuelle Details; URLs stets aus DOM-Links prüfen)."));
           msg["role"] = "user";
           msg["content"] = parts;
           b.wire["messages"].push(msg);
@@ -3849,14 +3851,19 @@ private:
         tr["name"] = c.name;
         tr["content"] = result.text;
         tr["_turn"] = t.token;
-        if (result.navigated && !result.image.empty() && goal::envd("MAG_ROOM_GOAL_EYES", 1) != 0) {
+        // Optional vision is only sent to a model with a loaded projector
+        // (or an explicit test override), never enabled on CPU by default.
+        // Every browser observation may carry a changed viewport: not only
+        // browser_open, but also browser_look, scroll, read and browser_flow.
+        if (result.ok && goal_live(b) && !result.image.empty() &&
+            goal::envd("MAG_ROOM_GOAL_EYES", 0) != 0 && sees(b.id)) {
           const std::string dir = room_.cfg.state_dir + "/goal-shots";
           std::error_code ec;
           std::filesystem::create_directories(dir, ec);
           const std::string path = dir + "/" + b.id + "-" + std::to_string(look_version) + ".jpg";
           if (write_atomic(path, result.image, 0640)) {
             tr["_shot"] = path;
-            tr["_nav"] = true;
+            tr["_goal_vision"] = true;
           }
         }
         b.wire["messages"].push(tr);

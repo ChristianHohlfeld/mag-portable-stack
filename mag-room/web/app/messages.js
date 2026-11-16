@@ -1324,7 +1324,9 @@
     }, { passive: true });
     scroller.addEventListener('touchmove', (e) => {
       const y = e.touches?.[0]?.clientY;
-      if (touchY !== null && y != null && y > touchY + 2) markScrollInput();
+      // Both finger directions count. Dragging the finger DOWN reads earlier
+      // messages; dragging it UP returns toward the newest message.
+      if (touchY !== null && y != null && Math.abs(y - touchY) > 2) markScrollInput();
       if (y != null) touchY = y;
     }, { passive: true });
     scroller.addEventListener('keydown', (e) => {
@@ -1332,11 +1334,16 @@
     });
     scroller.addEventListener('scroll', () => {
       const current = scroller.scrollTop;
-      const movedUpByUser = current < lastScrollTop - 1 && performance.now() < userScrollUntil;
+      const up = current < lastScrollTop - 1;
+      const down = current > lastScrollTop + 1;
+      const userGesture = performance.now() < userScrollUntil;
       lastScrollTop = current;
-      // Once a reader deliberately scrolls upward, live messages must not
-      // yank the viewport to the bottom, even within the old 70px margin.
-      const now = !movedUpByUser && (pinned ? nearBottom() : nearBottom() && performance.now() < userScrollUntil);
+      // Programmatic scroll corrections and content shrinkage are NOT an
+      // indication that the reader wants to leave the newest message.
+      let now = pinned;
+      if (userGesture && up) now = false;
+      else if (userGesture && down && nearBottom()) now = true;
+      else if (userGesture && !nearBottom()) now = false;
       if (now !== pinned) { pinned = now; if (pinned) unread = 0; paintJump(); }
     }, { passive: true });
     jump.addEventListener('click', toBottom);

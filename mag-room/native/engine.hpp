@@ -2404,6 +2404,8 @@ private:
       note["content"] = closing ? goal::tail(b.goal, true)
           : "AKTIVER AUFTRAG: " + jstr(b.goal, "text") + "\nERFOLG: " + jstr(b.goal, "done") +
             "\nBISHER: Der aktuelle Seitenstand steht im letzten Browser-Werkzeugergebnis. "
+            "Formuliere mit goal_requirements alle eigenständig prüfbaren Anforderungen, falls noch nicht geschehen. "
+            "Vor goal_finish: pro id einen Beleg mit Seiten-URL und exaktem sichtbarem Zitat liefern. "
             "Arbeite bis goal_finish oder einem nachgewiesenen goal_blocked weiter; keine Ankündigung als Antwort.";
       b.wire["messages"].push(note);
       b.wire["goal_prompt_stamp"] = stamp;
@@ -3352,8 +3354,24 @@ private:
             page["part"] = (double)index;
             room_.update(t.id, [&](Val &m) { add_page(m, page); });
           };
-          const bool stale_n = (c.name == "browser_click" || c.name == "browser_type") && args.find("n") && goal_live(b) &&
-                               !goal::has_element(b.goal, (long)jnum(args, "n"));
+          // A flow may click only a link already present on the current page.
+          // Buttons, forms, payment and unobserved indices are deliberately excluded.
+          bool unsafe_flow = false;
+          if (c.name == "browser_flow") {
+            const Val *steps = args.find("steps");
+            if (steps && steps->isArr() && !steps->asArr().empty() && jstr(steps->asArr()[0], "op") == "link_click") {
+              const long n = (long)jnum(steps->asArr()[0], "n", -1);
+              bool known_link = false;
+              if (const Val *els = b.goal["page"].find("elements"); els && els->isArr())
+                for (const auto &e : els->asArr())
+                  if ((long)jnum(e, "n", -2) == n &&
+                      (jstr(e, "kind") == "link" || jstr(e, "kind") == "a") &&
+                      starts_with(jstr(e, "href"), "https://")) known_link = true;
+              unsafe_flow = !known_link;
+            }
+          }
+          const bool stale_n = ((c.name == "browser_click" || c.name == "browser_type") && args.find("n") && goal_live(b) &&
+                               !goal::has_element(b.goal, (long)jnum(args, "n"))) || unsafe_flow;
           if (stale_n)
             result = tools::fail("Element " + std::to_string((long)jnum(args, "n")) + " gehört nicht zu Seite-Version " +
                                  std::to_string((long)jnum(b.goal, "version")) + ". Sieh mit browser_look nach und nimm eine Nummer von dort.");
@@ -3420,14 +3438,31 @@ private:
                             : "Chris hat die Bezahlung abgebrochen. Bestelle nicht.", false};
                 }
               }
+            } else if (c.name == "goal_requirements") {
+              if (!goal_live(b)) result = tools::fail("Kein offener Auftrag.");
+              else if (const Val *prev = b.goal.find("requirements"); prev && prev->isArr() && !prev->asArr().empty())
+                result = tools::fail("Anforderungen bereits gespeichert; nur eine Nutzerkorrektur setzt sie zurück.");
+              else {
+                std::string why;
+                const Val *requirements = args.find("requirements");
+                if (!goal::requirements_ok(requirements, why)) result = tools::fail(why);
+                else {
+                  b.goal["requirements"] = *requirements;
+                  if (!save_goal(b)) result = tools::fail("Anforderungen konnten nicht gespeichert werden.");
+                  else result = tools::told("Erfolgskriterien gespeichert.", "Prüfe jetzt jede Anforderung anhand gesehener Seiten.");
+                }
+              }
             } else if (c.name == "goal_finish" || c.name == "goal_blocked") {
               if (!goal_live(b)) {
                 result = tools::fail("Kein offener Auftrag.");
               } else if (c.name == "goal_finish") {
                 const std::string summary = trim(jstr(args, "summary"));
+                std::string proof_error;
                 if (summary.empty()) result = tools::fail("summary fehlt: ein bis zwei Sätze auf Deutsch.");
                 else if (goal::login_page(b.goal))
                   result = tools::fail("Die Seite will eine Anmeldung oder ein Captcha. Das ist kein Ergebnis. Rufe goal_blocked auf (kind login oder captcha) oder browser_login.");
+                else if (!goal::proofs_ok(b.goal, args.find("proofs"), proof_error))
+                  result = tools::fail(proof_error);
                 else if (jbool(b.goal, "shopping")) {
                   const Val *items = args.find("items");
                   const size_t minimum = (size_t)std::max(1.0, jnum(b.goal, "min_items", 1));
@@ -3464,6 +3499,7 @@ private:
                     }
                   }
                   b.goal["summary"] = summary;
+                  b.goal["proofs"] = *args.find("proofs");
                   goal::end(b.goal, "done");
                   save_goal(b);
                   emit_text(b, t, "\n" + final_text, name, reason, true);

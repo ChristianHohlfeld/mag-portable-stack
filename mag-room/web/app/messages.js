@@ -27,14 +27,31 @@
       const code = pre.querySelector('code');
       const rawLang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
       const source = code ? code.textContent : pre.textContent;
+      const key = (scope || 'snippet:' + sigOf(source)) + ':code:' + index;
+      if (live) {
+        // Reinstated lightweight streaming path: no textarea, draft lookup,
+        // localStorage or live iframe while model output is still growing.
+        // Keep the code block cheap to rebuild as more tokens arrive.
+        const lines = source.replace(/\n$/, '').split('\n');
+        const block = el('div', { class: 'codeblock codeblock-live', dataset: { codeKey: key } },
+          el('div', { class: 'head' },
+            el('span', { class: 'code-lang', text: rawLang || 'Code' }),
+            el('button', { class: 'copy', type: 'button', text: 'Kopieren',
+              onclick: (e) => { e.preventDefault(); copy(source, e.currentTarget); } })), pre);
+        block._sourceOriginal = source;
+        pre.replaceWith(block);
+        // pre was detached when replacing it: attach its static content once.
+        block.append(pre);
+        return;
+      }
       const lang = MAG.codeEditor.language(rawLang, source);
       const canRun = MAG.codeEditor.previewable(lang, source);
       // Stable across streaming re-renders. Published pages use this same
       // draft key when replacing their original fenced code block.
-      const key = (scope || 'snippet:' + sigOf(source)) + ':code:' + index;
       const pane = el('div', { class: 'code-pane' });
       const preview = el('div', { class: 'code-preview', hidden: true });
       const block = el('div', { class: 'codeblock', dataset: { codeKey: key } });
+      block._sourceOriginal = source;
       let previewFrame = null, previewTimer = null, mode = 'code';
       const edited = MAG.codeEditor.editor(key, source, lang, () => {
         if (mode === 'preview' && previewFrame) {
@@ -546,7 +563,7 @@
         text: href.replace(/^https?:\/\//, '') + ' · lokale Änderungen werden nicht veröffentlicht' }));
     Object.assign(card, {
       _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path,
-      _base: base, _editable: editor,
+      _sourceOriginal: original, _base: base, _editable: editor,
       _stage: stage, _mode: 'preview', _visible: false, _frame: null
     });
     card.classList.toggle('code-edited', editor.changed());
@@ -1100,7 +1117,7 @@
   }
   function build(m) {
     const user = m.role === 'user';
-    const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from } });
+    const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from, state: m.state || '' } });
     const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
     const files = m.model3d && !picture ? [] : m.attachments || [];
     const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
@@ -1266,12 +1283,42 @@
     }
   }
 
+  // Reuse an existing editor/preview when the server's ORIGINAL code did
+  // not change. This keeps focus, selection, scroll and WebGL iframe state
+  // across status events and other text arriving in the same message.
+  function preserveEditors(old, next) {
+    const selector = '.page[data-path], .codeblock[data-code-key]';
+    const identity = (n) => n.classList.contains('page')
+      ? 'page:' + n.dataset.path : 'code:' + n.dataset.codeKey;
+    const prior = new Map();
+    old.querySelectorAll(selector).forEach((n) => {
+      if (n.closest('.page') && !n.classList.contains('page')) return;
+      prior.set(identity(n), n);
+    });
+    next.querySelectorAll(selector).forEach((n) => {
+      if (n.closest('.page') && !n.classList.contains('page')) return;
+      const former = prior.get(identity(n));
+      if (former && former._sourceOriginal === n._sourceOriginal) n.replaceWith(former);
+    });
+  }
   function upsert(m, fresh) {
     const old = nodes.get(m.id);
-    // The whole message is rebuilt: a queued re-render of one of its parts is obsolete.
+    if (old && m.state === 'streaming' && old.dataset.state === 'streaming') {
+      // Some backends send complete message snapshots even while streaming.
+      // Never rebuild the entire message or a live editor for each token.
+      // The ordinary throttled delta path updates only the touched text part.
+      (m.parts || []).forEach((p, index) => {
+        if (p.k === 'text') dirty.add(m.id + ':' + index);
+      });
+      schedule();
+      return;
+    }
+    // The whole message is rebuilt only for a state transition or changed
+    // published content. A queued re-render of its parts is then obsolete.
     for (const key of dirty) if (key.startsWith(m.id + ':')) dirty.delete(key);
     let node = build(m);
     if (old) {
+      preserveEditors(old, node);
       // Keep what the reader opened.
       old.querySelectorAll('details[open]').forEach((d) => {
         const twin = d.classList.contains('think') ? node.querySelector('.think')
@@ -1317,7 +1364,13 @@
       if (!body) continue;
       const fresh = buildPart(m, +part);
       const old = body.querySelector(':scope > [data-part="' + part + '"]');
-      grow(() => { if (old) old.replaceWith(fresh); else body.append(fresh); markStreaming(node, m); });
+      grow(() => {
+        if (old) {
+          preserveEditors(old, fresh);
+          old.replaceWith(fresh);
+        } else body.append(fresh);
+        markStreaming(node, m);
+      });
     }
     dirty.clear();
   }

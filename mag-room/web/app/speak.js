@@ -40,8 +40,8 @@
   const gpuOk = () => !!navigator.gpu && localStorage.getItem('mag-tts-gpu') !== 'no';
   function noGpu() { try { localStorage.setItem('mag-tts-gpu', 'no'); } catch {} }
   let current = null;
-  // One explicit user tap can read the currently loaded conversation from
-  // any bubble to the end. This is a finite snapshot, never autoplay.
+  // One tap reads from that message on: every later message, including ones
+  // that arrive or are still streaming, stays in the same chain until Stop.
   let readingFrom = null;
   const READ_FROM_SPEEDS = [1, 1.25, 1.5, 1.75, 2];
 
@@ -159,8 +159,17 @@
     return !de && en >= 2 && en * 4 >= words.length ? 'en-US' : 'de-DE';
   }
   // Best system voice: same language, prefer natural-sounding names, then local.
+  // The device list is read once. Asking getVoices() on every utterance
+  // stalls the chain on Android; a voiceschanged event drops the cache.
+  let cachedVoices = null;
+  function deviceVoices() {
+    if (cachedVoices?.length) return cachedVoices;
+    const list = (synth?.getVoices?.() || []).filter(v => !ROBOT_VOICE.test((v.name || '') + ' ' + (v.voiceURI || '')));
+    if (list.length) cachedVoices = list;
+    return list;
+  }
   function bestVoice(lang) {
-    const voices = (synth?.getVoices?.() || []).filter(v => !ROBOT_VOICE.test((v.name || '') + ' ' + (v.voiceURI || '')));
+    const voices = deviceVoices();
     const l = lang.toLowerCase(), base = l.split('-')[0];
     const same = voices.filter(v => v.lang?.toLowerCase() === l);
     const near = voices.filter(v => v.lang?.toLowerCase().split('-')[0] === base);
@@ -170,6 +179,7 @@
     }
     return null;
   }
+  try { synth?.addEventListener?.('voiceschanged', () => { cachedVoices = null; }); } catch {}
 
   // ---- who speaks with which voice, how fast --------------------------------
   const RATES = [0.75, 0.85, 1, 1.15, 1.25, 1.3, 1.5, 1.75, 2];
@@ -288,7 +298,10 @@
     });
   }
   let seen = performance.now();          // when the page came into view last
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') seen = performance.now(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') seen = performance.now();
+    else if (current && tts.ctx && tts.ctx.state !== 'running') resume(tts.ctx);
+  });
   // Resolves true once the model is usable, false if the model failed for it. A
   // failure is retried after a short pause instead of disabling the voice
   // until reload (mobile networks drop).
@@ -300,9 +313,9 @@
   function stateText() {
     const { state, part, provider } = voiceState;
     if (state === 'ready') return 'Stimme bereit' + (provider === 'webgpu' ? ' (Grafikchip)' : provider === 'wasm' ? ' (Prozessor)' : '');
-    if (state === 'making') return 'Stimme wird bereit gemacht … solange liest die Gerätestimme';
-    if (state === 'loading') return 'Stimme lädt' + (part ? ' ' + Math.round(100 * part) + ' %' : '') + ' … solange liest die Gerätestimme';
-    return 'Stimme noch nicht geladen; solange liest die Gerätestimme';
+    if (state === 'making') return 'Stimme wird bereit gemacht …';
+    if (state === 'loading') return 'Stimme lädt' + (part ? ' ' + Math.round(100 * part) + ' %' : '') + ' …';
+    return 'Stimme noch nicht geladen';
   }
   function shown(state, part) {
     const root = document.documentElement;
@@ -443,10 +456,12 @@
   function monitorAudio(pb) {
     if (current !== pb) return clearAudioMonitor(pb);
     if (document.visibilityState !== 'visible') {
-      // Browser background suspension must not consume the stall budget.
+      // The screen going dark is not a stop, and it must not eat the stall budget.
       pb.silentSince = performance.now();
+      if (tts.ctx && tts.ctx.state !== 'running') resume(tts.ctx);
       return;
     }
+    if (pb.followWait) { pb.silentSince = 0; return; }
     const ctx = tts.ctx;
     if (ctx && ctx.state !== 'running') resume(ctx);
     // Use THIS playback's buffers and their actual sample-derived durations.
@@ -489,8 +504,15 @@
     const buf = ctx.createBuffer(1, res.audio.length, res.rate);
     buf.copyToChannel(res.audio, 0);
     const src = ctx.createBufferSource();
-    src.buffer = buf; src.connect(tts.destination || ctx.destination);
-    const at = Math.max(ctx.currentTime + 0.03, pb.end || 0);
+    src.buffer = buf;
+    // Straight to the speakers. A MediaStream sink is packetised by Chrome
+    // on Android and crackles at every sentence and packet edge.
+    src.connect(ctx.destination);
+    // The worker fades the first and last 8 ms. The next part starts 12 ms
+    // early so those fades cross instead of meeting at silence.
+    const overlap = pb.end > 0 ? 0.012 : 0;
+    const lead = pb.end > 0 ? 0 : 0.03;
+    const at = Math.max(ctx.currentTime + lead, (pb.end || 0) - overlap);
     const end = at + buf.duration;
     pb.activeSources ||= new Map();
     pb.pendingEnds ||= new Set();
@@ -531,7 +553,9 @@
         if (ctx.state !== 'running') {
           since = since || Date.now();
           resume(ctx);
-          if (Date.now() - since > 8000) { stop(); return done(false); }
+          // A dark screen suspends the clock. Keep waiting; only a visible
+          // stall that will not resume ends the reading.
+          if (document.visibilityState !== 'hidden' && Date.now() - since > 8000) { stop(); return done(false); }
         } else {
           since = 0;
           if (ctx.currentTime >= t) return done(true);
@@ -656,13 +680,20 @@
   function finish(pb) {
     if (current !== pb) return;
     clearAudioMonitor(pb);
+    const seq = pb.sequence;
+    const end = pb.end || 0;
     current = null;
+    if (seq && readingFrom === seq) {
+      // Same context, same voices, same rate. The next message joins the
+      // chain; the audio focus stays until Stop.
+      if (advanceReadFrom(seq, end)) return;
+      pb.followWait = true;
+      current = pb;
+      setButtons();
+      return;
+    }
     MAG.audio?.release?.('tts');
-    if (pb.sequence && readingFrom === pb.sequence) {
-      // Keep the same speech engine, voices and rate across speakers.
-      // Advancing in the utterance onend callback also works on mobile.
-      advanceReadFrom(pb.sequence);
-    } else setButtons();
+    setButtons();
   }
 
   function stop() {
@@ -725,7 +756,7 @@
       if (wasPlaying) return false;
     }
     const normalized = normalize(text);
-    if (!normalized) return false;
+    if (!normalized && !options.live) return false;
     const lang = textLocale(normalized);
     const prof = profile(who);
     const de = modelPossible && prof.voiceId !== 'system';   // the model reads German and English alike
@@ -735,7 +766,8 @@
       rate: READ_FROM_SPEEDS.includes(options.rate) ? options.rate : null,
       sequence: chained ? options.sequence : null,
       parts: [], at: 0, queued: 0, text, live: !!options.live, wake: null,
-      spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
+      spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0,
+      end: chained && options.end > 0 ? options.end : 0 };
     feed(pb, text, !!options.live);
     if (!pb.parts.length && !pb.live) return false;
     // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
@@ -754,30 +786,10 @@
     }
     // The audio context must be made or woken inside the tap (iOS).
     try {
+      // One context for the whole reading. Stop closes it; a following
+      // message never does, so the graph stays the same chain.
       tts.ctx = tts.ctx && tts.ctx.state !== 'closed' ? tts.ctx : new AudioCtx();
       resume(tts.ctx);
-      // Route PCM to a persistent HTMLAudioElement MediaStream when supported.
-      // Android can keep this media element active under the lock screen;
-      // unsupported browsers retain the normal WebAudio output.
-      if (tts.ctx.createMediaStreamDestination && !tts.destination &&
-          typeof document.createElement === 'function') {
-        tts.sink ||= document.createElement('audio');
-        if ('srcObject' in tts.sink) {
-          tts.destination = tts.ctx.createMediaStreamDestination();
-          tts.sink.dataset.magTts = '1';
-          tts.sink.hidden = true;
-          if (!tts.sink.isConnected && document.body) document.body.append(tts.sink);
-          tts.sink.srcObject = tts.destination.stream;
-          Promise.resolve(tts.sink.play?.()).catch(() => {
-            // Playback permission denied: route any scheduled buffers to the
-            // standard output instead of leaving this reading inaudible.
-            tts.destination = null;
-            for (const src of tts.sources) {
-              try { src.connect(tts.ctx?.destination); } catch (_) {}
-            }
-          });
-        }
-      }
     }
     catch { return fallback(pb); }
     const start = () => modelPlay(pb).catch(() => fallback(pb));
@@ -786,14 +798,7 @@
     // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
     const tongue = (pb.lang || 'de').slice(0, 2), tempo = pb.rate ?? rateFor(pb.speaker);
     if (tts.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
-    // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
-    // wait: the device's own voice reads this one, and the model goes on
-    // loading behind it for the next. Only a device without a voice of its
-    // own waits for the model.
-    if (systemOk) {
-      loadConfig().then((cfg) => { if (cfg) { const v = profile(who).voice || pb.voice; if (v) warm(v); } }).catch(() => {});
-      return fallback(pb);
-    }
+    // Not loaded yet. Wait for Supertonic. The device voice is not a stand-in.
     pb.loading = true;
     setButtons();
     loadConfig().then((cfg) => {
@@ -810,24 +815,12 @@
     }).catch(() => fallback(pb));
     return true;
   }
-  // The model failed or is not there: the best system voice reads, but never after
-  // the model has spoken a part of this message (no second voice in mid-message).
+  // The model failed. Do not switch to the device voice mid-reading.
   function fallback(pb) {
     if (current !== pb) return false;
-    clearAudioMonitor(pb);
-    pb.loading = false;
-    if (!systemOk || pb.spoken) {
-      // Never strand a multi-message reading on one failed voice.
-      finish(pb);
-      MAG.toast('Vorlesen: Die Stimme konnte nicht geladen werden.', true);
-      return false;
-    }
-    pb.de = false;
-    pb.parts = split(pb.parts.slice(Math.max(0, pb.at - 1)).join(' '));
-    pb.at = 0;
-    setButtons();
-    systemNext(pb);
-    return true;
+    MAG.toast('Vorlesen: Die Stimme konnte nicht geladen werden.', true);
+    stop();
+    return false;
   }
 
   // ---- the page ----------------------------------------------------------------
@@ -840,47 +833,67 @@
   MAG.speak = function (m, button) {
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
     if (current?.key === m.id) return stop();
-    return toggle(m.id, textOf(m), m.role === 'user' ? 'chris' : m.from,
-      {live:m.state === 'streaming'});
+    return startFollow(m.id, null);
   };
   function refreshLive(m) {
-    if (!current || current.key !== m.id) return;
+    if (!current || current.key !== m.id || current.followWait) return;
     const text=textOf(m);
     current.text=text;
     feed(current,text,m.state === 'streaming');
     if (m.state !== 'streaming') current.wake?.();
   }
-  MAG.on('delta',refreshLive);
-  MAG.on('message',refreshLive);
+  function onRoom(m) { refreshLive(m); continueFollow(); }
+  MAG.on('delta', onRoom);
+  MAG.on('message', onRoom);
   MAG.on('reset',()=>{if(current)stop();});
-  function advanceReadFrom(seq) {
-    if (readingFrom !== seq) return false;
-    while (seq.at < seq.items.length && readingFrom === seq) {
-      const m = seq.items[seq.at++];
-      if (toggle(m.id, m.text, m.who, { sequence: seq, rate: seq.rate })) return true;
+  function readableNext(fromId, cursor) {
+    const items = [...S.messages.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    for (const m of items) {
+      if (cursor ? m.id <= cursor : m.id < fromId) continue;
+      if (!m || m.model3d || m.yielded || (m.role !== 'bot' && m.role !== 'user')) continue;
+      const text = textOf(m);
+      const live = m.state === 'streaming';
+      if (!normalize(text) && !live) continue;
+      return { id: m.id, who: m.role === 'user' ? 'chris' : m.from, text, live };
     }
-    if (readingFrom === seq) { readingFrom = null; setButtons(); }
+    return null;
+  }
+  function advanceReadFrom(seq, end) {
+    if (readingFrom !== seq) return false;
+    while (readingFrom === seq) {
+      const next = readableNext(seq.fromId, seq.cursor);
+      if (!next) return false;
+      seq.cursor = next.id;
+      if (toggle(next.id, next.text, next.who, {
+        sequence: seq, rate: seq.rate, live: next.live, end
+      })) return true;
+      end = 0;
+    }
     return false;
   }
-  function startReadFrom(id, rate = 1) {
-    if (!READ_FROM_SPEEDS.includes(rate) || (!systemOk && !modelPossible)) return false;
-    // Message IDs are chronological. Snapshot prevents a never-ending
-    // background reader when more bots talk or a room updates.
-    const items = [...S.messages.values()]
-      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-      .filter((m) => m.id >= id &&
-        (m.role === 'bot' || m.role === 'user') &&
-        !m.model3d && !m.yielded && m.state !== 'streaming')
-      .map((m) => ({
-        id: m.id, who: m.role === 'user' ? 'chris' : m.from,
-        text: m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text || ''
-      }))
-      .filter((m) => normalize(m.text));
-    if (!items.length) return false;
-    stop(); // any earlier single-message or multi-message playback
-    const seq = { items, at: 0, rate };
+  function continueFollow() {
+    const pb = current, seq = readingFrom;
+    if (!pb?.followWait || !seq || readingFrom !== seq) return;
+    if (!readableNext(seq.fromId, seq.cursor)) return;
+    const end = pb.end || 0;
+    pb.followWait = false;
+    current = null;
+    if (!advanceReadFrom(seq, end)) {
+      pb.followWait = true;
+      current = pb;
+    }
+  }
+  function startFollow(id, rate) {
+    if (rate != null && !READ_FROM_SPEEDS.includes(rate)) return false;
+    if (!systemOk && !modelPossible) return false;
+    stop();
+    const seq = { fromId: id, cursor: '', rate: rate ?? null };
     readingFrom = seq;
-    return advanceReadFrom(seq);
+    if (!advanceReadFrom(seq, 0)) { readingFrom = null; setButtons(); return false; }
+    return true;
+  }
+  function startReadFrom(id, rate = 1) {
+    return startFollow(id, rate);
   }
   // The newest answers are made ready before anybody asks for them, whole,
   // while they come in and nothing else is read: the tap that most often
@@ -1076,10 +1089,8 @@
     if (link && link.saveData) return;
     loadConfig().then((cfg) => {
       if (!cfg) return;
-      const models = [...new Set(S.bots.map((b) => profile(b.id).voice?.model).filter(Boolean))];
-      if (!models.length) return;
-      warm({ model: models[0] });
-      for (const model of models.slice(1)) ask({ type: 'prefetch', model }, WARM_TIMEOUT_MS).catch(() => {});
+      const models = [...new Set(voiceList().map((v) => v.model).filter(Boolean))];
+      for (const model of models) warm({ model });
     });
   }
   // For the film of a scene: what a figure says, in a voice of its own (the
@@ -1115,5 +1126,4 @@
   };
   let warmed = false;
   MAG.on('reset', () => { if (!warmed && modelPossible) { warmed = true; setTimeout(warmUp, 2500); } });
-  window.addEventListener('pagehide', stop);
 })();

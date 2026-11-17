@@ -401,7 +401,7 @@
           toggle(s.auto_chat === true, (v) => call('PUT', '/api/settings', { auto_chat: v }), !owner())),
         row('Unbegrenzt unterhalten', 'Ohne festes Rundenlimit. Ob Bots eine Folgerunde freiwillig mit PASS auslassen dürfen, ist separat einstellbar.',
           toggle((s.bot_rounds ?? 0) === 0, (v) => call('PUT', '/api/settings', { bot_rounds: v ? 0 : 4 }), !owner())),
-        row('PASS erlauben', 'Ein: Ein Bot darf bei einem Gespräch ohne eigenen Beitrag unsichtbar PASS sagen. Aus: Die Bots sollen selbst antworten; der Server unterdrückt weiterhin versehentliche PASS-Texte und Wiederholungen.',
+        row('PASS / selbst beenden', 'Ein: Die Bots dürfen ein Gespräch mit unsichtbarem PASS selbst ausklingen lassen. Aus: Sie führen es weiter, bis du stoppst oder das Rundenlimit erreicht ist. Bei wiederholten Fehlern greift weiterhin der technische Schutz.',
           toggle(s.pass_enabled !== false, (v) => call('PUT', '/api/settings', { pass_enabled: v }), !owner())),
         ...((s.bot_rounds ?? 0) > 0 ? [row('Bots untereinander', 'Maximale Anschlussantworten, wenn „Unbegrenzt unterhalten“ ausgeschaltet ist.',
           select(s.bot_rounds, [[1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [4, '4 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner()))] : []),

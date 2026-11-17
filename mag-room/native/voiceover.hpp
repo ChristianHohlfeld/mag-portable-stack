@@ -20,10 +20,17 @@ inline bool original(const Val &message, const std::string &file) {
   return a && jstr(*a, "kind") == "video" && jstr(*a, "voiceover_kind").empty();
 }
 
-inline bool take(const Val &message, const std::string &video, const std::string &file) {
+inline bool lane(const std::string &name) {
+  return name == "voice" || name == "melody" || name == "effects";
+}
+inline bool take(const Val &message, const std::string &video, const std::string &file,
+                 const std::string &lane_name) {
   const Val *a = attachment(message, file);
-  return a && jstr(*a, "kind") == "audio" && jstr(*a, "voiceover_kind") == "take" &&
-         jstr(*a, "voiceover_for") == video;
+  // Takes created by the first draft of this feature predate named lanes.
+  const std::string stored_lane = (a ? jstr(*a, "voiceover_lane", "voice") : "");
+  return a && lane(lane_name) && jstr(*a, "kind") == "audio" &&
+         jstr(*a, "voiceover_kind") == "take" && jstr(*a, "voiceover_for") == video &&
+         stored_lane == lane_name;
 }
 
 // Probe the uploaded *contents*, not the browser-provided MIME label.
@@ -68,30 +75,55 @@ inline double seconds(const std::string &path) {
   return last > 0 && last <= 600 ? last : 0;
 }
 
-inline bool bake(const std::string &video, const std::string &audio, const std::string &out,
-                 const std::string &mode, std::string &error) {
-  const double length = seconds(video), take_length = seconds(audio);
-  if (!length || !take_length || !audio_ok(audio)) { error = "Video oder Tonspur ist beschädigt oder zu lang."; return false; }
-  if (take_length > length + 2) { error = "Tonaufnahme ist länger als das Video."; return false; }
-  const bool with_original = audio_ok(video);
-  std::vector<std::string> args = {
-      "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
-      "-i", video, "-i", audio};
-  if (mode == "mix" && with_original) {
-    args.insert(args.end(), {"-filter_complex",
-                             "[0:a:0]aresample=async=1:first_pts=0[orig];"
-                             "[1:a:0]aresample=async=1:first_pts=0[dub];"
-                             "[orig][dub]amix=inputs=2:duration=first:dropout_transition=0:"
-                             "weights=0.45 1:normalize=0,alimiter=limit=0.95[mixed]",
-                             "-map", "0:v:0", "-map", "[mixed]", "-map", "0:a:0"});
-  } else {
-    args.insert(args.end(), {"-map", "0:v:0", "-map", "1:a:0"});
-    if (with_original) args.insert(args.end(), {"-map", "0:a:0"});
+// Each of the three lanes is optional. They are deliberately mixed to ONE
+// editable audio master. The source MP4 keeps its original soundtrack;
+ // 'replace' only changes which soundtrack becomes the new default.
+inline bool bake(const std::string &video,
+                 const std::vector<std::pair<std::string, std::string>> &lanes,
+                 const std::string &out, const std::string &mode, std::string &error) {
+  const double length = seconds(video);
+  if (!length || lanes.empty() || lanes.size() > 3) {
+    error = "Video oder Tonspuren fehlen oder sind zu lang."; return false;
   }
+  const bool original_audio = audio_ok(video);
+  std::vector<std::string> args = {"ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-i", video};
+  std::string filters, inputs, weights;
+  int n = 0;
+  auto append_mix = [&](const std::string &label, const std::string &weight) {
+    inputs += "[" + label + "]";
+    if (!weights.empty()) weights += " ";
+    weights += weight;
+    ++n;
+  };
+  if (mode == "mix" && original_audio) {
+    filters += "[0:a:0]aresample=async=1:first_pts=0,apad,atrim=0:" + std::to_string(length) + "[orig];";
+    append_mix("orig", "0.55");
+  }
+  for (size_t i = 0; i < lanes.size(); ++i) {
+    if (!lane(lanes[i].first) || !audio_ok(lanes[i].second)) {
+      error = "Tonspur ist beschädigt oder hat eine ungültige Zuordnung."; return false;
+    }
+    const double duration = seconds(lanes[i].second);
+    if (!duration || duration > length + 2) {
+      error = "Eine Tonspur ist länger als das Video."; return false;
+    }
+    args.insert(args.end(), {"-i", lanes[i].second});
+    const std::string label = "lane" + std::to_string(i + 1);
+    filters += "[" + std::to_string(i + 1) + ":a:0]aresample=async=1:first_pts=0,"
+               "apad,atrim=0:" + std::to_string(length) + "[" + label + "];";
+    append_mix(label, lanes[i].first == "voice" ? "1" : lanes[i].first == "melody" ? "0.55" : "0.85");
+  }
+  // Amix's default "duration=longest" is limited by our pads to the video
+  // duration, so short takes do not prematurely cut off music or ambience.
+  filters += inputs + "amix=inputs=" + std::to_string(n) +
+             ":duration=longest:dropout_transition=0:weights='" + weights +
+             "':normalize=0,alimiter=limit=0.95[mixed]";
+  args.insert(args.end(), {"-filter_complex", filters, "-map", "0:v:0", "-map", "[mixed]"});
+  if (original_audio) args.insert(args.end(), {"-map", "0:a:0"});
   args.insert(args.end(), {"-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
-                           "-metadata:s:a:0", "title=Nachvertonung",
+                           "-metadata:s:a:0", "title=Mix: Stimme Melodie Geraeusche",
                            "-disposition:a:0", "default"});
-  if (with_original)
+  if (original_audio)
     args.insert(args.end(), {"-metadata:s:a:1", "title=Original", "-disposition:a:1", "0"});
   args.insert(args.end(), {"-t", std::to_string(length), "-movflags", "+faststart", out});
   RunOptions opts; opts.timeout_s = 150; opts.cap = 1400;
@@ -102,6 +134,16 @@ inline bool bake(const std::string &video, const std::string &audio, const std::
     return false;
   }
   return true;
+}
+
+// Extract the mixed first audio stream losslessly into its own M4A. It is a
+// real fourth lane for re-use/download; baking does NOT destroy the three
+// independent sources or the original video.
+inline bool extract_mix(const std::string &mp4, const std::string &m4a) {
+  RunOptions opts; opts.timeout_s = 30; opts.cap = 500;
+  const RunResult result = run({"ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
+                                "-i", mp4, "-map", "0:a:0", "-vn", "-c:a", "copy", m4a}, opts);
+  return result.spawned && result.code == 0 && exists(m4a) && file_size(m4a) > 0;
 }
 
 } // namespace mag::voiceover

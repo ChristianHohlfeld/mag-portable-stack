@@ -206,7 +206,7 @@
       : voiceState.state && voiceState.state !== 'ready' ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
     button.setAttribute('aria-label', label);
     button.title = label;
-    button.innerHTML = busy ? '<span class="spin"></span>' : playing ? MAG.icons.stop : MAG.icons.speak;
+    button.innerHTML = playing ? MAG.icons.stop : MAG.icons.speak;
   }
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
@@ -656,6 +656,7 @@
     if (current !== pb) return;
     clearAudioMonitor(pb);
     current = null;
+    MAG.audio?.release('tts');
     if (pb.sequence && readingFrom === pb.sequence) {
       // Keep the same speech engine, voices and rate across speakers.
       // Advancing in the utterance onend callback also works on mobile.
@@ -676,7 +677,13 @@
         const wake = pb[field]; pb[field] = null; wake?.();
       }
     }
-    if (systemOk) synth.cancel();
+    // Stop must synchronously silence every backend, including suspended
+    // WebAudio, a pending worker, native media or the browser's own voice.
+    MAG.audio?.release('tts');
+    if (systemOk) { try { synth.cancel(); } catch (_) {} }
+    if (tts.nativeAudio) {
+      try { tts.nativeAudio.pause(); tts.nativeAudio.removeAttribute('src'); tts.nativeAudio.load(); } catch (_) {}
+    }
     for (const src of tts.sources) { try { src.stop(); } catch (_) {} }
     tts.sources.clear();
     // Drop synthesis that is queued for the stopped playback.
@@ -721,16 +728,22 @@
       // saved settings. Switching between Lena, Noah and Chris stays natural.
       rate: READ_FROM_SPEEDS.includes(options.rate) ? options.rate : null,
       sequence: chained ? options.sequence : null,
-      parts: [], at: 0, queued: 0, text, live: false, wake: null,
+      parts: [], at: 0, queued: 0, text, live: !!options.live, wake: null,
       spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
-    feed(pb, text, false);
-    if (!pb.parts.length) return false;
+    feed(pb, text, !!options.live);
+    if (!pb.parts.length && !pb.live) return false;
     // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
     // dropped, what is made stays, and this reading asks for its own parts in its own order.
     if (de && pb.voice && prepared.size && tts.worker) {
       try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
+    MAG.audio?.activate('tts',{
+      name:'tts',title:'MAG · Vorlesen',artist:who,
+      stop:()=>stop(),
+      pause:()=>{try{synth?.pause?.()}catch(_){};try{tts.ctx?.suspend?.()}catch(_){}},
+      resume:()=>{try{synth?.resume?.()}catch(_){};if(tts.ctx)resume(tts.ctx)}
+    });
     setButtons();
     if (!de) {
       if (!systemOk) { current = null; setButtons(); return false; }
@@ -756,6 +769,7 @@
       return fallback(pb);
     }
     pb.loading = true;
+    MAG.audio?.setState('tts','loading');
     setButtons();
     loadConfig().then((cfg) => {
       if (current !== pb) return false;
@@ -765,6 +779,7 @@
     }).then((ok) => {
       if (current !== pb) return;
       pb.loading = false;
+      MAG.audio?.setState('tts','playing');
       setButtons();
       if (ok) return start();
       fallback(pb);
@@ -793,10 +808,26 @@
 
   // ---- the page ----------------------------------------------------------------
   // Reads a message aloud, or stops if it is the one being read.
+  const messageText = (m) => {
+    const parts = (m.parts || []).filter(p=>p.k==='text').map(p=>p.text||'').join('');
+    const text = parts || m.text || '';
+    return m.role === 'bot' && MAG.tidy ? MAG.tidy(text) : text;
+  };
   MAG.speak = function (m, button) {
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
-    toggle(m.id, m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text, m.role === 'user' ? 'chris' : m.from);
+    return toggle(m.id, messageText(m), m.role === 'user' ? 'chris' : m.from,
+      { live:m.state==='streaming' });
   };
+  function updateLive(m) {
+    const pb=current;
+    if (!pb || pb.key!==m.id) return;
+    pb.text=messageText(m);
+    feed(pb,pb.text,m.state==='streaming');
+  }
+  MAG.on('delta', updateLive);
+  MAG.on('message', updateLive);
+  MAG.on('gone', id => { if(current?.key===id) stop(); });
+  MAG.on('reset', stop);
   function advanceReadFrom(seq) {
     if (readingFrom !== seq) return false;
     while (seq.at < seq.items.length && readingFrom === seq) {

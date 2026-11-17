@@ -412,7 +412,14 @@
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),
-        row('Schriftgröße', null, select(size, [['15', 'Klein'], ['16', 'Normal'], ['18', 'Groß'], ['20', 'Sehr groß']], (v) => { localStorage.setItem('mag-size', v); applyLook(); }))));
+        row('Schriftgröße', null, select(size, [['15', 'Klein'], ['16', 'Normal'], ['18', 'Groß'], ['20', 'Sehr groß']], (v) => { localStorage.setItem('mag-size', v); applyLook(); })),
+        row('Bildschirm wach halten', MAG.screenAwake?.supported
+          ? 'Verhindert das automatische Sperren, solange MAG sichtbar ist. Für die installierte PWA standardmäßig an; im Hintergrund aus. Der Energiesparmodus kann es verhindern.'
+          : 'Auf diesem Gerät oder in dieser Browserversion nicht verfügbar.',
+          toggle(MAG.screenAwake?.enabled() || false, async (v) => {
+            const ok = await MAG.screenAwake.set(v);
+            if (v && !ok) MAG.toast('Bildschirm-Wachhaltung nicht verfügbar (z. B. Energiesparmodus oder Browser).', true);
+          }, !MAG.screenAwake?.supported))));
 
       if (S.features.push && 'serviceWorker' in navigator && 'PushManager' in window) {
         const state = el('small', { text: 'wird geprüft …' });

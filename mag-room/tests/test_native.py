@@ -1365,8 +1365,12 @@ class RoomContract(unittest.TestCase):
         crossings = sum((later[i - 1] < 0 <= later[i]) or
                         (later[i - 1] >= 0 > later[i])
                         for i in range(1, len(later)))
-        self.assertGreater(crossings, 350,
+        # This window is 0.25 seconds: 1000 Hz yields about 250
+        # positive zero crossings (220 Hz only about 55).
+        self.assertGreater(crossings, 170,
                            "source FROM 0.9 s plays the 1000 Hz half, not the earlier 220 Hz")
+        self.assertLess(crossings, 320,
+                        "melody must not run at a wildly different playback rate")
         tracks = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "a",
             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(output)],
             timeout=10).decode().splitlines()

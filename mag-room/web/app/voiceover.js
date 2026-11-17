@@ -138,10 +138,10 @@
       // Synchronous inside click: explicit user activation on mobile Safari.
       video.play().catch(() => status('Video: bitte im Player auf Play drücken.', true));
     });
-    if (!owner) { paint(); return box; }
-
     const compatible = !!navigator.mediaDevices?.getUserMedia &&
       typeof MediaRecorder !== 'undefined' && window.isSecureContext;
+    if (!owner) { paint(); return box; }
+
     if (!compatible) {
       mic.disabled = true;
       status('Mikrofon benötigt HTTPS und MediaRecorder.', true);

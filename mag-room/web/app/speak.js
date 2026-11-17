@@ -375,7 +375,10 @@
   const MIN_STEPS = 5;
   const topSteps = () => (cost(10, 8) / 8 < 0.25 ? 10 : cost(8, 8) / 8 < 0.4 ? 8 : MIN_STEPS);
   function stepsFor(pb, text) {
-    const length = Math.max(0.4, text.length / 14);                     // seconds of speech, about
+    // The model already shortens the waveform for 1.25–2x. The estimated
+    // audible time must reflect that shorter output; synthesis wall time
+    // and audio time are distinct and neither is a playbackRate multiplier.
+    const length = Math.max(0.25, text.length / (14 * (pb.rate ?? rateFor(pb.speaker))));
     const now = performance.now() / 1000;
     let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
     for (const part of pb.waiting) { reached += part.length; made += part.work; }
@@ -446,8 +449,12 @@
     }
     const ctx = tts.ctx;
     if (ctx && ctx.state !== 'running') resume(ctx);
+    // Use THIS playback's buffers and their actual sample-derived durations.
+    // A future start is not currently audible; other message sources do not
+    // mean the active message is speaking.
     const scheduled = !!(ctx && ctx.state === 'running' &&
-      pb.end > ctx.currentTime + 0.02 && tts.sources.size);
+      [...(pb.activeSources?.values() || [])].some(({ start, end }) =>
+        start <= ctx.currentTime && ctx.currentTime < end));
     if (pb.loading === scheduled) {
       pb.loading = !scheduled;
       setButtons();
@@ -472,16 +479,44 @@
   // that is ready while the one before it still plays starts on the very
   // sample where that one ends, without a gap of the page's own timers.
   function schedule(pb, res) {
+    if (!res?.audio?.length) return null; // no phonemes, never count silent audio as spoken
+    if (!(Number.isFinite(res.rate) && res.rate > 0))
+      throw new Error('Ungültige Audio-Samplerate');
     const ctx = tts.ctx;
-    const buf = ctx.createBuffer(1, Math.max(1, res.audio.length), res.rate);
-    if (res.audio.length) buf.copyToChannel(res.audio, 0);
+    // The worker has ALREADY applied the requested speech speed to the
+    // waveform's sample count. Sample count / sample rate is the REAL
+    // audible duration at every speed; do not divide by 1.5x again.
+    const buf = ctx.createBuffer(1, res.audio.length, res.rate);
+    buf.copyToChannel(res.audio, 0);
     const src = ctx.createBufferSource();
     src.buffer = buf; src.connect(ctx.destination);
     const at = Math.max(ctx.currentTime + 0.03, pb.end || 0);
+    const end = at + buf.duration;
+    pb.activeSources ||= new Map();
+    pb.pendingEnds ||= new Set();
+    let settle;
+    const ended = new Promise((resolve) => {
+      let settled = false;
+      settle = (completed) => {
+        if (settled) return;
+        settled = true;
+        tts.sources.delete(src);
+        pb.activeSources.delete(src);
+        pb.pendingEnds.delete(settle);
+        resolve(completed);
+      };
+    });
+    src.onended = () => settle(true);
     tts.sources.add(src);
-    src.onended = () => tts.sources.delete(src);
-    try { src.start(at); } catch (_) { tts.sources.delete(src); return ctx.currentTime; }
-    pb.end = at + buf.duration;
+    pb.activeSources.set(src, { start: at, end });
+    pb.pendingEnds.add(settle);
+    try { src.start(at); }
+    catch (error) {
+      settle(false);
+      throw error; // never silently finish a message whose audio did not start
+    }
+    pb.end = end;
+    pb.lastEnded = ended;
     return at;
   }
   // Resolves true once the audio clock reaches t, false if the reading ended
@@ -540,7 +575,10 @@
       if (current !== pb) return;
       if (!ahead.length) {
         if (producerError) throw producerError;
-        if (pb.end && !(await reach(pb, pb.end))) return;
+        // AudioContext.currentTime crossing a calculated end is NOT proof
+        // that a scheduled source finished playing (tab suspend, device
+        // changes, clock jumps). Only the last source's onended can finish.
+        if (pb.lastEnded && !(await pb.lastEnded)) return;
         return finish(pb);
       }
       let cur = ahead.shift();
@@ -549,14 +587,16 @@
       if (cur.rate !== (pb.rate ?? rateFor(pb.speaker))) cur = request(pb, cur.text);
       const res = await cur.p;
       if (current !== pb) return;
+      if (!res?.audio?.length) continue;
       // Nothing plays (the start, or the device fell behind): the reading
       // starts when what is made covers what is still to make, so it runs
       // on to its end without a pause between sentences.
       if (!pb.end || tts.ctx.currentTime >= pb.end - 0.05) await preroll(pb, res, ahead, () => more);
       if (current !== pb) return;
+      // Laid behind what plays; the next part is awaited while this one begins.
+      const at = schedule(pb, res);
+      if (at === null || !(await reach(pb, at))) return;
       pb.spoken = true;
-      // Laid behind what plays; the next part is awaited while this one begins and plays.
-      if (!(await reach(pb, schedule(pb, res)))) return;
     }
   }
 
@@ -629,6 +669,9 @@
     current = null; // make pending callbacks and loops harmless
     if (pb) {
       clearAudioMonitor(pb);
+      // The audio promise is also awaited by the end-of-message path.
+      // Release it on Stop so an obsolete reader never hangs forever.
+      for (const settle of [...(pb.pendingEnds || [])]) settle(false);
       for (const field of ['wake', 'have', 'room']) {
         const wake = pb[field]; pb[field] = null; wake?.();
       }

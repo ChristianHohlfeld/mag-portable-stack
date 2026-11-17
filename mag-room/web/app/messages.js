@@ -694,9 +694,13 @@
     if (a.voiceover_kind === 'take') return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name,
       title: 'Rohaufnahme der Nachvertonung herunterladen' }, MAG.icon('down'), 'Mikrofonspur');
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
-    if (a.kind === 'video') return a.voiceover_kind === 'baked' || !MAG.voiceover
-      ? el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true })
-      : MAG.voiceover.player(m, a);
+    if (a.kind === 'video' && a.voiceover_kind === 'baked')
+      return el('div', { class: 'voiceover baked' },
+        el('small', { text: 'Nachvertonte Fassung · Original bleibt erhalten' }),
+        el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true }),
+        el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon('down'), 'MP4 herunterladen'));
+    if (a.kind === 'video') return MAG.voiceover ? MAG.voiceover.player(m, a)
+      : el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
     return el('a', { class: 'att-file', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon(a.kind === 'model' ? 'cube' : 'file'),
       el('span', { text: a.name }), el('small', { text: MAG.bytes(a.size) }));
   }

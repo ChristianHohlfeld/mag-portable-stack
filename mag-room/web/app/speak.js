@@ -812,16 +812,16 @@
       try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
-    if (pb.native) unlockNativeSink();
     MAG.audio?.activate('tts',{
       name:'tts',title:'MAG · Vorlesen',artist:who,
       stop:()=>stop(),
       pause:()=>{try{synth?.pause?.()}catch(_){};try{tts.nativeAudio?.pause()}catch(_){};try{tts.ctx?.suspend?.()}catch(_){}},
       resume:()=>{try{synth?.resume?.()}catch(_){};if(tts.nativeAudio?.paused)try{Promise.resolve(tts.nativeAudio.play()).catch(()=>{});}catch(_){};if(tts.ctx)resume(tts.ctx)}
     });
+    if (pb.native) unlockNativeSink();
     setButtons();
     if (!de) {
-      if (!systemOk) { current = null; setButtons(); return false; }
+      if (!systemOk) { stop(); return false; }
       // The first speech call happens inside the tap (iOS Safari wants that).
       systemNext(pb);
       return true;

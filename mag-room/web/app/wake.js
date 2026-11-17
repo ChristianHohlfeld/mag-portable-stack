@@ -15,6 +15,7 @@
   } catch {}
 
   let held = null, pending = null, generation = 0, deniedAt = 0;
+  let unexpectedReleases = 0, lastGestureRetryAt = 0;
   const visible = () => !document.hidden && document.visibilityState !== 'hidden';
 
   async function release() {
@@ -30,7 +31,7 @@
     if (pending) return pending;
     // A denied request (battery-saving mode, unsupported context) must not
     // fire a new permissions attempt on every tap. Explicit toggle bypasses.
-    if (!force && Date.now() - deniedAt < 30000) return Promise.resolve(false);
+    if (!force && deniedAt && Date.now() - deniedAt < 30000) return Promise.resolve(false);
 
     const ticket = generation;
     const attempt = (async () => {
@@ -42,7 +43,13 @@
         }
         held = lock;
         lock.addEventListener?.('release', () => {
-          if (held === lock) held = null;
+          if (held !== lock) return; // ignore deliberate/stale sentinel releases
+          held = null;
+          // The OS can revoke a lock while the PWA is still visible. Attempt
+          // recovery once, then await a real user gesture or foreground event.
+          // This prevents unbounded re-request loops on a restrictive device.
+          if (enabled && visible() && unexpectedReleases++ < 1)
+            void Promise.resolve().then(() => { if (!held && enabled && visible()) return request(); });
         });
         deniedAt = 0;
         return true;
@@ -69,17 +76,32 @@
     }
     ++generation;
     deniedAt = 0;
+    unexpectedReleases = 0;
     return request(true);
   }
 
   const refresh = () => { if (visible()) void request(); else void release(); };
-  document.addEventListener('visibilitychange', refresh);
-  window.addEventListener('pageshow', refresh);
+  const foreground = () => {
+    unexpectedReleases = 0;
+    if (visible()) void request();
+    else void release();
+  };
+  const gesture = () => {
+    if (!enabled || !visible() || !supported || held) return;
+    // A real tap/keypress is a fresh user activation: retry even during the
+    // 30-second automatic-denial cooldown, but at most once per 2 seconds.
+    const now = Date.now();
+    if (lastGestureRetryAt && now - lastGestureRetryAt < 2000) return;
+    lastGestureRetryAt = now;
+    unexpectedReleases = 0;
+    void request(true);
+  };
+  document.addEventListener('visibilitychange', foreground);
+  window.addEventListener('pageshow', foreground);
   window.addEventListener('pagehide', () => void release());
-  window.addEventListener('focus', refresh);
-  // Safari may need user activation after restoring a home-screen PWA.
-  document.addEventListener('pointerdown', refresh, { passive: true });
-  document.addEventListener('keydown', refresh);
+  window.addEventListener('focus', foreground);
+  document.addEventListener('pointerdown', gesture, { passive: true });
+  document.addEventListener('keydown', gesture);
   if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', refresh, { once: true });
   else refresh();

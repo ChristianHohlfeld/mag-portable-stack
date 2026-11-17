@@ -153,7 +153,9 @@
     });
     iframe.setAttribute('sandbox', 'allow-scripts');
     iframe.setAttribute('referrerpolicy', 'no-referrer');
-    iframe.setAttribute('credentialless', '');
+    // Keep the same-origin authentication on the GET for this shell.
+    // The sandbox makes its JavaScript origin opaque; the NESTED frame
+    // is credentialless and cannot access MAG cookies or localStorage.
     iframe._refresh = () => {
       const doc = getHTML();
       if (doc.length > 1500000) return;

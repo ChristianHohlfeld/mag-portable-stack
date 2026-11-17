@@ -61,9 +61,10 @@ public:
     pushcore::push_unsubscribe(jstr(jparse(body), "endpoint"));
     http::send_ok(fd);
   }
-  // kind: "run" (an answer is ready) or "error".
-  void notify(const std::string &kind, const std::string &title, const std::string &body, const std::string &tag) {
-    pushcore::notify(pushcore::PushNote(kind, title, body, "/", tag));
+  // URL stays a validated same-origin path; existing callers default to /.
+  void notify(const std::string &kind, const std::string &title, const std::string &body,
+              const std::string &tag, const std::string &url = "/") {
+    pushcore::notify(pushcore::PushNote(kind, title, body, url, tag));
   }
 };
 

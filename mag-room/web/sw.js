@@ -42,7 +42,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     // An answer you are already looking at needs no notification, nor does a question that waits in front of you.
-    if ((note.kind === 'run' || note.kind === 'approval') && windows.some((w) => w.visibilityState === 'visible')) return;
+    if ((note.kind === 'run' || note.kind === 'job' || note.kind === 'approval') &&
+        windows.some((w) => w.visibilityState === 'visible')) return;
     await self.registration.showNotification(note.title || 'MAG', {
       body: note.body || '', tag: note.tag || 'mag', icon: '/static/icon-192.png?v=' + VERSION, data: { url: note.url || '/' } });
   })());
@@ -51,7 +52,14 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    if (windows.length) return windows[0].focus();
-    return self.clients.openWindow(event.notification.data?.url || '/');
+    const url = event.notification.data?.url || '/';
+    const id = new URL(url, self.location.origin).searchParams.get('m');
+    if (windows.length) {
+      const page = windows.find((w) => w.visibilityState === 'visible') || windows[0];
+      await page.focus();
+      if (id) page.postMessage({ show: id });
+      return;
+    }
+    return self.clients.openWindow(url);
   })());
 });

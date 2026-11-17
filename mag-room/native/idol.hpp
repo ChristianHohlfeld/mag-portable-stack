@@ -17,6 +17,8 @@ namespace mag {
 class Idol {
 public:
   explicit Idol(Room &room) : room_(room) {}
+  // A *terminal* media result is stored first; the room then emits Push.
+  std::function<void(const std::string &, bool)> on_finished;
 
   // Starts a job for an image that is already a room file. Returns the id of
   // the 3D message, or "" with `error`.
@@ -272,6 +274,10 @@ public:
       if (!id.empty()) m3["video"] = id;
       else m3["video_error"] = error.empty() ? "Das Video wurde abgelehnt." : error;
     });
+    // The image succeeded, but the chained video could not even be queued.
+    // The intermediate image was intentionally silent: report this terminal
+    // follow-up failure on that same card instead of dropping both notices.
+    if (id.empty() && on_finished) on_finished(message_id, false);
   }
 
   // A waiting job one place forwards ("up") or backwards ("down") in the
@@ -541,6 +547,7 @@ private:
             m3["progress"] = 1;
             if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
+          if (on_finished) on_finished(message_id, true);
           return;
         }
         if (state == "done" && jstr(m["model3d"], "kind") == "image") {
@@ -558,6 +565,10 @@ private:
             m3["progress"] = 1;
             if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
+          // The intermediate image for a chained video is not the
+          // final delivery; notify once the video itself is ready.
+          if (jstr(m["model3d"], "then_video").empty() && on_finished)
+            on_finished(message_id, true);
           then_video(message_id, png);
           return;
         }
@@ -584,6 +595,7 @@ private:
             if (const Val *seen = st.find("seen_from"); seen && seen->isArr() && seen->asArr().size() == 3) m3["seen_from"] = *seen;
             if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
+          if (on_finished) on_finished(message_id, true);
           part_done(message_id);
           return;
         }
@@ -612,6 +624,7 @@ private:
       m3["error"] = error;
       m3["stage"] = state == "cancelled" ? "Abgebrochen" : "Fehler";
     });
+    if (state == "error" && on_finished) on_finished(message_id, false);
   }
 };
 

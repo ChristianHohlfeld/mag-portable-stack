@@ -678,7 +678,10 @@ class RoomContract(unittest.TestCase):
                    "Lena's next bot turn must read new policy", 35)
             latest = seen["lena"][1]
             self.assertIn("für diesen Gesprächszug deaktiviert", latest)
-            self.assertIn("Sonst antworte exakt PASS", latest)
+            # This is still an autonomous bot round: it uses the autonomous
+            # PASS instruction, not the human-started observer variant.
+            self.assertIn("Wenn die Unterhaltung erschöpft ist, antworte exakt PASS", latest)
+            self.assertNotIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert", latest)
             self.assertFalse("Chris kann alle eure Nachrichten im Raum-Chat lesen" in latest,
                              "old observer notice may remain in history, NOT the latest directive")
             self.assertEqual(r.state()["settings"]["bot_rounds"], 0)

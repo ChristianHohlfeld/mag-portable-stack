@@ -40,9 +40,16 @@
     <button id="clear" class="icon-btn" aria-label="Raum leeren" title="Raum und Bot-Kontext leeren" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
     <button id="settings" class="icon-btn" aria-label="Einstellungen" title="Einstellungen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
   </header>
+  <nav id="viewbar" aria-label="Chatansicht">
+    <div class="seg" role="group" aria-label="Nachrichten filtern">
+      <button type="button" data-view="all" class="on" aria-pressed="true">Alle</button>
+      <button type="button" data-view="media" aria-pressed="false" title="Nur generierte Bilder, Videos und 3D-Modelle">Medien</button>
+    </div>
+  </nav>
   <main id="scroll" aria-live="polite">
     <button id="older" hidden>Ältere Nachrichten laden</button>
     <div id="empty" hidden><b>Hallo Chris.</b>Schreib einfach los: Lena und Noah lesen mit.</div>
+    <div id="media-empty" hidden>Hier erscheinen generierte Bilder, Videos, 3D-Modelle und andere Medien.</div>
     <div id="list"></div>
   </main>
   <div id="dock">

@@ -42,8 +42,30 @@ inline double seconds(const std::string &path) {
   if (!r.spawned || r.code != 0) return 0;
   try {
     const double s = std::stod(trim(r.out));
-    return std::isfinite(s) && s > 0 && s <= 600 ? s : 0;
-  } catch (...) { return 0; }
+    if (std::isfinite(s) && s > 0 && s <= 600) return s;
+    if (std::isfinite(s) && s > 600) return 0;
+  } catch (...) {}
+  // MediaRecorder in Chromium commonly produces valid WebM/Opus without a
+  // container duration. Derive it from packet timestamps rather than
+  // rejecting a real browser capture. Cap the output/CPU time.
+  opts.timeout_s = 18; opts.cap = 2u << 20;
+  const RunResult packets = run({"ffprobe", "-v", "error", "-select_streams", "a:0",
+                                 "-show_packets", "-show_entries", "packet=pts_time,duration_time",
+                                 "-of", "csv=p=0", path}, opts);
+  if (!packets.spawned || packets.code != 0 || packets.truncated) return 0;
+  double last = 0;
+  std::istringstream lines(packets.out);
+  for (std::string line; std::getline(lines, line);) {
+    const size_t comma = line.find(',');
+    if (comma == std::string::npos) continue;
+    try {
+      const double pts = std::stod(line.substr(0, comma));
+      const double duration = std::stod(line.substr(comma + 1));
+      if (std::isfinite(pts) && std::isfinite(duration))
+        last = std::max(last, pts + duration);
+    } catch (...) {}
+  }
+  return last > 0 && last <= 600 ? last : 0;
 }
 
 inline bool bake(const std::string &video, const std::string &audio, const std::string &out,

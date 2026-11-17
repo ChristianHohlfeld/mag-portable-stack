@@ -422,13 +422,13 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena Überleg bitte nochmal.")
         r.idle()
         self.assertEqual(len(sent), 2)
-        prompt = "\\n".join(str(m.get("content", "")) for m in sent[-1]["messages"])
+        prompt = "\n".join(str(m.get("content", "")) for m in sent[-1]["messages"])
         self.assertIn("Jüngster Gesprächskontext", prompt)
         self.assertIn("Chris:", prompt)
         self.assertIn("Lena: Die erste Aussage.", prompt)
         # Bot messages get the same day/time source metadata as Chris'
         # messages, rather than appearing untimed in the prompt.
-        self.assertRegex(prompt, r"\\([A-Za-z]{2} [0-9]{2}\\.[0-9]{2}\\. [0-9]{2}:[0-9]{2}\\)\\nLena:")
+        self.assertRegex(prompt, r"\([A-Za-z]{2} [0-9]{2}\.[0-9]{2}\. [0-9]{2}:[0-9]{2}\)\nLena:")
         self.assertIn("Überleg bitte nochmal.", prompt)
         self.assertNotIn("Über Aktivitäten in der Zwischenzeit", prompt)
 

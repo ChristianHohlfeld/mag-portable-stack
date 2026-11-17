@@ -328,9 +328,13 @@ std::map<std::string, std::string> header_map(const std::string &block) {
   size_t pos = (line == std::string::npos) ? block.size() : line + 2;
   while (pos < block.size()) {
     size_t end = block.find("\r\n", pos);
-    if (end == std::string::npos || end == pos) break;
+    // handle() removes the CRLFCRLF delimiter before calling us. The final
+    // header therefore has no trailing CRLF; treating that as an incomplete
+    // line silently discards e.g. curl's final Content-Length header (411).
+    if (end == std::string::npos) end = block.size();
+    if (end == pos) break;
     std::string row = block.substr(pos, end - pos);
-    pos = end + 2;
+    pos = end == block.size() ? end : end + 2;
     size_t colon = row.find(':');
     if (colon == std::string::npos) continue;
     std::string key;

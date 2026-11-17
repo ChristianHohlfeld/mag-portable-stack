@@ -30,6 +30,9 @@
         const saved = JSON.parse(localStorage.getItem(PREFIX + key) || 'null');
         if (saved?.base === original && typeof saved.text === 'string')
           d.text = saved.text;
+        else if (!original && typeof saved?.base === 'string' &&
+                 typeof saved.text === 'string')
+          d.pending = saved; // page source may arrive through owner-only VM read
       } catch {}
       drafts.set(key, d);
     } else if (d.base !== original) {
@@ -88,8 +91,12 @@
       changed: () => d.text !== d.base,
       setOriginal: (text) => {
         const edited = d.text !== d.base;
+        const persisted = d.pending;
+        d.pending = null;
         d.base = text;
-        if (!edited) { d.text = text; input.value = text; }
+        if (persisted?.base === text && !edited) d.text = persisted.text;
+        else if (!edited) d.text = text;
+        input.value = d.text;
         save(key, d);
         refreshStatus();
         onChange?.();

@@ -140,7 +140,7 @@
   // at a word so a long sentence does not hold playback back.
   function completeLength(text) {
     let end = 0;
-    const re = /[.!?:;](?=\s)|\n/g;
+    const re = /[.!?:;](?=\s|$)|\n/g;
     let m;
     while ((m = re.exec(text))) {
       const token = text.slice(0, m.index).split(/\s/).pop() || '';

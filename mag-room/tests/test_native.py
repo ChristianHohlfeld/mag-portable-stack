@@ -1262,6 +1262,144 @@ class RoomContract(unittest.TestCase):
         for a in saved["attachments"]:
             self.assertFalse((folder / a["file"]).exists())
 
+    def test_melody_file_upload_dual_cue_and_non_destructive_mix(self):
+        """File audio can begin later in the film AND later inside the song."""
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg/ffprobe not installed")
+        import array
+        import math
+        import sys
+
+        r = self.room
+        film = r.tmp / "cue-film.mp4"
+        # Original has a soundtrack: preserve it as MP4 alternate; include it
+        # in mix mode, but exclude it from replace-mode timing analysis.
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10",
+                        "-f", "lavfi", "-i", "sine=frequency=160:sample_rate=44100",
+                        "-t", "1.8", "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(film)],
+                       check=True, timeout=25)
+        original_bytes = film.read_bytes()
+        code, original = r.api("POST", "/api/upload?name=cue-film.mp4", raw=original_bytes)
+        self.assertEqual(code, 201)
+        vid = original["file"]
+        message = r.say("Film mit Musik", attachments=[vid], to=["absent"])["id"]
+
+        song = r.tmp / "melodie.wav"
+        # 220 Hz in the first 0.8 s, 1000 Hz afterwards: cropping FROM 0.9 s
+        # must expose only the latter frequency in the baked timeline.
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=220:duration=0.8",
+                        "-f", "lavfi", "-i", "sine=frequency=1000:duration=2.0",
+                        "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+                        "-map", "[a]", "-c:a", "pcm_s16le", str(song)],
+                       check=True, timeout=25)
+        self.assertGreater(float(subprocess.check_output(["ffprobe", "-v", "error",
+            "-show_entries", "format=duration", "-of", "default=nw=1:nk=1",
+            str(song)]).decode()), 1.8, "music is longer than video")
+        path = ("/api/video/voiceover?message=" + message +
+                "&video=" + vid + "&lane=melody&name=melodie.wav")
+        code, wav = r.api("POST", path, raw=song.read_bytes(),
+                          headers={"Content-Type": "audio/wav"})
+        self.assertEqual(code, 201)
+        self.assertEqual((wav["voiceover_lane"], wav["voiceover_at"],
+                          wav["voiceover_from"]), ("melody", 0, 0))
+        self.assertEqual(r.api("POST", path.replace("melodie.wav", "fake.txt"),
+                                raw=song.read_bytes(),
+                                headers={"Content-Type": "application/octet-stream"})[0], 415)
+
+        # The extension fallback supports browser File objects whose MIME is
+        # empty; a new file supersedes ONLY the melody lane, not the video.
+        mp3 = r.tmp / "melodie.mp3"
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
+                        "-i", str(song), "-c:a", "libmp3lame", "-q:a", "4", str(mp3)],
+                       check=True, timeout=25)
+        code, music = r.api("POST", path.replace("melodie.wav", "melodie.mp3"),
+                            raw=mp3.read_bytes(),
+                            headers={"Content-Type": "application/octet-stream"})
+        self.assertEqual(code, 201)
+        self.assertEqual((music["kind"], music["mime"]), ("audio", "audio/mpeg"))
+        self.assertEqual(r.api("GET", "/api/file/" + wav["file"])[0], 404)
+        self.assertEqual(r.api("POST", "/api/video/voiceover/cue", {
+            "message": message, "video": vid, "file": wav["file"],
+            "at": 0.45, "from": 0.9})[0], 404)
+        self.assertEqual(r.api("POST", "/api/video/voiceover/cue", {
+            "message": message, "video": vid, "file": music["file"],
+            "at": -1, "from": 0})[0], 400)
+        self.assertEqual(r.api("POST", "/api/video/voiceover/cue", {
+            "message": message, "video": vid, "file": music["file"],
+            "at": 30, "from": 0})[0], 400)
+        code, offsets = r.api("POST", "/api/video/voiceover/cue", {
+            "message": message, "video": vid, "file": music["file"],
+            "at": 0.45, "from": 0.9})
+        self.assertEqual((code, offsets), (200, {"at": 0.45, "from": 0.9}))
+        r.stop()
+        r.start()
+        updated = next(m for m in r.messages() if m["id"] == message)
+        cue = next(a for a in updated["attachments"] if a.get("voiceover_lane") == "melody")
+        self.assertEqual((cue["voiceover_at"], cue["voiceover_from"]), (0.45, 0.9))
+
+        code, audio_only = r.api("POST", "/api/video/bake", {
+            "message": message, "video": vid, "lanes": {"melody": music["file"]},
+            "mode": "replace"})
+        self.assertEqual(code, 201, audio_only)
+        output = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files" / audio_only["video"]["file"]
+        audio = subprocess.check_output(["ffmpeg", "-nostdin", "-hide_banner",
+            "-v", "error", "-i", str(output), "-map", "0:a:0", "-ac", "1",
+            "-ar", "8000", "-f", "s16le", "-"], timeout=25)
+        samples = array.array("h")
+        samples.frombytes(audio)
+        if sys.byteorder != "little":
+            samples.byteswap()
+
+        def segment(start, end):
+            return samples[int(8000 * start):int(8000 * end)]
+
+        def rms(seq):
+            return math.sqrt(sum(v * v for v in seq) / max(1, len(seq)))
+
+        self.assertLess(rms(segment(0.10, 0.30)), 65,
+                        "melody must be silent before its VIDEO cue")
+        later = segment(0.70, 0.95)
+        self.assertGreater(rms(later), 120, "melody begins at the video cue")
+        crossings = sum((later[i - 1] < 0 <= later[i]) or
+                        (later[i - 1] >= 0 > later[i])
+                        for i in range(1, len(later)))
+        self.assertGreater(crossings, 350,
+                           "source FROM 0.9 s plays the 1000 Hz half, not the earlier 220 Hz")
+        tracks = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(output)],
+            timeout=10).decode().splitlines()
+        self.assertEqual(tracks, ["audio", "audio"], "original audio is kept as alternate track")
+
+        # All three lanes and original soundtrack still combine as before.
+        def mic_track(freq):
+            p = r.tmp / ("cue-mic%d.m4a" % freq)
+            subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
+                            "-f", "lavfi", "-i", "sine=frequency=%d:duration=0.8" % freq,
+                            "-c:a", "aac", str(p)], check=True, timeout=25)
+            return p.read_bytes()
+
+        tracks = {"melody": music["file"]}
+        for lane, freq in (("voice", 300), ("effects", 1300)):
+            code, a = r.api("POST", "/api/video/voiceover?message=" + message +
+                            "&video=" + vid + "&lane=" + lane, raw=mic_track(freq),
+                            headers={"Content-Type": "audio/mp4"})
+            self.assertEqual(code, 201)
+            tracks[lane] = a["file"]
+        code, baked = r.api("POST", "/api/video/bake", {
+            "message": message, "video": vid, "lanes": tracks, "mode": "mix"})
+        self.assertEqual(code, 201, baked)
+        self.assertEqual(baked["video"]["voiceover_lanes"], tracks)
+        stored = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files"
+        self.assertEqual((stored / vid).read_bytes(), original_bytes)
+        self.assertEqual((stored / music["file"]).read_bytes(), mp3.read_bytes())
+        self.assertTrue((stored / baked["mix"]["file"]).exists())
+        self.assertTrue((stored / baked["video"]["file"]).exists())
+        self.assertEqual(r.api("DELETE", "/api/message/" + message)[0], 200)
+        self.assertFalse((stored / vid).exists())
+        self.assertFalse((stored / music["file"]).exists())
+
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room
         calls = iter([{"content": "Schritt eins.", "tool_calls": [{"name": "remember", "arguments": {"fact": "eins"}}]},

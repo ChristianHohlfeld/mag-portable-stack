@@ -194,9 +194,12 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
   let melodyMessage = { id: 'melody999', attachments: [clip] };
   const musicUI = wm.MAG.voiceover.player(melodyMessage, clip);
   dm.body.append(musicUI);
-  assert(!find(musicUI, 'Musikdatei hochladen'), 'file upload only in the selected melody lane');
+  assert.equal(musicUI.querySelector('.voice-melody').hidden, true,
+    'melody detail row stays folded for other lanes');
   musicUI.querySelector('.voice-lanes button[aria-label="Melodie"]').click();
-  assert(find(musicUI, 'Musikdatei hochladen'), 'one compact file button in melody lane');
+  assert.equal(musicUI.querySelector('.voice-melody').hidden, false,
+    'one compact melody detail row instead of another sheet');
+  assert(find(musicUI, 'Musikdatei hochladen'), 'file action in melody row');
   assert.equal(mf.perms.length, 0, 'file upload must never activate microphone');
   const picker = musicUI.querySelector('input[type=file]');
   const file = new wm.File(['X'.repeat(512)], 'cue-melodie.mp3', { type: 'audio/mpeg' });

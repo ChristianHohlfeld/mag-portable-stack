@@ -42,45 +42,58 @@
       announce.classList.toggle('err', error);
     };
     const buttons = new Map();
-    const laneBar = el('div', { class: 'voice-lanes', role: 'group', 'aria-label': 'Nachvertonung' });
-    const options = LANES.map(([key, title]) => {
-      const b = el('button', { type: 'button', class: 'pill',
-        'aria-label': title, title: title + ' aufnehmen',
-        onclick: () => { if (recorder?.state === 'recording') return; lane = key; paint(); } });
+    const laneBar = el('div', { class: 'voice-lanes seg', role: 'group',
+      'aria-label': 'Tonspur wählen' });
+    LANES.forEach(([key, title]) => {
+      const b = el('button', { type: 'button', 'aria-label': title,
+        title: title + ' auswählen',
+        onclick: () => { if (recorder?.state === 'recording') return; lane = key; paint(); }
+      }, el('span', { class: 'voice-take-dot', 'aria-hidden': 'true' }), title);
       buttons.set(key, b);
       laneBar.append(b);
-      return b;
     });
-    const mic = el('button', { type: 'button', class: 'pill', text: '● Aufnehmen', title: 'Mikrofonaufnahme' });
+    const mic = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Mikrofon freigeben', title: 'Mikrofon freigeben',
+      html: MAG.icons.mic });
     // Melody-only file control; two small offsets instead of a timeline editor.
     const songFile = el('input', { type: 'file', hidden: true,
       accept: '.mp3,.wav,.m4a,.ogg,.weba,.flac,audio/mpeg,audio/wav,audio/mp4,audio/ogg,audio/webm,audio/flac' });
-    const songUpload = el('button', { type: 'button', class: 'pill',
-      text: '↑ Musikdatei', title: 'MP3, WAV, M4A, Ogg, WebM oder FLAC in die Melodie-Spur' });
+    const songUpload = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Musikdatei hochladen', title: 'MP3, WAV, M4A, Ogg, WebM oder FLAC hochladen',
+      html: MAG.icons.file });
+    const songName = el('span', { class: 'voice-song-name', title: 'Aktuelle Melodie',
+      text: 'Musikdatei wählen' });
     const videoAt = el('input', { type: 'number', class: 'voice-cue-input',
       min: '0', step: '0.1', value: '0', inputMode: 'decimal',
       'aria-label': 'Melodie ab Videosekunde' });
     const songFrom = el('input', { type: 'number', class: 'voice-cue-input',
       min: '0', step: '0.1', value: '0', inputMode: 'decimal',
       'aria-label': 'Song ab Sekunde' });
-    const cues = el('span', { class: 'voice-cues', hidden: true },
-      el('label', {}, 'Video ab ', videoAt, ' s'),
-      el('label', {}, 'Song ab ', songFrom, ' s'));
-    const discardButton = el('button', { type: 'button', class: 'pill', title: 'Aufnahme verwerfen',
-      text: 'Verwerfen', hidden: true });
-    const preview = el('button', { type: 'button', class: 'pill', text: '▶ Anhören',
-      title: 'Original mit allen drei Spuren wiedergeben', hidden: true });
-    const bake = el('button', { type: 'button', class: 'pill', text: 'Mix & MP4',
-      title: 'Alle drei Spuren zu einem Mix zusammenführen und in ein neues MP4 einbrennen', hidden: true });
-    const downloads = el('span', { class: 'voice-exports' });
-    const toolbar = el('div', { class: 'voice-controls' }, laneBar,
-      owner ? mic : null, owner ? songUpload : null, owner ? songFile : null,
-      owner ? cues : null, owner ? discardButton : null,
-      preview, owner ? bake : null, downloads);
+    const cues = el('span', { class: 'voice-cues' },
+      el('label', {}, 'Video ab', videoAt, 's'),
+      el('label', {}, 'Song ab', songFrom, 's'));
+    const discardButton = el('button', { type: 'button', class: 'icon-btn voice-discard',
+      'aria-label': 'Aufnahme verwerfen', title: 'Aufnahme verwerfen',
+      html: MAG.icons.x, hidden: true });
+    const preview = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Mit Tonspuren anhören', title: 'Mit Tonspuren anhören',
+      html: MAG.icons.speak, hidden: true });
+    const bake = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Mix und MP4 erstellen', title: 'Mix und MP4 erstellen',
+      html: MAG.icons.film, hidden: true });
+    const downloads = el('span', { class: 'voice-exports', 'aria-label': 'Fertige Dateien' });
+    const actions = el('div', { class: 'voice-actions', role: 'group',
+      'aria-label': 'Tonspuren bearbeiten' },
+      owner ? mic : null, owner ? discardButton : null, preview, owner ? bake : null);
+    const toolbar = el('div', { class: 'voice-controls' }, laneBar, actions);
+    const melodyRow = el('div', { class: 'voice-melody', hidden: true },
+      owner ? songUpload : null, owner ? songFile : null,
+      songName, owner ? cues : null);
+    const footer = el('div', { class: 'voice-footer' }, downloads, announce);
     const audios = Object.fromEntries(LANES.map(([id]) =>
       [id, el('audio', { preload: 'metadata', hidden: true })]));
     const audiosBox = el('div', { hidden: true }, ...Object.values(audios));
-    box.append(audiosBox, toolbar, announce);
+    box.append(audiosBox, toolbar, melodyRow, footer);
     // One stable audio element per lane, shared with the original video
     // timeline. The video controls remain native and work on iOS/Android.
     function sync() {
@@ -106,26 +119,33 @@
         audio.volume = video.volume;
         if (video.paused || video.ended) audio.pause();
         else if (audio.paused) audio.play().catch(() => {
-          status('Für die Spuren bitte ▶ Anhören antippen.');
+          status('Bitte die Vorschau antippen.');
         });
       }
     }
     const have = () => LANES.some(([key]) => !!tracks[key]);
     function paint() {
-      for (const [key, title] of LANES) {
+      for (const [key] of LANES) {
         const b = buttons.get(key);
-        b.classList.toggle('on', lane === key && owner);
-        b.setAttribute('aria-pressed', String(lane === key && owner));
-        b.textContent = (tracks[key] ? '✓ ' : '') + title;
+        b.classList.toggle('on', lane === key);
+        b.classList.toggle('has-take', !!tracks[key]);
+        b.setAttribute('aria-pressed', String(lane === key));
       }
       preview.hidden = !have();
       bake.hidden = !have() || !owner;
       bake.disabled = busy || recorder?.state === 'recording';
       mic.disabled = busy || stopping || !compatible;
-      songUpload.hidden = !owner || lane !== 'melody';
+      const micLabel = recorder?.state === 'recording' ? 'Aufnahme stoppen und behalten'
+        : stream ? 'Aufnahme starten' : 'Mikrofon freigeben';
+      mic.setAttribute('aria-label', micLabel);
+      mic.title = micLabel;
+      mic.innerHTML = recorder?.state === 'recording' ? MAG.icons.stop : MAG.icons.mic;
+      mic.classList.toggle('voice-recording', recorder?.state === 'recording');
+      melodyRow.hidden = !owner || lane !== 'melody';
       songUpload.disabled = busy || recorder?.state === 'recording';
-      cues.hidden = !owner || lane !== 'melody' || !tracks.melody;
-      videoAt.disabled = songFrom.disabled = busy || recorder?.state === 'recording';
+      videoAt.disabled = songFrom.disabled = busy || recorder?.state === 'recording' || !tracks.melody;
+      songName.textContent = tracks.melody?.name || 'Musikdatei wählen';
+      songName.title = tracks.melody?.name || 'Musikdatei hochladen';
       if (tracks.melody) {
         const at = String(Number(tracks.melody.voiceover_at || 0));
         const from = String(Number(tracks.melody.voiceover_from || 0));
@@ -134,22 +154,19 @@
         if (Number.isFinite(video.duration)) videoAt.max = String(video.duration);
         if (Number.isFinite(Number(tracks.melody.duration)))
           songFrom.max = String(tracks.melody.duration);
-        songUpload.title = tracks.melody.name || 'Musikdatei ersetzen';
+        songUpload.title = 'Musikdatei wählen oder ersetzen';
       }
-      if (recorder?.state === 'recording') mic.textContent = '■ Stoppen';
-      else if (stream) mic.textContent = '● Start ' + LANES.find(([key]) => key === lane)[1];
-      else mic.textContent = '● Aufnehmen';
       discardButton.hidden = !stream && recorder?.state !== 'recording';
-      discardButton.textContent = recorder?.state === 'recording' ? 'Verwerfen' : '✕';
       discardButton.title = recorder?.state === 'recording' ? 'Aufnahme verwerfen' : 'Mikrofon schließen';
+      discardButton.setAttribute('aria-label', discardButton.title);
       downloads.replaceChildren();
       if (tracks.mix) downloads.append(el('a', {
-        class: 'pill', href: url(tracks.mix, '?download=1'), download: tracks.mix.name,
-        title: 'Gemischte Audiospur herunterladen', text: 'Mix'
+        href: url(tracks.mix, '?download=1'), download: tracks.mix.name,
+        title: 'Fertigen Audiomix herunterladen', text: 'Audiomix'
       }));
       if (tracks.baked) downloads.append(el('a', {
-        class: 'pill', href: url(tracks.baked, '?download=1'), download: tracks.baked.name,
-        title: 'MP4 mit eingebrannter Nachvertonung herunterladen', text: 'MP4'
+        href: url(tracks.baked, '?download=1'), download: tracks.baked.name,
+        title: 'MP4 mit Nachvertonung herunterladen', text: 'MP4'
       }));
     }
     // Called by the chat's generic preservation path after an SSE update.

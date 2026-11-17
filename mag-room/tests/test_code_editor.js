@@ -60,6 +60,15 @@ assert.equal(first.changed(), false);
 assert.equal(window.localStorage.getItem('mag-code-draft:' + key), null);
 const next = edit.editor(key, 'print("new model source")', 'python');
 assert.equal(next.get(), 'print("new model source")', 'new source replaces untouched prior code');
+const pageKey = 'message-123:page:demo.html';
+window.localStorage.setItem('mag-code-draft:' + pageKey, JSON.stringify({
+  base: '<h1>Original</h1>', text: '<h1>My draft</h1>'
+}));
+const deferred = edit.editor(pageKey, '', 'html');
+assert.equal(deferred.get(), '', 'page source may be loaded asynchronously');
+deferred.setOriginal('<h1>Original</h1>');
+assert.equal(deferred.get(), '<h1>My draft</h1>',
+  'local edits survive reload even when page source was fetched later');
 
 // Real browser-JS must have a complete script element with safe close tag.
 const js = edit.html('javascript', 'const s = "</script>"; document.querySelector("#app").textContent=s;');

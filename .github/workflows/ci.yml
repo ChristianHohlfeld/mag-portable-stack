@@ -19,7 +19,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache jq libssl-dev libcurl4-openssl-dev libarchive-dev libicu-dev python3-numpy python3-scipy python3-pil
+          sudo apt-get install -y ninja-build ccache jq libssl-dev libcurl4-openssl-dev libarchive-dev libicu-dev python3-numpy python3-scipy python3-pil ffmpeg
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -70,6 +70,8 @@ jobs:
         run: python3 devices/s23/tests/test_s23ctl.py
       - name: Room contract (fake models, fake guest)
         run: |
+          command -v ffmpeg
+          command -v ffprobe
           ./build/test-group-dispatcher
           ./build/test-model-text
           python3 mag-room/tests/test_native.py

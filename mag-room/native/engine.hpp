@@ -88,6 +88,7 @@ public:
     }
     const Val startup_settings = room_.settings();
     auto_enabled_ = jbool(startup_settings, "auto_chat", false);
+    self_enabled_ = jbool(startup_settings, "self_talk", false);
     pass_enabled_ = jbool(startup_settings, "pass_enabled", true);
     // Keep the last spontaneous conversation through a room-only deploy:
     // restarting the web UI/server must not trigger another expensive CPU chat.
@@ -489,6 +490,7 @@ public:
   void settings_changed() {
     const Val settings = room_.settings();
     const bool enabled = jbool(settings, "auto_chat", false);
+    const bool self_enabled = jbool(settings, "self_talk", false);
     const bool pass_enabled = jbool(settings, "pass_enabled", true);
     const long limit = (long)jnum(settings, "bot_rounds", room_.cfg.bot_rounds);
     {
@@ -503,6 +505,7 @@ public:
       const bool limit_reached = limit > 0 && (round_limit_ == 0 || limit < round_limit_) &&
                                  bot_turns_ >= limit;
       const bool switched_off = !enabled && auto_enabled_;
+      const bool self_switched_off = !self_enabled && self_enabled_;
       if (enabled && !auto_enabled_) dialogue_stopped_ = false; // explicit re-enable permits a fresh session
       round_limit_ = limit;
       pass_enabled_ = pass_enabled;
@@ -513,12 +516,19 @@ public:
         dialogue_stopped_ = true;
         for (auto &b : bots_) {
           if (b->goal_on || b->goal_arm) continue;
-          if (b->want && (b->reason == "bot" || b->reason == "autonomous"))
+          if (b->want && (b->reason == "bot" || b->reason == "autonomous" || b->reason == "self"))
             b->want = false;
-          if ((b->running == "bot" || b->running == "autonomous") &&
+          if ((b->running == "bot" || b->running == "autonomous" || b->running == "self") &&
               b->cancel && !b->warming) b->cancel->stop();
         }
       }
+      if (self_switched_off) {
+        for (auto &b : bots_) {
+          if (b->want && b->reason == "self") b->want = false;
+          if (b->running == "self" && b->cancel && !b->warming) b->cancel->stop();
+        }
+      }
+      self_enabled_ = self_enabled;
       auto_enabled_ = enabled;
     }
     cv_.notify_all();
@@ -886,6 +896,7 @@ private:
   int bot_turns_ = 0, passes_ = 0;
   long round_limit_ = 0;
   bool auto_enabled_ = false, auto_burst_ = false, pass_enabled_ = true;
+  bool self_enabled_ = false;
   bool dialogue_stopped_ = false; // live settings ended this bot exchange; next human message resets
   int64_t auto_last_ms_ = 0, last_human_ms_ = 0;
   size_t auto_next_ = 0;
@@ -1201,7 +1212,7 @@ private:
   // empty log, so `remember` never costs a re-evaluation.
   bool ensure_wire(Bot &b, const Val &me, bool fresh) {
     const std::string system = system_prompt(me);
-    const Val tools = tools_for(me);
+    const Val tools = reason == "self" ? Val::array() : tools_for(me);
     const std::string hash = prefix_hash(me, system, tools);
     Val shape = Val::object();
     shape["persona"] = jstr(me, "persona");
@@ -2980,7 +2991,7 @@ private:
           reason = b.reason;
           // A bot round takes one of the allowed rounds when it starts, so
           // two bots answering each other at once cannot exceed the bound.
-          if (reason == "bot") {
+          if (reason == "bot" || reason == "self") {
             if (round_limit_ > 0 && bot_turns_ >= round_limit_) continue;
             ++bot_turns_;
           }
@@ -3531,7 +3542,7 @@ private:
         // Buffer ALL of that until validation, regardless of PASS setting;
         // otherwise an early streaming bubble bypasses the no-tools gate.
         // PASS-off human-triggered bot follow-ups are buffered too.
-        if (!autonomous_round && (pass_enabled || reason != "bot"))
+        if (!autonomous_round && (pass_enabled || (reason != "bot" && reason != "self")))
           emit_text(b, t, d, name, reason, false);
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
@@ -3707,7 +3718,7 @@ private:
       // is never a substitute for a reply: unattended dialogue cannot run
       // any tool, and an unprompted follower may not evade PASS-off by
       // invoking a tool. Keep model schemas unchanged to preserve warm KV.
-      const bool bot_dialogue = reason == "bot" || reason == "autonomous";
+      const bool bot_dialogue = reason == "bot" || reason == "autonomous" || reason == "self";
       const bool forbidden_tool = !res.calls.empty() &&
           (autonomous_round || (!pass_enabled && bot_dialogue &&
                                 !t.errand && !goal_live(b)));
@@ -4563,7 +4574,7 @@ private:
     // A settings/Stop cancellation may happen after the model sent its last
     // token but before the final flush. Never turn withheld bot tokens into a
     // new visible reply after the exchange was interrupted.
-    if ((reason == "bot" || reason == "autonomous") && (cancelled || cancel->stopped())) {
+    if ((reason == "bot" || reason == "autonomous" || reason == "self") && (cancelled || cancel->stopped())) {
       if (!t.id.empty()) room_.update(t.id, [](Val &m) { m["state"] = "stopped"; }, true);
       tag_turn(b, t);
       after_turn(b, reason, false, false, false, "");
@@ -4625,7 +4636,7 @@ private:
       std::lock_guard<std::mutex> lk(mu_);
       repeat = std::find(b.said.begin(), b.said.end(), norm) != b.said.end();
       if (!repeat) b.said.push_back(norm);
-      if (reason == "bot" && bot_filler_reply(norm)) repeat = true;
+      if ((reason == "bot" || reason == "self") && bot_filler_reply(norm)) repeat = true;
     }
     if (repeat) {
       room_.remove(t.id);
@@ -4698,10 +4709,10 @@ private:
     // Read the already synchronized limit. Taking a stale room snapshot
     // before this lock could undo a simultaneous settings_changed() update.
     const long limit = round_limit_;
-    if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous")) return;
+    if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous" || reason == "self")) return;
     if (auto_burst_ && !auto_enabled_) return;
     // Only a visible answer is a round; a PASS or a stopped turn gives it back.
-    if (reason == "bot" && !visible && bot_turns_ > 0) --bot_turns_;
+    if ((reason == "bot" || reason == "self") && !visible && bot_turns_ > 0) --bot_turns_;
     size_t active = 0;
     for (auto &c : bots.asArr())
       if (jbool(c, "enabled", true)) ++active;

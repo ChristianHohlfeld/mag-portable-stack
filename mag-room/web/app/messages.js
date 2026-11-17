@@ -32,7 +32,6 @@
         // Reinstated lightweight streaming path: no textarea, draft lookup,
         // localStorage or live iframe while model output is still growing.
         // Keep the code block cheap to rebuild as more tokens arrive.
-        const lines = source.replace(/\n$/, '').split('\n');
         const block = el('div', { class: 'codeblock codeblock-live', dataset: { codeKey: key } });
         const head = el('div', { class: 'head' },
           el('span', { class: 'code-lang', text: rawLang || 'Code' }),

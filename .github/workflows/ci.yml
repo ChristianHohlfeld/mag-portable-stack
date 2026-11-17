@@ -67,6 +67,7 @@ jobs:
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_media_initial.js
           node mag-room/tests/test_zip_range.js
           node mag-room/tests/test_glb_pinch.js
+          node mag-room/tests/test_unlimited_bot_dialogue.js
           node --check mag-room/web/app/messages.js
           node --check mag-room/web/app/tts-worker.js
           node mag-room/tests/test_bot_name_prefix.js

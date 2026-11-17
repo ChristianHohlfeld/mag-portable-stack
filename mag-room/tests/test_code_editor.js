@@ -132,8 +132,11 @@ assert(shell.includes('event.source !== parent'), 'preview only receives code fr
 assert(shell.includes('result.srcdoc = event.data.html'), 'shell renders local source in nested sandbox');
 assert(api.includes('p == "/app/code-preview.html"'), 'CSP-isolated shell has an explicit route');
 assert(api.includes('"sandbox allow-scripts; default-src'), 'route is opaque-origin');
-assert(!api.slice(api.indexOf('p == "/app/code-preview.html"'),
-  api.indexOf('if (starts_with(p, "/static/")')).includes('allow-same-origin'));
+const previewRoute = api.slice(api.indexOf('p == "/app/code-preview.html"'),
+  api.indexOf('if (starts_with(p, "/static/")'));
+const previewCsp = previewRoute.match(/"sandbox allow-scripts; default-src[^"]*"/)?.[0];
+assert(previewCsp, 'preview route has a dedicated sandbox CSP');
+assert(!previewCsp.includes('allow-same-origin'), 'preview CSP never grants same-origin');
 assert(html.indexOf('/app/code_editor.js') < html.indexOf('/app/messages.js'), 'editor loads first');
 assert(timeline.includes('MAG.codeEditor.editor(key, source, lang'), 'every fenced snippet has an editor');
 assert(timeline.includes('MAG.codeEditor.editor(key, original,'), 'published pages have an editor');

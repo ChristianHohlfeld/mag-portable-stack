@@ -151,7 +151,11 @@
         e.stopImmediatePropagation(); // never forward the gesture to another bot
       }
       headerPress = null;
-      if (!headerHover && headerDirty) paintTop();
+      // Do not replace the click target inside the capturing click handler.
+      // Let its own action run first, then apply the deferred status repaint.
+      if (!headerHover && headerDirty) queueMicrotask(() => {
+        if (!headerPress && !headerHover && headerDirty) paintTop();
+      });
     }, true);
     // Pointer release without a click (drag away, lost touch) must not
     // freeze status forever. Normal click clears the guard immediately.

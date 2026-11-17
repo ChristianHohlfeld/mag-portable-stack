@@ -1021,7 +1021,7 @@ private:
     auto_next_ = (starter_index + 1) % available.size();
     write_atomic(room_.cfg.state_dir + "/auto-chat-next", std::to_string(auto_next_) + "\n", 0600);
     auto_burst_ = true;
-    bot_turns_ = 1; // the opening assistant counts toward explicit positive limits
+    bot_turns_ = 0; // the autonomous opener is not an Anschlussantwort
     passes_ = 0;
     audience_.clear(); // an old @mention must not mute a new autonomous session
     const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
@@ -3483,10 +3483,11 @@ private:
       };
       cb.on_content = [&](const std::string &d) {
         set_phase(b, "writing");
-        // In PASS-off bot-to-bot turns, validate the completed reply before
-        // exposing it: even "OK", duplicate text, and partial markers can be
-        // voluntary endings. Human answers still stream normally.
-        if (pass_enabled || (reason != "bot" && reason != "autonomous"))
+        // Autonomous rounds may emit a tool call with prefatory text.
+        // Buffer ALL of that until validation, regardless of PASS setting;
+        // otherwise an early streaming bubble bypasses the no-tools gate.
+        // PASS-off human-triggered bot follow-ups are buffered too.
+        if (!autonomous_round && (pass_enabled || reason != "bot"))
           emit_text(b, t, d, name, reason, false);
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
@@ -3711,7 +3712,8 @@ private:
       // Flush only validated conversational content. Keeping it buffered in
       // PASS-off mode prevents invisible termination attempts from briefly
       // appearing in the chat before being withdrawn.
-      if (!pass_enabled && bot_dialogue && !res.cancelled && !failed && res.calls.empty())
+      if ((autonomous_round || (!pass_enabled && bot_dialogue)) &&
+          !res.cancelled && !failed && res.calls.empty())
         emit_text(b, t, res.content, name, reason, false);
       // Publish completed reasoning only after the token-cap retry decision.
       // Raw streamed partial thoughts are replaced/cleared in the retry path.

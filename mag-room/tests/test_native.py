@@ -1196,9 +1196,15 @@ class RoomContract(unittest.TestCase):
         code, effects = upload("effects", audio_sample(1200))
         self.assertEqual(code, 201, effects)
 
-        # Newest voice take is the active lane in the UI; history still exists
-        # and any previously selected, owned take remains explicitly usable.
+        # The new voice take replaces the old one in the message and file
+        # store; melody/effects and the byte-identical original are untouched.
         self.assertNotEqual(voice_old["file"], voice["file"])
+        state_after_replace = r.api("GET", "/api/state")[1]
+        replaced = next(x for x in state_after_replace["messages"] if x["id"] == message)
+        voice_takes = [a for a in replaced["attachments"] if a.get("voiceover_lane") == "voice"]
+        self.assertEqual([a["file"] for a in voice_takes], [voice["file"]])
+        self.assertEqual(r.api("GET", "/api/file/" + voice_old["file"])[0], 404,
+                         "superseded source no longer occupies disk or the file gallery")
         self.assertEqual(upload("music", voice_new_bytes)[0], 400)
         self.assertEqual(upload("voice", b"not audio bytes" * 60)[0], 422)
         self.assertEqual(r.api("POST", "/api/video/voiceover?message=" + message +
@@ -1242,11 +1248,11 @@ class RoomContract(unittest.TestCase):
 
         state = r.api("GET", "/api/state")[1]
         saved = next(x for x in state["messages"] if x["id"] == message)
-        self.assertEqual(len(saved["attachments"]), 9)  # original + 4 raw + 2*(mix + mp4)
+        self.assertEqual(len(saved["attachments"]), 8)  # original + 3 active lanes + 2*(mix + mp4)
         self.assertEqual(saved["attachments"][0]["file"], stored)
         folder = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files"
         self.assertEqual((folder / stored).read_bytes(), original_bytes)
-        self.assertEqual((folder / voice_old["file"]).read_bytes(), voice_old_bytes)
+        self.assertFalse((folder / voice_old["file"]).exists(), "old voice lane is retired")
         self.assertEqual((folder / voice["file"]).read_bytes(), voice_new_bytes)
         for a in saved["attachments"]:
             self.assertEqual(r.api("GET", "/api/file/" + a["file"])[0], 200)

@@ -1026,7 +1026,12 @@
       if (Math.abs(audio.currentTime - st.time) > 0.12) audio.currentTime = Math.min(st.time, audio.duration || st.time);
       if (audio.paused && st.time < (audio.duration || 0)) audio.play().catch(() => {});
     };
-    const off = () => { clearInterval(timer); timer = 0; audio?.pause(); button.classList.remove('on'); };
+    const off = () => {
+      clearInterval(timer); timer = 0;
+      try { audio?.pause(); if (audio) audio.currentTime = 0; } catch (_) {}
+      MAG.audio?.release(audio);
+      button.classList.remove('on');
+    };
     button.addEventListener('click', async () => {
       if (timer) return off();
       button.disabled = true;
@@ -1034,6 +1039,12 @@
       button.disabled = false;
       if (!wav) return MAG.toast('Die Stimmen sind auf diesem Gerät nicht geladen', true);
       audio ||= new Audio(URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })));
+      MAG.audio?.activate(audio, {
+        name:'scene',title:m.model3d?.title || '3D-Szene',artist:'MAG',
+        stop:off,
+        pause:()=>{if(canvas._viewer?.state?.().playing)MAG.viewer3d.toggle(canvas);try{audio.pause()}catch(_){}},
+        resume:()=>{if(!canvas._viewer?.state?.().playing)MAG.viewer3d.toggle(canvas);follow()}
+      });
       button.classList.add('on');
       MAG.viewer3d.reset(canvas);
       audio.currentTime = 0;

@@ -691,14 +691,10 @@
         el('button', { class: 'pill', title: '3D-Modell aus diesem Bild (danach animierbar)', onclick: () => makeModel(a) }, MAG.icon('cube'), el('b', { text: '3D' })),
         el('button', { class: 'pill', title: 'Video aus diesem Bild', onclick: () => makeVideo(a) }, MAG.icon('play'), el('b', { text: 'Video' }))));
     }
-    if (a.voiceover_kind === 'take') return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name,
-      title: 'Rohaufnahme der Nachvertonung herunterladen' }, MAG.icon('down'), 'Mikrofonspur');
+    // Voice, melody, effects, consolidated mix and baked MP4 belong to the
+    // video card's compact controls, never become extra chat rows/players.
+    if (a.voiceover_kind) return null;
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
-    if (a.kind === 'video' && a.voiceover_kind === 'baked')
-      return el('div', { class: 'voiceover baked' },
-        el('small', { text: 'Nachvertonte Fassung · Original bleibt erhalten' }),
-        el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true }),
-        el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon('down'), 'MP4 herunterladen'));
     if (a.kind === 'video') return MAG.voiceover ? MAG.voiceover.player(m, a)
       : el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
     return el('a', { class: 'att-file', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon(a.kind === 'model' ? 'cube' : 'file'),
@@ -1011,7 +1007,8 @@
   function buildScene(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 scene ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
-    const files = m.attachments || [], glb = files.find((a) => a.name.endsWith('.glb')), film = files.find((a) => a.kind === 'video');
+    const files = m.attachments || [], glb = files.find((a) => a.name.endsWith('.glb')),
+      film = files.find((a) => a.kind === 'video' && !a.voiceover_kind);
     const by = MAG.bot(m3.by)?.name;
     const facts = [m3.seconds ? String(Math.round(m3.seconds * 10) / 10).replace('.', ',') + ' s' : '', (m3.cast || []).join(', '), by ? 'von ' + by : ''].filter(Boolean).join(' · ');
     const sub = m3.state === 'error' ? 'Kein Film: ' + (m3.error || 'Fehler') : m3.state === 'cancelled' ? facts + ' · Film abgebrochen' : facts;
@@ -1051,7 +1048,7 @@
       return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (sceneFiles[ext] || a.name) + ' herunterladen' },
         MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (sceneFiles[ext] ? sceneFiles[ext] + ' · ' : '') + MAG.bytes(a.size) }));
     };
-    card.append(el('div', { class: 'links' }, files.map(link),
+    card.append(el('div', { class: 'links' }, files.filter((a) => !a.voiceover_kind).map(link),
       glb && !files.some((a) => a.name.endsWith('.blend'))
         ? el('button', { class: 'pill', title: 'Die Szene als Datei für Blender holen und herunterladen', onclick: (e) => fetchBlend(m, e.currentTarget) },
             MAG.icon('down'), el('b', { text: 'BLEND' }), el('small', { text: sceneFiles.blend })) : null));
@@ -1060,9 +1057,24 @@
   // A part of a message that must live on while the message changes (a 3D
   // view that is playing, perhaps in fullscreen): it stays where it is, and
   // everything around it becomes the new message. False: nothing to keep.
-  function keep(old, node) {
-    const kept = old.querySelector('[data-keep]'), twin = kept && [...node.querySelectorAll('[data-keep]')].find((n) => n.dataset.keep === kept.dataset.keep);
+  function keep(old, node, message) {
+    const prior = [...old.querySelectorAll('[data-keep]')];
+    const kept = prior[0], twin = kept && [...node.querySelectorAll('[data-keep]')]
+      .find((n) => n.dataset.keep === kept.dataset.keep);
+    // A scene keeps BOTH the 3D canvas (first) and the separate video player
+    // (second). Migrate every other live element before reconstructing the
+    // surrounding DOM, otherwise a recorder is unmounted and discarded.
+    for (const extra of prior.slice(1)) {
+      if (kept?.contains(extra)) continue;
+      const partner = [...node.querySelectorAll('[data-keep]')]
+        .find((n) => n.dataset.keep === extra.dataset.keep);
+      if (partner) {
+        partner.replaceWith(extra);
+        extra._voiceoverRefresh?.(message);
+      }
+    }
     if (!twin) return false;
+    kept._voiceoverRefresh?.(message);
     twin.querySelectorAll('canvas').forEach((canvas) => MAG.viewer3d.drop(canvas));
     for (let a = old, b = node; ;) {
       a.className = b.className;
@@ -1137,7 +1149,7 @@
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from, state: m.state || '' } });
     const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
-    const files = m.model3d && !picture ? [] : m.attachments || [];
+    const files = (m.model3d && !picture ? [] : m.attachments || []).filter((a) => !a.voiceover_kind);
     const atts = files.length ? el('div', { class: 'atts' }, files.map((a) => buildAttachment(a, m))) : null;
     if (user) {
       // The bubble, what was attached, and below them the actions.
@@ -1359,7 +1371,7 @@
           : node.querySelector('details[data-part="' + d.dataset.part + '"]');
         if (twin && (!d.classList.contains('goal-group') || groupPrefs.has(d.dataset.groupkey))) twin.open = true;
       });
-      grow(() => { if (keep(old, node)) node = old; else old.replaceWith(node); });
+      grow(() => { if (keep(old, node, m)) node = old; else old.replaceWith(node); });
     } else {
       // Ids sort by time: a new message goes where its id belongs (almost always the end).
       let after = null;

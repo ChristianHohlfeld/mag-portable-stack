@@ -397,9 +397,11 @@
           owner() ? toggle(b.enabled, (v) => call('PUT', '/api/bot/' + b.id, { enabled: v })) : null))));
 
       content.append(el('h3', { text: 'Gespräch' }), el('div', { class: 'card' },
-        row('Selbstständig unterhalten', 'Lena und Noah dürfen auch ohne neue Nachricht untereinander reden. Kurze Gesprächsblöcke mit Pause dazwischen; funktioniert ohne Browser und ohne geöffneten Chat.',
+        row('Selbstständig unterhalten', 'Lena und Noah können auch ohne deine Nachricht und bei geschlossenem Browser auf dem Server miteinander reden. Nach einer Gesprächspause starten sie frühestens nach dem nächsten Intervall erneut.',
           toggle(s.auto_chat === true, (v) => call('PUT', '/api/settings', { auto_chat: v }), !owner())),
-        row('Bots untereinander', 'Maximale Antworten pro Gespräch. Eigenständige Gesprächsblöcke sind auf vier Antworten begrenzt.',
+        row('Mitlesen kenntlich machen', 'Die Bots wissen bei eigenständigen Gesprächen, dass du ihre Nachrichten im Chat sehen kannst – auch später. Sie nehmen nicht an, dass du gerade online bist.',
+          toggle(s.auto_chat_visible !== false, (v) => call('PUT', '/api/settings', { auto_chat_visible: v }), !owner())),
+        row('Bots untereinander', 'Maximale Anschlussantworten pro Gespräch; 0 bedeutet wirklich unbegrenzt. Die Bots dürfen selbst mit PASS aufhören. Neue Gespräche beginnen mit zeitlichem Abstand.',
           select(s.bot_rounds ?? 0, [[0, 'Unbegrenzt'], [1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner())),
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 

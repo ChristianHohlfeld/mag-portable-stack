@@ -24,6 +24,7 @@ window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventL
 window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 </script>
 <script>${read('core.js').replace(/<\/script/gi, '<\\/script')}</script>
+<script>${read('code_editor.js').replace(/<\/script/gi, '<\\/script')}</script>
 <script>${read('messages.js').replace(/<\/script/gi, '<\\/script')}</script>
 <script>${read('composer.js').replace(/<\/script/gi, '<\\/script')}</script>
 </body></html>`;

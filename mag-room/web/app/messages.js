@@ -16,29 +16,88 @@
   if (window.marked) marked.setOptions({ gfm: true, breaks: true });
   // `live`: the text is still being written. Long code is then left plain
   // and coloured once at the end, so a phone keeps up with the stream.
-  function markdown(text, live) {
+  function markdown(text, live, scope = '') {
     if (!window.marked || !window.DOMPurify) return el('div', { class: 'md', text });
     const html = DOMPurify.sanitize(marked.parse(text || ''), { FORBID_TAGS: ['style', 'form', 'input', 'iframe', 'object', 'embed'], FORBID_ATTR: ['style', 'onerror', 'onclick'] });
     const box = el('div', { class: 'md', html });
     box.querySelectorAll('a').forEach((a) => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
     MAG.mentions?.decorate(box);
     box.querySelectorAll('img').forEach((img) => { img.loading = 'lazy'; });
-    box.querySelectorAll('pre').forEach((pre) => {
+    box.querySelectorAll('pre').forEach((pre, index) => {
       const code = pre.querySelector('code');
-      const lang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
-      const known = lang && window.hljs?.getLanguage(lang);
-      if (code && known && code.textContent.length < (live ? 6000 : 60000)) { try { hljs.highlightElement(code); } catch {} }
-      // Language and copy in a quiet head, the code below. Long code is
-      // folded like a step: its first lines show, the head opens it.
+      const rawLang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
       const source = code ? code.textContent : pre.textContent;
-      const lines = source.replace(/\n$/, '').split('\n');
-      const fold = !live && lines.length > 12;
-      const block = el(fold ? 'details' : 'div', { class: 'codeblock' + (fold ? ' fold' : '') });
+      const key = (scope || 'snippet:' + sigOf(source)) + ':code:' + index;
+      if (live) {
+        // Reinstated lightweight streaming path: no textarea, draft lookup,
+        // localStorage or live iframe while model output is still growing.
+        // Keep the code block cheap to rebuild as more tokens arrive.
+        const block = el('div', { class: 'codeblock codeblock-live', dataset: { codeKey: key } });
+        const head = el('div', { class: 'head' },
+          el('span', { class: 'code-lang', text: rawLang || 'Code' }),
+          el('button', { class: 'copy', type: 'button', text: 'Kopieren',
+            onclick: (e) => { e.preventDefault(); copy(source, e.currentTarget); } }));
+        block._sourceOriginal = source;
+        pre.replaceWith(block);
+        block.append(head, pre);
+        return;
+      }
+      const lang = MAG.codeEditor.language(rawLang, source);
+      const canRun = MAG.codeEditor.previewable(lang, source);
+      // Stable across streaming re-renders. Published pages use this same
+      // draft key when replacing their original fenced code block.
+      const pane = el('div', { class: 'code-pane' });
+      const preview = el('div', { class: 'code-preview', hidden: true });
+      const block = el('div', { class: 'codeblock', dataset: { codeKey: key } });
+      block._sourceOriginal = source;
+      let previewFrame = null, previewTimer = null, mode = 'code';
+      const edited = MAG.codeEditor.editor(key, source, lang, () => {
+        if (mode === 'preview' && previewFrame) {
+          clearTimeout(previewTimer);
+          previewTimer = setTimeout(() => previewFrame?._refresh?.(), 400);
+        }
+      });
+      block._editor = edited;
+      // Keep the original code in the DOM only for page-signature matching.
+      // It is never executed or edited; the textarea is the source of truth.
+      pre.hidden = true;
+      const codeTab = el('button', { role: 'tab', type: 'button', text: 'Code' });
+      const previewTab = canRun ? el('button', { role: 'tab', type: 'button', text: 'Vorschau' }) : null;
+      function show(next) {
+        mode = next;
+        pane.hidden = next !== 'code';
+        preview.hidden = next !== 'preview';
+        for (const [name, button] of [['code', codeTab], ['preview', previewTab]]) {
+          if (!button) continue;
+          button.classList.toggle('on', name === next);
+          button.setAttribute('aria-selected', String(name === next));
+        }
+        if (next === 'preview' && !previewFrame) {
+          previewFrame = MAG.codeEditor.frame('Live-Code-Vorschau',
+            () => MAG.codeEditor.html(lang, edited.get()));
+          preview.replaceChildren(previewFrame);
+        }
+      }
+      codeTab.addEventListener('click', (e) => { e.preventDefault(); show('code'); });
+      previewTab?.addEventListener('click', (e) => { e.preventDefault(); show('preview'); });
+      const copyButton = el('button', { class: 'copy', type: 'button', text: 'Kopieren',
+        onclick: (e) => { e.preventDefault(); copy(edited.get(), e.currentTarget); } });
+      const fullButton = el('button', { class: 'copy', type: 'button', text: 'Vollbild',
+        onclick: (e) => {
+          e.preventDefault();
+          block.classList.toggle('code-fullscreen');
+          fullButton.textContent = block.classList.contains('code-fullscreen') ? 'Schließen' : 'Vollbild';
+        } });
+      block._closeFull = () => { block.classList.remove('code-fullscreen'); fullButton.textContent = 'Vollbild'; };
+      const header = el('div', { class: 'head' },
+        el('span', { class: 'code-lang', text: lang || 'Code' }),
+        el('div', { class: 'seg code-tabs', role: 'tablist' }, codeTab, previewTab),
+        edited.status, edited.resetButton, copyButton, fullButton);
       pre.replaceWith(block);
-      const head = el('div', { class: 'head' }, el('span', { text: (lang || 'Code') + (fold ? ' · ' + lines.length + ' Zeilen' : '') }),
-        el('button', { class: 'copy', text: 'Kopieren', onclick: (e) => { e.preventDefault(); copy(source, e.target); } }),
-        fold ? el('span', { class: 'chev', html: MAG.icons.chev }) : null);
-      block.append(fold ? el('summary', {}, head, el('div', { class: 'peek', text: lines.slice(0, 5).join('\n') })) : head, pre);
+      // Keep the original hidden pre for server page-signature matching.
+      pane.append(edited.input, pre);
+      block.append(header, pane, preview);
+      show('code');
     });
     return box;
   }
@@ -431,11 +490,17 @@
   }
   function mount(card) {
     if (card._frame || card._mode !== 'preview') return;
-    const frame = el('iframe', { title: card._title, src: card._src });
-    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
+    const edited = card._editable?.changed();
+    const frame = edited
+      ? MAG.codeEditor.frame(card._title, () => MAG.codeEditor.html('html', card._editable.get(), card._base))
+      : el('iframe', { title: card._title, src: card._src });
+    if (!edited)
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
     frame.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; accelerometer; gyroscope; gamepad; xr-spatial-tracking');
     frame.setAttribute('referrerpolicy', 'no-referrer');
-    frame.setAttribute('credentialless', '');   // a bot's page may load from anywhere, without anybody's cookies
+    if (!edited) frame.setAttribute('credentialless', '');
+    // Edited frames GET a same-origin shell under the normal viewer's
+    // authentication, but run with an opaque origin (no allow-same-origin).
     card._frame = frame;
     card._stage.replaceChildren(frame);
     framed.push(card);
@@ -453,48 +518,106 @@
     card._stage.replaceChildren(el('button', { class: 'idle', text: 'Vorschau laden', onclick: () => mount(card) }));
   }
   function buildPage(m, page, pre) {
-    const base = MAG.bot(page.bot || m.from)?.site;
+    const botId = page.bot || m.from;
+    const base = MAG.bot(botId)?.site;
     if (!base || !page.path) return null;
     const href = base + '/' + page.path.split('/').map(encodeURIComponent).join('/');
-    const stage = el('div', { class: 'stage' }), code = el('div', { class: 'code md', hidden: true });
-    const source = () => (pre ? (pre.querySelector('code') || pre).textContent : m.parts?.[page.part]?.input?.content || '');
-    const tab = (mode, label) => el('button', { role: 'tab', text: label, onclick: () => show(mode) });
+    const stage = el('div', { class: 'stage' }), code = el('div', { class: 'code', hidden: true });
+    const original = pre ? (pre.querySelector('code') || pre).textContent
+      : m.parts?.[page.part]?.input?.content || '';
+    const block = pre?.closest('.codeblock');
+    const key = block?.dataset.codeKey || m.id + ':page:' + page.path;
+    let card = null, timer = null;
+    const fullscreenLabel = el('span', { text: 'Vollbild' });
+    const full = el('a', { class: 'tool', href, target: '_blank', rel: 'noopener',
+      'aria-label': 'Vollbild' }, MAG.icon('full'), fullscreenLabel);
+    const editor = MAG.codeEditor.editor(key, original, 'html', () => {
+      if (!card) return;
+      const modified = editor.changed();
+      const frameModified = card._frame?.classList.contains('code-preview-frame') || false;
+      if (card._frame && modified !== frameModified) {
+        unmount(card);
+        if (card._visible && card._mode === 'preview') mount(card);
+      } else if (card._frame && modified) {
+        clearTimeout(timer);
+        timer = setTimeout(() => card._frame?._refresh?.(), 400);
+      }
+      if (!modified) card._closeFull?.();
+      card.classList.toggle('code-edited', modified);
+      full.setAttribute('aria-label', modified ? 'Bearbeitete Vorschau als Vollbild' : 'Vollbild im neuen Tab');
+    });
+    const tab = (mode, label) => el('button', { role: 'tab', type: 'button',
+      text: label, onclick: () => show(mode) });
     const tabs = { preview: tab('preview', 'Vorschau'), code: tab('code', 'Code') };
     const copied = el('span', { text: 'Kopieren' });
-    const card = el('div', { class: 'page', dataset: { path: page.path } },
+    card = el('div', { class: 'page', dataset: { path: page.path } },
       el('div', { class: 'bar' },
         el('div', { class: 'seg', role: 'tablist' }, tabs.preview, tabs.code),
         el('span', { class: 'grow' }),
-        el('button', { class: 'tool', 'aria-label': 'Code kopieren', onclick: () => copy(source(), copied) }, MAG.icon('copy'), copied),
-        el('a', { class: 'tool', href, target: '_blank', rel: 'noopener', 'aria-label': 'Vollbild in neuem Tab' }, MAG.icon('full'), el('span', { text: 'Vollbild' }))),
+        el('button', { class: 'tool', type: 'button', 'aria-label': 'Code kopieren',
+          onclick: () => copy(editor.get(), copied) }, MAG.icon('copy'), copied),
+        full),
       stage, code,
-      el('a', { class: 'addr', href, target: '_blank', rel: 'noopener', text: href.replace(/^https?:\/\//, '') }));
-    Object.assign(card, { _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path, _stage: stage, _mode: 'preview', _visible: false, _frame: null });
+      el('a', { class: 'addr', href, target: '_blank', rel: 'noopener',
+        text: href.replace(/^https?:\/\//, '') + ' · lokale Änderungen werden nicht veröffentlicht' }));
+    Object.assign(card, {
+      _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path,
+      _sourceOriginal: original, _base: base, _editable: editor,
+      _stage: stage, _mode: 'preview', _visible: false, _frame: null
+    });
+    card.classList.toggle('code-edited', editor.changed());
+    card._closeFull = () => {
+      card.classList.remove('code-fullscreen');
+      fullscreenLabel.textContent = 'Vollbild';
+    };
+    full.addEventListener('click', (event) => {
+      if (!editor.changed()) return; // original published page keeps its real URL
+      event.preventDefault();
+      if (card.classList.contains('code-fullscreen')) return card._closeFull();
+      card.classList.add('code-fullscreen');
+      fullscreenLabel.textContent = 'Schließen';
+      show('preview');
+      mount(card);
+    });
     function show(mode) {
       card._mode = mode;
-      for (const [key, node] of Object.entries(tabs)) { node.classList.toggle('on', key === mode); node.setAttribute('aria-selected', String(key === mode)); }
+      for (const [key, node] of Object.entries(tabs)) {
+        node.classList.toggle('on', key === mode);
+        node.setAttribute('aria-selected', String(key === mode));
+      }
       stage.hidden = mode !== 'preview';
       code.hidden = mode !== 'code';
-      if (mode === 'code') {
-        if (!code.firstChild) {
-          const block = pre || el('pre', {}, el('code', { class: 'language-html', text: source() }));
-          if (!pre && window.hljs && source().length < 40000) { try { hljs.highlightElement(block.firstChild); } catch {} }
-          code.append(block);
-        }
-        unmount(card);
-        stage.replaceChildren();
-      } else if (card._visible) mount(card);
+      if (mode === 'code') unmount(card);
+      else if (card._visible || card.classList.contains('code-fullscreen')) mount(card);
     }
+    code.append(editor.input, el('div', { class: 'code-edit-note' },
+      editor.status, editor.resetButton));
     if (pre) {
-      const block = pre.closest('.codeblock') || pre;
-      block.before(card);
+      const old = pre.closest('.codeblock') || pre;
+      old.before(card);
+      // The original hidden pre remains inside the page, but the editable
+      // textarea is the only code shown. No draft is written to the VM.
       code.append(pre);
-      if (block !== pre) block.remove();
+      if (old !== pre) old.remove();
+    } else if (!original && S.you.role === 'owner' && MAG.bot(botId)?.vm) {
+      // Pages written by write_file can have no fenced code in the chat.
+      // Reuse the existing read-only owner VM-file endpoint to fill the
+      // editor; reading never publishes or mutates the bot's files.
+      const path = 'www/' + page.path;
+      MAG.fetch('/api/vm/' + encodeURIComponent(botId) + '/file?path=' +
+        encodeURIComponent(path) + '&text=1')
+        .then((response) => response.ok ? response.text() : null)
+        .then((text) => { if (text !== null) editor.setOriginal(text); })
+        .catch(() => {});
     }
     show('preview');
     watch(card);
     return card;
   }
+  // Escape always leaves edited fullscreen, even after a chat rerender.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.querySelector('.code-fullscreen')?._closeFull?.();
+  });
   // Puts each page where it belongs: in place of the code block it was made
   // from, or below the step that wrote it.
   function placePages(m, body) {
@@ -993,14 +1116,14 @@
   }
   function build(m) {
     const user = m.role === 'user';
-    const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from } });
+    const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from, state: m.state || '' } });
     const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
     const files = m.model3d && !picture ? [] : m.attachments || [];
     const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
     if (user) {
       // The bubble, what was attached, and below them the actions.
       // A routine that came due speaks like a request, marked as the routine's.
-      const bubble = m.text ? el('div', { class: 'bubble' + (m.routine ? ' routine' : '') }, m.routine ? el('small', { class: 'tag', text: '⏰ Routine' }) : null, markdown(m.text)) : null;
+      const bubble = m.text ? el('div', { class: 'bubble' + (m.routine ? ' routine' : '') }, m.routine ? el('small', { class: 'tag', text: '⏰ Routine' }) : null, markdown(m.text, false, m.id + ':user')) : null;
       const col = el('div', { class: 'col' }, aboutChip(m), bubble, atts);
       node.append(el('div', { class: 'line' }, col, actions(m)));
       return node;
@@ -1027,7 +1150,7 @@
           }
         } else body.append(buildPart(m, i));
       });
-      if (!(m.parts || []).length && m.text) body.append(markdown(m.role === 'bot' ? tidy(m.text) : m.text));
+      if (!(m.parts || []).length && m.text) body.append(markdown(m.role === 'bot' ? tidy(m.text) : m.text, false, m.id + ':fallback'));
       node.append(body);
       placePages(m, body);
       // A finished answer of nothing but what is not shown (a request in words, a written-out call) is no message.
@@ -1123,7 +1246,7 @@
   function buildPart(m, index) {
     const p = m.parts[index];
     if (p.k === 'step') return buildStep(m, index);
-    const node = markdown(m.role === 'bot' ? tidy(p.text) : p.text, m.state === 'streaming');
+    const node = markdown(m.role === 'bot' ? tidy(p.text) : p.text, m.state === 'streaming', m.id + ':' + index);
     node.dataset.part = index;
     return node;
   }
@@ -1159,12 +1282,54 @@
     }
   }
 
+  // Reuse an existing editor/preview when the server's ORIGINAL code did
+  // not change. This keeps focus, selection, scroll and WebGL iframe state
+  // across status events and other text arriving in the same message.
+  function preserveEditors(old, next) {
+    const selector = '.page[data-path], .codeblock[data-code-key]';
+    const identity = (n) => n.classList.contains('page')
+      ? 'page:' + n.dataset.path : 'code:' + n.dataset.codeKey;
+    const prior = new Map();
+    old.querySelectorAll(selector).forEach((n) => {
+      if (n.closest('.page') && !n.classList.contains('page')) return;
+      prior.set(identity(n), n);
+    });
+    next.querySelectorAll(selector).forEach((n) => {
+      if (n.closest('.page') && !n.classList.contains('page')) return;
+      const former = prior.get(identity(n));
+      if (former && former._sourceOriginal === n._sourceOriginal &&
+          // A completed code block must upgrade from display to editor.
+          !(former.classList.contains('codeblock-live') &&
+            !n.classList.contains('codeblock-live'))) {
+        n.replaceWith(former);
+        // Building the discarded twin briefly registered a new status
+        // observer for this draft. Give persistence updates back to the
+        // textarea we actually kept on screen.
+        (former._editor || former._editable)?.activate?.();
+      }
+    });
+  }
   function upsert(m, fresh) {
     const old = nodes.get(m.id);
-    // The whole message is rebuilt: a queued re-render of one of its parts is obsolete.
+    if (old && m.state === 'streaming' && old.dataset.state === 'streaming' &&
+        (m.parts || []).every((p) => p.k === 'text') &&
+        !(m.pages || []).length && !(m.attachments || []).length) {
+      // Some backends send complete text snapshots even while streaming.
+      // Never rebuild the entire message or a live editor for each token.
+      // Tool steps, attachments and published pages still use the full path.
+      // The ordinary throttled delta path updates only the touched text part.
+      (m.parts || []).forEach((p, index) => {
+        if (p.k === 'text') dirty.add(m.id + ':' + index);
+      });
+      schedule();
+      return;
+    }
+    // The whole message is rebuilt only for a state transition or changed
+    // published content. A queued re-render of its parts is then obsolete.
     for (const key of dirty) if (key.startsWith(m.id + ':')) dirty.delete(key);
     let node = build(m);
     if (old) {
+      preserveEditors(old, node);
       // Keep what the reader opened.
       old.querySelectorAll('details[open]').forEach((d) => {
         const twin = d.classList.contains('think') ? node.querySelector('.think')
@@ -1210,7 +1375,13 @@
       if (!body) continue;
       const fresh = buildPart(m, +part);
       const old = body.querySelector(':scope > [data-part="' + part + '"]');
-      grow(() => { if (old) old.replaceWith(fresh); else body.append(fresh); markStreaming(node, m); });
+      grow(() => {
+        if (old) {
+          preserveEditors(old, fresh);
+          old.replaceWith(fresh);
+        } else body.append(fresh);
+        markStreaming(node, m);
+      });
     }
     dirty.clear();
   }

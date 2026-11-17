@@ -3,8 +3,12 @@
 'use strict';
 (function () {
   const { MAG } = window, { el, $, state: S } = MAG;
-  let list, scroller, jump, activity, empty, olderBtn;
+  let list, scroller, jump, activity, empty, mediaEmpty, olderBtn;
   let pinned = true, unread = 0;
+  // This is a local presentation preference, never a server-side filter:
+  // every message and tool event continues to arrive and remains in S.messages.
+  let mediaOnly = false;
+  try { mediaOnly = localStorage.getItem('mag-chat-view') === 'media'; } catch (_) {}
   let lastScrollTop = 0, touchY = null;
   let inputDirection = 'none', inputUntil = 0; // only an explicit user gesture may re-pin
   const nodes = new Map(); // message id -> article
@@ -1145,9 +1149,24 @@
       onclick: () => nodes.get(ref.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
       MAG.icon(scene ? 'film' : 'cube'), el('span', { text: scene ? 'zur Szene „' + (m3.title || 'Szene') + '“' : 'zum 3D-Modell ' + (glb?.name || '') }));
   }
+  // A media generation is visible from its *queued* state onward, not only
+  // after an attachment exists. Bot/service messages with generated media
+  // attachments also qualify, but their ordinary text/tool parts stay hidden
+  // in media-only mode. User uploads are not generated media.
+  function isMediaMessage(m) {
+    if (m.role === 'user') return false;
+    if (['image', 'video', '3d', 'scene'].includes(m.model3d?.kind)) return true;
+    return (m.attachments || []).some((a) => !a.voiceover_kind &&
+      ['image', 'video', 'model', 'audio'].includes(a.kind));
+  }
   function build(m) {
     const user = m.role === 'user';
-    const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from, state: m.state || '' } });
+    const generated = isMediaMessage(m);
+    const node = el('article', { class: 'msg ' +
+      (user ? 'user' : m.role === 'service' ? 'service' : 'bot') +
+      (generated ? ' media-item' : '') +
+      (generated && !m.model3d ? ' media-attachment' : ''),
+      dataset: { id: m.id, from: m.from, state: m.state || '' } });
     const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
     const files = (m.model3d && !picture ? [] : m.attachments || []).filter((a) => !a.voiceover_kind);
     const atts = files.length ? el('div', { class: 'atts' }, files.map((a) => buildAttachment(a, m))) : null;
@@ -1306,11 +1325,37 @@
   function paintDays() {
     let last = '';
     for (const node of list.children) {
-      const m = S.messages.get(node.dataset.id), day = m ? dayOf(m.ts) : '';
+      const m = S.messages.get(node.dataset.id);
+      // Hidden bot rows must never eat the day's separator from the first
+      // visible generation. This also respects the room's own hidden rows.
+      if (node.hidden || (mediaOnly && !node.classList.contains('media-item'))) {
+        delete node.dataset.day;
+        continue;
+      }
+      const day = m ? dayOf(m.ts) : '';
       if (day && day !== last) node.dataset.day = day;
       else delete node.dataset.day;
       if (day) last = day;
     }
+  }
+  function paintEmpty() {
+    empty.hidden = mediaOnly || S.messages.size > 0;
+    mediaEmpty.hidden = !mediaOnly || [...S.messages.values()].some(isMediaMessage);
+  }
+  function setView(mode, resetPosition = true) {
+    mediaOnly = mode === 'media';
+    list.classList.toggle('media-only', mediaOnly);
+    document.querySelectorAll('#viewbar button[data-view]').forEach((button) => {
+      const on = button.dataset.view === (mediaOnly ? 'media' : 'all');
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-pressed', String(on));
+    });
+    try { localStorage.setItem('mag-chat-view', mediaOnly ? 'media' : 'all'); } catch (_) {}
+    paintDays();
+    paintEmpty();
+    // Changing views is an explicit navigation gesture. Never try to anchor
+    // to a row that has just become hidden; land on the latest visible job.
+    if (resetPosition) toBottom();
   }
 
   // Reuse an existing editor/preview when the server's ORIGINAL code did
@@ -1376,11 +1421,12 @@
       // Ids sort by time: a new message goes where its id belongs (almost always the end).
       let after = null;
       for (const kid of list.children) if (kid.dataset.id > m.id) { after = kid; break; }
-      grow(() => list.insertBefore(node, after), fresh && !after);
+      grow(() => list.insertBefore(node, after), fresh && !after &&
+        (!mediaOnly || isMediaMessage(m)));
     }
     nodes.set(m.id, node);
     if (m.goal_id && groupAnchor(m).id !== m.id) refreshGroup(m);
-    empty.hidden = S.messages.size > 0;
+    paintEmpty();
     paintDays();
     MAG.speaking?.paint();
   }
@@ -1391,7 +1437,7 @@
     dirty.clear();
     const ordered = [...S.messages.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
     for (const m of ordered) { const node = build(m); nodes.set(m.id, node); list.append(node); }
-    empty.hidden = ordered.length > 0;
+    paintEmpty();
     olderBtn.hidden = !S.more;
     paintDays();
     toBottom();
@@ -1451,7 +1497,13 @@
 
   // ---- wiring -------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
-    scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity'); empty = $('#empty'); olderBtn = $('#older');
+    scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity');
+    empty = $('#empty'); mediaEmpty = $('#media-empty'); olderBtn = $('#older');
+    $('#viewbar').addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-view]');
+      if (button) setView(button.dataset.view);
+    });
+    setView(mediaOnly ? 'media' : 'all', false);
     // Scroll position alone is not intent: native anchoring or a group
     // redraw can produce small downward scroll events. Only a fresh USER
     // gesture toward the true bottom is allowed to re-enable follow mode.
@@ -1501,7 +1553,7 @@
       if (!m.goal_id || !(m.parts || []).some((p) => p.k === 'step')) continue;
       if (groupAnchor(m).id === m.id) upsert(m, false);
     }
-    empty.hidden = S.messages.size > 0; paintDays();
+    paintEmpty(); paintDays();
   });
   MAG.on('delta', (m, part) => { dirty.add(m.id + ':' + part); schedule(); });
   // A model's thoughts are its own: raw, often English, never shown in the chat (Chris, 2026-11-12).
@@ -1558,6 +1610,7 @@
     nodes.clear();
     for (const m of ordered) { const node = build(m); nodes.set(m.id, node); list.append(node); }
     olderBtn.hidden = !S.more;
+    paintEmpty();
     paintDays();
     scroller.scrollTop += scroller.scrollHeight - before; // stay on the same message
   });

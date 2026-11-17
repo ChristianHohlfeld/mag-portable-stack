@@ -159,8 +159,12 @@
     return !de && en >= 2 && en * 4 >= words.length ? 'en-US' : 'de-DE';
   }
   // Best system voice: same language, prefer natural-sounding names, then local.
+  let systemVoicesCache = null;
+  if (systemOk) {
+    try { synth.addEventListener?.('voiceschanged', () => { systemVoicesCache = null; }); } catch (_) {}
+  }
   function bestVoice(lang) {
-    const voices = (synth?.getVoices?.() || []).filter(v => !ROBOT_VOICE.test((v.name || '') + ' ' + (v.voiceURI || '')));
+    const voices = (systemVoicesCache ||= (synth?.getVoices?.() || [])).filter(v => !ROBOT_VOICE.test((v.name || '') + ' ' + (v.voiceURI || '')));
     const l = lang.toLowerCase(), base = l.split('-')[0];
     const same = voices.filter(v => v.lang?.toLowerCase() === l);
     const near = voices.filter(v => v.lang?.toLowerCase().split('-')[0] === base);
@@ -690,8 +694,10 @@
     try { tts.sink?.pause?.(); } catch (_) {}
     if (tts.sink) {try { tts.sink.srcObject = null; } catch (_) {}}
     tts.destination = null;
-    const oldContext=tts.ctx; tts.ctx=null;
-    if (oldContext) {try {oldContext.close?.().catch?.(()=>{});}catch(_){}}
+    // Keep the AudioContext and its clock across sequential reads. Stop
+    // silences all sources immediately without forcing a new context on
+    // each read-from-here message.
+    // Context remains available until pagehide; no 0.2-s jump or re-init.
     // Drop synthesis that is queued for the stopped playback.
     if (tts.worker && pb) { try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {} }
     setButtons();
@@ -780,20 +786,16 @@
       }
     }
     catch { return fallback(pb); }
-    const start = () => modelPlay(pb).catch(() => fallback(pb));
+    const start = () => modelPlay(pb).catch(() => {
+      if(current===pb) { finish(pb); MAG.toast?.('Vorlesen: Die Modellstimme konnte nicht fortgesetzt werden.',true); }
+    });
     // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
     if (tts.config && pb.voice && tts.ready.size) { start(); return true; }
     // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
     const tongue = (pb.lang || 'de').slice(0, 2), tempo = pb.rate ?? rateFor(pb.speaker);
     if (tts.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
-    // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
-    // wait: the device's own voice reads this one, and the model goes on
-    // loading behind it for the next. Only a device without a voice of its
-    // own waits for the model.
-    if (systemOk) {
-      loadConfig().then((cfg) => { if (cfg) { const v = profile(who).voice || pb.voice; if (v) warm(v); } }).catch(() => {});
-      return fallback(pb);
-    }
+    // No mid-session fallback to a different system speaker: the selected
+    // Lena/Noah voice remains fixed across all messages in a sequence.
     pb.loading = true;
     setButtons();
     loadConfig().then((cfg) => {
@@ -806,8 +808,9 @@
       pb.loading = false;
       setButtons();
       if (ok) return start();
-      fallback(pb);
-    }).catch(() => fallback(pb));
+      finish(pb);
+      MAG.toast?.('Vorlesen: Die Modellstimme ist noch nicht bereit.',true);
+    }).catch(() => { if(current===pb) {finish(pb); MAG.toast?.('Vorlesen: Modell konnte nicht geladen werden.',true);} });
     return true;
   }
   // The model failed or is not there: the best system voice reads, but never after

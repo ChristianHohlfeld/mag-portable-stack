@@ -113,6 +113,18 @@ const read = (name) => fs.readFileSync(path.join(__dirname, '..', 'web', 'app', 
   const augmented = w.MAG.voiceover.player({ ...message, attachments: [source, take] }, source);
   doc.body.append(augmented);
   assert(augmented.textContent.includes('Beide Tonspuren'));
+  const playback = augmented.querySelector('video');
+  const mode = augmented.querySelector('select[aria-label="Tonspuren"]');
+  playback.muted = true;
+  playback.dispatchEvent(new w.Event('volumechange'));
+  assert.equal(playback.muted, true, 'original mode must preserve manual mute');
+  mode.value = 'dub'; mode.dispatchEvent(new w.Event('change'));
+  assert.equal(playback.muted, true, 'dub mode mutes original audio only');
+  mode.value = 'mix'; mode.dispatchEvent(new w.Event('change'));
+  assert.equal(playback.muted, false, 'mix restores audio muted by mode selection');
+  playback.muted = true;
+  playback.dispatchEvent(new w.Event('volumechange'));
+  assert.equal(playback.muted, true, 'mix mode also respects user mute control');
   assert(find('Als neues MP4 einbrennen', augmented));
   find('Als neues MP4 einbrennen', augmented).click();
   await flush();

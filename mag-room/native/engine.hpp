@@ -3338,8 +3338,11 @@ private:
       // fresh user-role internal directive, preserving the warm KV prefix.
       Val invite = Val::object();
       invite["role"] = "user";
+      const std::string self_observer = jbool(settings, "auto_chat_visible", true)
+        ? "Chris kann diese Gedanken später lesen, aber du sprichst nicht mit ihm. "
+        : "Der Hinweis auf späteres Mitlesen ist für diesen Zug abgeschaltet. ";
       invite["content"] = "(Internes Selbstgespräch, nicht Chris und nicht der andere Bot: " +
-        observer + "Setze deinen EIGENEN jüngsten Gedanken kritisch fort. " +
+        self_observer + "Setze deinen EIGENEN jüngsten Gedanken kritisch fort. " +
         "Stelle dir eine Rückfrage oder korrigiere eine Unstimmigkeit; " +
         "keine alten Nutzeraufträge erneut ausführen, keine Aktionen erfinden, keine Werkzeuge. " +
         std::string(pass_enabled

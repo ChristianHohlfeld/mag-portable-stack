@@ -91,6 +91,23 @@ const read = (name) => fs.readFileSync(path.join(__dirname, '..', 'web', 'app', 
   assert.equal(streamsStopped, 1, 'microphone track closed after stop');
   assert.match(ui.textContent, /gespeichert/);
 
+  // Seeking or speeding up mid-recording must not save a misaligned take.
+  find('Mikrofon freigeben').click();
+  await flush();
+  record.click();
+  assert.equal(record.textContent, 'Aufnahme stoppen');
+  ui.querySelector('video').dispatchEvent(new w.Event('seeking'));
+  await flush();
+  assert.equal(uploads.length, 1, 'seeking discards unsynchronized microphone take');
+  assert.equal(streamsStopped, 2);
+
+  // Permission can be explicitly relinquished without recording.
+  find('Mikrofon freigeben').click();
+  await flush();
+  find('Mikrofon schließen').click();
+  assert.equal(streamsStopped, 3, 'closing mic without recording releases tracks');
+  assert.equal(record.disabled, true);
+
   const take = { file: 'take.m4a', name: 'take.m4a', kind: 'audio',
     voiceover_kind: 'take', voiceover_for: source.file };
   const augmented = w.MAG.voiceover.player({ ...message, attachments: [source, take] }, source);

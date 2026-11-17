@@ -23,6 +23,17 @@ const message = (id, state, extra = {}) => ({
   assert.match(api,/idol_\.extend\(predecessor, prompt, "chris", error, seconds\)/);
   assert.match(api,/idol_\.film\(image, prompt, "chris", error, seconds, jstr\(m3, "use", "first"\)\)/);
   assert.match(api,/Ursprungsbild nicht mehr vorhanden/);
+  // Retry idempotence is server-side, not merely a disabled DOM button.
+  assert.match(api,/std::mutex video_retry_mu_/);
+  assert.match(api,/std::lock_guard<std::mutex> retry_guard\(video_retry_mu_\)/);
+  assert.match(api,/room_\.get\(previous_id, previous\)/);
+  assert.match(api,/jstr\(previous\["model3d"\], "state"\) == "queued"/);
+  assert.match(api,/jstr\(previous\["model3d"\], "state"\) == "running"/);
+  assert.match(api,/m\["video_retry_id"\] = id/);
+  assert.match(api,/m\["video_retry_at"\] = \(double\)now_ms\(\)/);
+  assert.doesNotMatch(api,/elapsed\s*<\s*60000/, 'completed retries must never be deduplicated by a time window');
+  assert.doesNotMatch(api,/retry_at\s*>\s*0\s*&&/, 'no grace period for finished requests');
+
   assert.match(idol,/m3\["continues"\] = message_id/);
 
   const original=message('vid1','done',{image:'source.png',use:'ref',seconds:10});

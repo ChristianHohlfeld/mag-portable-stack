@@ -400,13 +400,26 @@ explicit @mentions, follow-up questions, corrections and disagreement. Bots see
 other bots' room messages as context and talk to each other naturally like
 humans, server-side and without any client connected. A human message without
 an addressee is answered by ALL active bots; then the bots keep talking on their
-own (MAG_ROOM_BOT_ROUNDS and the setting "Bots untereinander", default 0 =
-unlimited; as a safety net the room rests after MAG_ROOM_BOT_FUSE = 24 bot
-turns in a row without a word from Chris). PASS is each bot's own choice and
-invisible (also as the text after a step; the room's markers `[[MAG:…]]` never
-reach the chat, not while streaming and not in a message kept from a restart); a repeated answer or a bare acknowledgement counts as PASS; when
-every bot PASSes in a row the chat rests until the next message. New human input and Stop
-immediately preempt these bot rounds.
+own. The unified "Bots miteinander" settings control autonomous starts
+(`auto_chat`), follow-up replies (`bot_rounds`, 0 = truly unlimited),
+voluntary ending (`pass_enabled`) and owner readability
+(`auto_chat_visible`). Opening an autonomous session is not counted as
+a follow-up reply; the same limit applies after a human message.
+With PASS enabled, a bot may decide not to contribute: PASS is invisible,
+including as the text after a step. A duplicate answer or bare acknowledgement
+is also suppressed. With PASS disabled, a bot must supply a new contribution:
+PASS, empty output, duplicate filler and forbidden tool attempts are corrected
+once, then a visible error ends the problematic turn. No tool is executed in
+unattended bot dialogue. Without browser/SSE, the room starts fresh autonomous
+sessions after a short idle interval (60 s by default,
+`MAG_ROOM_AUTO_CHAT_INTERVAL_S`, minimum 5 s), only when both bots and their
+models are ready and no human task is pending. A newly received human message
+reserves 15 s for the human before a fresh spontaneous session. New human input
+and Stop immediately preempt active bot rounds. The system prompts, PASS
+handling and default 16k conversation budget are identical for both bots;
+the starting bot rotates across restarts. The room never silently imposes
+a separate hidden fuse or rounds cap, and room markers `[[MAG:…]]` never
+reach the chat.
 An explicit @mention decides who is asked: after `@Lena …` only Lena answers
 and takes part until Chris writes again. Noah gets no turn, not even one to
 PASS; he reads the message as context (`Chris an Lena: …`) and never treats

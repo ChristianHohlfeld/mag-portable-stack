@@ -85,6 +85,7 @@ document.body.append(frame);
 assert.equal(frame.getAttribute('sandbox'), 'allow-scripts');
 assert(!frame.getAttribute('sandbox').includes('allow-same-origin'));
 assert.equal(frame.getAttribute('src'), '/app/code-preview.html');
+assert(!frame.hasAttribute('credentialless'), 'authenticated same-origin shell GET must work on mobile');
 const messages = [];
 frame.contentWindow.postMessage = (data, origin) => messages.push({ data, origin });
 frame._refresh();

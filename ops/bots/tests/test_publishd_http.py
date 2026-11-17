@@ -110,11 +110,15 @@ class PublisherHTTP(unittest.TestCase):
             else:
                 conn.sendall(head + body)
             response = bytearray()
-            while True:
+            # The daemon may reject a request before reading its tar body.
+            # Closing a socket with unread inbound bytes can yield TCP RST;
+            # read the complete HTTP response HEADERS, not until socket EOF.
+            while b"\r\n\r\n" not in response:
                 chunk = conn.recv(8192)
                 if not chunk:
                     break
                 response.extend(chunk)
+        self.assertIn(b"\r\n\r\n", response, "complete HTTP response headers")
         return int(bytes(response).split(b" ", 2)[1])
 
     def test_content_length_as_final_header_for_both_bots(self):

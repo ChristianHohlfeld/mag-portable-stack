@@ -1180,6 +1180,17 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(code, 201, take)
         self.assertEqual((take["kind"], take["voiceover_kind"], take["voiceover_for"]),
                          ("audio", "take", stored))
+        # Chromium's default MediaRecorder format: audio/webm (Opus).
+        webm = r.tmp / "voice.weba"
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=510:sample_rate=48000",
+                        "-t", "1.0", "-c:a", "libopus", "-f", "webm", str(webm)], check=True, timeout=25)
+        code, take_webm = r.api("POST", "/api/video/voiceover?message=" + message +
+                               "&video=" + stored, raw=webm.read_bytes(),
+                               headers={"Content-Type": "audio/webm;codecs=opus"})
+        self.assertEqual(code, 201, take_webm)
+        self.assertEqual((take_webm["kind"], take_webm["mime"], take_webm["voiceover_kind"]),
+                         ("audio", "audio/webm", "take"))
         self.assertEqual(r.api("POST", "/api/video/voiceover?message=" + message +
                                "&video=" + stored, raw=b"not an audio stream" * 50,
                                headers={"Content-Type": "audio/mp4"})[0], 422)
@@ -1208,7 +1219,7 @@ class RoomContract(unittest.TestCase):
             self.assertEqual(tracks, ["audio", "audio"], "baked MP4 keeps original selectable too")
         fresh = r.api("GET", "/api/state")[1]
         m = next(x for x in fresh["messages"] if x["id"] == message)
-        self.assertEqual(len(m["attachments"]), 4)
+        self.assertEqual(len(m["attachments"]), 5)
         self.assertEqual(m["attachments"][0]["file"], stored)
         self.assertEqual((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files" / stored).read_bytes(),
                          video_bytes, "original is byte-identical after bake")

@@ -12,7 +12,7 @@ const source = (filename) => fs.readFileSync(path.join(root, filename), 'utf8');
   const docHtml = '<!doctype html><html><body>' +
     '<div id="scroll"><button id="older" hidden></button><div id="empty" hidden></div>' +
     '<div id="list"></div><div id="activity"></div></div>' +
-    '<button id="jump" hidden></button></body></html>';
+    '<button id="jump" hidden><span></span></button></body></html>';
   const dom = new JSDOM(docHtml, {
     url: 'https://mag.test/', pretendToBeVisual: true,
     runScripts: 'outside-only'

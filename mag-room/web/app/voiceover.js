@@ -36,7 +36,7 @@
     const video = el('video', { class: klass, controls: true, preload: 'metadata',
       playsInline: true, src: url(source) });
     const box = el('div', { class: 'voiceover', dataset: { keep: 'video:' + original } }, video);
-    const announce = el('small', { class: 'voice-status', role: 'status', 'aria-live': 'polite' });
+    const announce = el('small', { class: 'voice-status note', role: 'status', 'aria-live': 'polite' });
     const status = (msg, error = false) => {
       announce.textContent = msg;
       announce.classList.toggle('err', error);
@@ -142,6 +142,7 @@
       mic.innerHTML = recorder?.state === 'recording' ? MAG.icons.stop : MAG.icons.mic;
       mic.classList.toggle('voice-recording', recorder?.state === 'recording');
       melodyRow.hidden = !owner || lane !== 'melody';
+      cues.hidden = !tracks.melody;
       songUpload.disabled = busy || recorder?.state === 'recording';
       videoAt.disabled = songFrom.disabled = busy || recorder?.state === 'recording' || !tracks.melody;
       songName.textContent = tracks.melody?.name || 'Musikdatei wählen';

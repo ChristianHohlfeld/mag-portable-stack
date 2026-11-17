@@ -27,7 +27,7 @@
     const time = el('input', { type: 'time', value: w.time || '07:00', 'aria-label': 'Uhrzeit' });
     const picks = DAYS.map((d, i) => el('label', { class: 'pill' }, el('input', { type: 'checkbox', value: String(i + 1), checked: days.includes(i + 1) }), ' ' + d));
     const dayRow = el('span', { class: 'pair' }, ...picks);
-    const minutes = el('input', { type: 'number', min: 15, step: 15, value: String(w.every_minutes || 60), 'aria-label': 'Minuten' });
+    const minutes = el('input', { type: 'number', min: 1, max: 44640, step: 1, value: String(w.every_minutes || 60), 'aria-label': 'Minuten' });
     const once = el('input', { type: 'datetime-local', value: at ? at.getFullYear() + '-' + pad(at.getMonth() + 1) + '-' + pad(at.getDate()) + 'T' + pad(at.getHours()) + ':' + pad(at.getMinutes()) : '', 'aria-label': 'Zeitpunkt' });
     const folder = el('input', { type: 'text', value: w.path || '', placeholder: 'Ordner unter /home/bot (leer: alle), z. B. Downloads', 'aria-label': 'Ordner' });
     const pattern = el('input', { type: 'text', value: w.pattern || '', placeholder: 'Dateinamen (leer: alle), z. B. *.pdf', 'aria-label': 'Dateinamen' });

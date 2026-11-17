@@ -211,9 +211,10 @@
     const busy = playing && !!current.loading;
     button.setAttribute('aria-pressed', String(playing));
     button.setAttribute('aria-busy', String(busy));
-    const label = busy ? 'Wartet auf Audiodaten · Vorlesen stoppen'
+    const waiting = voiceState.state && voiceState.state !== 'ready';
+    const label = busy ? (waiting ? stateText() : 'Wartet auf Audiodaten') + ' · Vorlesen stoppen'
       : playing ? 'Vorlesen stoppen'
-      : voiceState.state && voiceState.state !== 'ready' ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
+      : waiting ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
     button.setAttribute('aria-label', label);
     button.title = label;
     button.innerHTML = playing ? MAG.icons.stop : MAG.icons.speak;
@@ -322,9 +323,8 @@
     if (root.dataset.voice !== state) root.dataset.voice = state;
     voiceState.state = state;
     if (part !== undefined) { voiceState.part = Math.max(0, Math.min(1, part)); root.style.setProperty('--voice-p', String(voiceState.part)); }
-    const title = state === 'ready' ? 'Vorlesen' : 'Vorlesen (' + stateText() + ')';
-    document.querySelectorAll('.act[data-speak][aria-pressed="false"]').forEach((b) => { b.title = title; });
     document.querySelectorAll('.voice-state').forEach((n) => { n.textContent = stateText(); });
+    setButtons();
   }
   function warm(v) {
     if (tts.ready.has(v.model)) return Promise.resolve(true);
@@ -612,10 +612,11 @@
       const res = await cur.p;
       if (current !== pb) return;
       if (!res?.audio?.length) continue;
-      // Nothing plays (the start, or the device fell behind): the reading
-      // starts when what is made covers what is still to make, so it runs
-      // on to its end without a pause between sentences.
-      if (!pb.end || tts.ctx.currentTime >= pb.end - 0.05) await preroll(pb, res, ahead, () => more);
+      // The first part is heard as soon as it exists. Holding it until the
+      // rest of the message was made is what left the first tap silent.
+      // Once something is already playing and the device has caught up, wait
+      // so a slow phone does not go quiet between sentences.
+      if (pb.end && tts.ctx.currentTime >= pb.end - 0.05) await preroll(pb, res, ahead, () => more);
       if (current !== pb) return;
       // Laid behind what plays; the next part is awaited while this one begins.
       const at = schedule(pb, res);
@@ -776,6 +777,7 @@
       try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
+    clearTimeout(restTimer);
     MAG.audio?.claim?.('tts',()=>stop(),'speech',pb.loading ? 'loading':'playing');
     setButtons();
     if (!de) {
@@ -1081,6 +1083,16 @@
   // 400 MB, then never again) and loaded, so the first tap speaks at once.
   // Over a mobile connection too (it is fetched once, and Chris wants the
   // first tap to speak); only with data saving on the first tap loads it.
+  // Styles that are not needed for the first sentence. Loaded one at a time,
+  // and never while a reading is waiting, so they cannot queue in front of it.
+  let restTimer = 0;
+  function warmNext(list) {
+    clearTimeout(restTimer);
+    if (current) return;
+    const next = list.find((m) => !tts.ready.has(m) && !tts.loading.has(m));
+    if (!next) return;
+    warm({ model: next }).then(() => { restTimer = setTimeout(() => warmNext(list), 50); });
+  }
   function warmUp() {
     // What is downloaded once must stay: the browser is asked not to clear it when space runs short.
     try { navigator.storage?.persist?.().catch(() => {}); } catch {}
@@ -1089,8 +1101,14 @@
     if (link && link.saveData) return;
     loadConfig().then((cfg) => {
       if (!cfg) return;
-      const models = [...new Set(voiceList().map((v) => v.model).filter(Boolean))];
-      for (const model of models) warm({ model });
+      const voices = voiceList();
+      const used = [...new Set(['f1', 'm1', 'm2', ...(S.bots || []).map((b) => profile(b.id).voiceId)]
+        .map((id) => voices.find((v) => v.id === id)?.model).filter(Boolean))];
+      const rest = [...new Set(voices.map((v) => v.model).filter((m) => m && !used.includes(m)))];
+      // The other styles are fetched beside the engine. They do not take the
+      // synthesis queue, so the first sentence is not waiting on nine voices.
+      for (const model of rest) ask({ type: 'prefetch', model }, WARM_TIMEOUT_MS).catch(() => {});
+      warmNext(used.length ? used : rest);
     });
   }
   // For the film of a scene: what a figure says, in a voice of its own (the
@@ -1125,5 +1143,12 @@
     return (await say(tempo)) || first;
   };
   let warmed = false;
-  MAG.on('reset', () => { if (!warmed && modelPossible) { warmed = true; setTimeout(warmUp, 2500); } });
+  function beginWarm() {
+    if (warmed || !modelPossible) return;
+    warmed = true;
+    warmUp();
+  }
+  // As soon as the page is here, not a few seconds after the room snapshot.
+  beginWarm();
+  MAG.on('reset', beginWarm);
 })();

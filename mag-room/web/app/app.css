@@ -158,6 +158,7 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 
 /* Optional media-only view. Hide visually, preserve DOM, SSE and live players. */
 #app.media #list > .msg:not([data-media="1"]) { display: none !important; }
+#media-filter { width: 44px; height: 44px; flex: none; }
 #media-filter.on { color: var(--accent); background: var(--surface-2); }
 
 /* ---- timeline ------------------------------------------------------------ */

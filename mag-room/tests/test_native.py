@@ -2138,8 +2138,14 @@ class RoomContract(unittest.TestCase):
         (ctl / "hold").unlink()
         r.wait(lambda: "reset" not in bot("lena"), "reset done")
         self.assertIn("erase", [a for a, _ in r.lena.slot_actions])
+        # A VM reset clears its "reset" marker just before notifying the
+        # waiting worker. The room may look idle for a moment before that
+        # worker claims the queued human turn. Wait for the *observable
+        # answer*, not an unrelated instantaneous idle snapshot.
+        reply_after_reset = lambda: [m["text"] for m in r.messages() if m["id"] > asked["id"]]
+        r.wait(lambda: reply_after_reset() == ["Frisch."], "queued human reply after VM reset")
         r.idle()
-        self.assertEqual([m["text"] for m in r.messages() if m["id"] > asked["id"]], ["Frisch."])
+        self.assertEqual(reply_after_reset(), ["Frisch."])
         self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
         self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
         # Noah may erase an EMPTY slot while creating his first cold prefix at

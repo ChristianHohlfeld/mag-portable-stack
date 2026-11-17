@@ -88,7 +88,8 @@ public:
     }
     const Val startup_settings = room_.settings();
     auto_enabled_ = jbool(startup_settings, "auto_chat", false);
-    pass_enabled_ = jbool(startup_settings, "pass_enabled", true);
+    pass_enabled_ = effective_pass(startup_settings, room_.cfg.bot_rounds);
+    round_limit_ = (long)jnum(startup_settings, "bot_rounds", room_.cfg.bot_rounds);
     // Keep the last spontaneous conversation through a room-only deploy:
     // restarting the web UI/server must not trigger another expensive CPU chat.
     const std::string last = trim(slurp(room_.cfg.state_dir + "/auto-chat-last"));
@@ -486,10 +487,16 @@ public:
     return false;
   }
 
+  // Single effective PASS policy for runtime settings and model prompts.
+  static bool effective_pass(const Val &settings, long default_rounds) {
+    return jbool(settings, "pass_enabled", true) &&
+           (long)jnum(settings, "bot_rounds", default_rounds) != 0;
+  }
+
   void settings_changed() {
     const Val settings = room_.settings();
     const bool enabled = jbool(settings, "auto_chat", false);
-    const bool pass_enabled = jbool(settings, "pass_enabled", true);
+    const bool pass_enabled = effective_pass(settings, room_.cfg.bot_rounds);
     const long limit = (long)jnum(settings, "bot_rounds", room_.cfg.bot_rounds);
     {
       std::lock_guard<std::mutex> lk(mu_);
@@ -3302,7 +3309,7 @@ private:
     // What the plugins take at the head of the prompt is not taken from the conversation.
     const long budget = b.budget + plugins_.weight(me);
     const Val settings = room_.settings();
-    const bool pass_enabled = jbool(settings, "pass_enabled", true);
+    const bool pass_enabled = effective_pass(settings, room_.cfg.bot_rounds);
     ensure_wire(b, me, false);
 
     // Every bot-to-bot turn reads the CURRENT room settings. Keep the
@@ -3334,32 +3341,24 @@ private:
                 "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre das Bot-Gespräch mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage fort. Brich es nicht aus eigenem Entschluss ab; wiederhole nichts bloß, um zu antworten.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
-    if (reason == "autonomous") {
-      // This is explicitly not a message from Chris. Append the short
-      // initiative to the stored wire; changing an earlier prompt would
-      // invalidate the entire warm KV cache on the dual CPU servers.
-      Val invite = Val::object();
-      invite["role"] = "user";
-      invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-          "Der Raum war kurz ruhig. Beginne ein eigenständiges, neues Gesprächsthema. "
-          "Greife keine alten Nutzeraufträge, Projekte, erstellten Webseiten, Dateien oder Werkzeugergebnisse "
-          "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. Chris kann sie jederzeit selbst erneut ansprechen. "
-          "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
-          "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
-          std::string(pass_enabled
-              ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
-              : "PASS und eine eigene Beendigungsentscheidung sind deaktiviert: Beginne und fuehre das Gespräch aktiv mit neuen Gedanken fort; entscheide nicht selbst, es zu beenden.") +
-          ")";
-      b.wire["messages"].push(invite);
-      b.wire["fresh"] = true;
-      save_wire(b);
-    }
+    // Keep synthetic prompts request-local, never persisted as fake user messages.
+    const std::string autonomous_invite =
+        "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
+        "Der Raum war kurz ruhig. Beginne ein eigenständiges, neues Gesprächsthema. "
+        "Greife keine alten Nutzeraufträge, Projekte, erstellten Webseiten, Dateien oder Werkzeugergebnisse "
+        "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. Chris kann sie jederzeit selbst erneut ansprechen. "
+        "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
+        "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
+        std::string(pass_enabled
+            ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
+            : "PASS und eine eigene Beendigungsentscheidung sind deaktiviert: Beginne und fuehre das Gespräch aktiv mit neuen Gedanken fort; entscheide nicht selbst, es zu beenden.") +
+        ")";
     set_phase(b, "reading");
     // Something to answer: new messages now, or ones this bot already read
     // while it described an image for the other bot.
     bool from_chris = false;
     const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "", &from_chris);
-    const bool read_before = jbool(b.wire, "fresh");
+    const bool read_before = jbool(b.wire, "fresh") || reason == "autonomous";
     b.wire["fresh"] = false;
     const int tries = b.cut_off;
     b.cut_off = 0;
@@ -3375,27 +3374,8 @@ private:
     // room (every deploy is one) that cuts the turn off leaves the mark, and
     // the room that starts takes the turn up again (see work()).
     AtWork at_work(*this, b, reason, tries);
-    if (reason == "bot") {
-      // The other bot's newest line has already been appended. A separate
-      // final user-role note is unambiguously an internal conversation
-      // directive, NEVER a new Chris message or a background task. Append at
-      // the END so the existing cached prefix remains untouched.
-      if (autonomous_round) {
-        Val invite = Val::object();
-        invite["role"] = "user";
-        invite["content"] = note;
-        invite["_auto_chat"] = true;
-        b.wire["messages"].push(invite);
-      } else {
-        Val &last = b.wire["messages"].arr->back();
-        if (jstr(last, "role") == "user") {
-          const std::string notes = jstr(last, "_note").empty() ? note : jstr(last, "_note") + "\n\n" + note;
-          last["_note"] = notes;
-          last["content"] = render_items(last["_items"], notes);
-        }
-      }
-      save_wire(b);
-    }
+    // Bot-to-bot directives are not part of b.wire; a PASS never persists a
+    // synthetic user sentence, while the LLM receives it for this turn only.
     // New images are described for the bots without eyes. That is a short
     // extra request, so it comes first and the others can answer alongside.
     // A bot that thinks before every answer would spend a whole thinking
@@ -3496,6 +3476,13 @@ private:
            " tool_choice=" + (driving ? "required" : "auto") + " reason=" + reason);
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
+      if (reason == "bot" || reason == "autonomous") {
+        Val cue = Val::object();
+        cue["role"] = "user";
+        cue["content"] = reason == "autonomous" ? autonomous_invite : note;
+        body["messages"].push(cue);
+      }
+
       // A prompt-only, per-request self-orientation. No room setting, UI,
       // extra inference, narrator character, persisted state, or chat event.
       // Concrete values are derived from the live task and the latest context.
@@ -4767,14 +4754,15 @@ private:
     size_t active = 0;
     for (auto &c : bots.asArr())
       if (jbool(c, "enabled", true)) ++active;
-    if (passed) {
+    if (passed && pass_enabled_) {
       ++passes_;
       if (group_chat::conversation_rests(passes_, active))
         for (auto &o : bots_)
           if (o->reason != "human") o->want = false;
       return;
     }
-    if (!visible) return;
+    // Under unlimited rounds PASS/filler cannot end an exchange.
+    if (!visible && (limit != 0 || reason != "bot")) return;
     passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.

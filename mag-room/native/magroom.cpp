@@ -135,6 +135,30 @@ print(json.dumps({'files': out, 'cut': cut}))
   Vault vault(room);
   engine.vault = &vault;
   Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist, vault);
+  // The same terminal callback serves image, video, photo-to-3D, scenes and
+  // scene films. It reads the STORED card, never a stale worker snapshot.
+  const auto generation_finished = [&room, &push](const std::string &id, bool success) {
+    Val m;
+    if (!room.get(id, m) || !m.find("model3d")) return;
+    const Val &m3 = m["model3d"];
+    const std::string kind = jstr(m3, "kind");
+    // A chained video may be rejected before it gets its own job/message.
+    // In that case the surviving image card holds video_error, not an image error.
+    const std::string video_error = !success ? jstr(m3, "video_error") : "";
+    const std::string label = !video_error.empty() ? "Video"
+                            : kind == "image" ? "Bild" : kind == "video" ? "Video"
+                            : kind == "scene" ? (jstr(m3, "film").empty() ? "3D-Szene" : "Szenenfilm")
+                            : "3D-Modell";
+    const std::string detail = !video_error.empty() ? video_error
+                               : jstr(m3, "prompt", jstr(m3, "title", jstr(m3, "source")));
+    const std::string preview = clip(detail.empty() ? jstr(m3, "error") : detail, 115, "…");
+    push.notify(success ? "job" : "error",
+                success ? "Generierung abgeschlossen" : "Generierung fehlgeschlagen",
+                label + (preview.empty() ? "" : ": " + preview),
+                "gen-" + id, "/?m=" + id);
+  };
+  idol.on_finished = generation_finished;
+  scenes.on_finished = generation_finished;
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);
   engine.on_answer = [&](const std::string &bot, const std::string &text, int64_t seconds, bool failed) {

@@ -14,8 +14,11 @@ int main() {
   CHECK(addressed("Hi beide", r) == (V{"lena", "noah"}));
   CHECK(addressed("Hi alle", r) == (V{"lena", "noah"}));
   CHECK(addressed("Was meint ihr?", r).size() == 2);
-  CHECK(addressed("lösch alle Dateien im Ordner", r).empty());
+  CHECK(addressed("Überlegt mal, was daran falsch ist", r) == (V{"lena", "noah"}));
+  CHECK(addressed("Schaut bitte nochmal hin", r) == (V{"lena", "noah"}));
+  CHECK(addressed("Er arbeitet mal wieder spät", r).empty());
   CHECK(addressed("Wie spät ist es?", r).empty());
+  CHECK(addressed("lösch alle Dateien im Ordner", r).empty());
   CHECK(addressed("Lenafoo", r).empty());
   // Shared alias: "Lena" vs "Lena-Mini"
   const std::vector<Bot> q = {{"a", "Lena"}, {"b", "Lena-Mini"}};

@@ -490,6 +490,7 @@ public:
     const Val settings = room_.settings();
     const bool enabled = jbool(settings, "auto_chat", false);
     const bool pass_enabled = jbool(settings, "pass_enabled", true);
+    const bool unlimited_dialogue = (long)jnum(settings, "bot_rounds", room_.cfg.bot_rounds) == 0;
     const long limit = (long)jnum(settings, "bot_rounds", room_.cfg.bot_rounds);
     {
       std::lock_guard<std::mutex> lk(mu_);
@@ -3311,11 +3312,11 @@ private:
             "Gesprächsthemen auf. Abgeschlossene Nutzeraufträge, frühere Projekte, Webseiten, Dateien und "
             "Werkzeugergebnisse sind kein Anlass für ein neues Gesprächsthema, auch wenn sie noch im Kontext "
             "stehen. Stelle gegebenenfalls eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. " +
-            std::string(pass_enabled
+            std::string(pass_enabled && !unlimited_dialogue
                 ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
                 : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
             ")"
-          : pass_enabled
+          : pass_enabled && !unlimited_dialogue
               ? "(Du wurdest nicht direkt angesprochen. " + observer +
                 "Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)"
               : "(Du wurdest nicht direkt angesprochen. " + observer +
@@ -3334,7 +3335,7 @@ private:
           "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. Chris kann sie jederzeit selbst erneut ansprechen. "
           "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
           "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
-          std::string(pass_enabled
+          std::string(pass_enabled && !unlimited_dialogue
               ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
               : "PASS und eine eigene Beendigungsentscheidung sind deaktiviert: Beginne und fuehre das Gespräch aktiv mit neuen Gedanken fort; entscheide nicht selbst, es zu beenden.") +
           ")";
@@ -4707,13 +4708,17 @@ private:
       if (jbool(c, "enabled", true)) ++active;
     if (passed) {
       ++passes_;
-      if (group_chat::conversation_rests(passes_, active))
-        for (auto &o : bots_)
-          if (o->reason != "human") o->want = false;
-      return;
+      if (limit > 0) {
+        if (group_chat::conversation_rests(passes_, active))
+          for (auto &o : bots_)
+            if (o->reason != "human") o->want = false;
+        return;
+      }
+      // Unlimited explicitly means a PASS/filler is a turn yielding to the
+      // other bot, not a hidden stop condition. No self-loop here.
     }
-    if (!visible) return;
-    passes_ = 0;
+    if (!visible && limit > 0) return;
+    if (visible) passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.
     if (wants_more && b.continues < 8 && tool_sig != b.last_tool_sig && !b.want) {

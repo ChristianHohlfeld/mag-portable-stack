@@ -33,6 +33,7 @@ assert(tts.includes("pb.nativeSettle(false)"),'stopping native audio releases pe
 assert(tts.includes("button.innerHTML = playing ? MAG.icons.stop"),'loading remains explicit stop icon');
 assert(tts.includes("const parts = (m.parts || []).filter(p=>p.k==='text')"),'streaming text not m.text only');
 assert(chat.includes("spokenText(m).trim()"),'streaming action appears on first delta');
+assert(chat.includes("MAG.audio?.activate(audio, {"), 'detached scene voices join global audio controller');
 assert(chat.includes("m.state !== 'streaming') row.append(button('dots'"),'delete not offered while streaming');
 assert(tts.includes('HTMLAudioElement')||tts.includes('new Audio()'),'Android screen-off native sink');
 w.close();

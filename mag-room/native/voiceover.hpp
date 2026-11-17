@@ -75,11 +75,17 @@ inline double seconds(const std::string &path) {
   return last > 0 && last <= 600 ? last : 0;
 }
 
+// Only the melody lane has timeline placement and source in-point.
+struct LaneInput {
+  std::string name, path;
+  double at = 0;   // where music starts on the VIDEO timeline
+  double from = 0; // where playback starts in the SOURCE song
+};
+
 // Each of the three lanes is optional. They are deliberately mixed to ONE
-// editable audio master. The source MP4 keeps its original soundtrack;
- // 'replace' only changes which soundtrack becomes the new default.
+// audio master. Original MP4 soundtrack remains an alternate audio track.
 inline bool bake(const std::string &video,
-                 const std::vector<std::pair<std::string, std::string>> &lanes,
+                 const std::vector<LaneInput> &lanes,
                  const std::string &out, const std::string &mode, std::string &error) {
   const double length = seconds(video);
   if (!length || lanes.empty() || lanes.size() > 3) {
@@ -100,18 +106,36 @@ inline bool bake(const std::string &video,
     append_mix("orig", "0.55");
   }
   for (size_t i = 0; i < lanes.size(); ++i) {
-    if (!lane(lanes[i].first) || !audio_ok(lanes[i].second)) {
+    const LaneInput &input = lanes[i];
+    if (!lane(input.name) || !audio_ok(input.path)) {
       error = "Tonspur ist beschädigt oder hat eine ungültige Zuordnung."; return false;
     }
-    const double duration = seconds(lanes[i].second);
-    if (!duration || duration > length + 2) {
-      error = "Eine Tonspur ist länger als das Video."; return false;
+    const double duration = seconds(input.path);
+    if (!duration) { error = "Tonspur ist nicht lesbar oder länger als zehn Minuten."; return false; }
+    if (input.name != "melody" && duration > length + 2) {
+      error = "Sprach- oder Geräuschspur ist länger als das Video."; return false;
     }
-    args.insert(args.end(), {"-i", lanes[i].second});
+    if (input.name == "melody" &&
+        (!std::isfinite(input.at) || !std::isfinite(input.from) ||
+         input.at < 0 || input.at >= length || input.from < 0 || input.from >= duration)) {
+      error = "Melodie-Einsatz oder Song-Start liegt außerhalb der Audiodauer."; return false;
+    }
+    args.insert(args.end(), {"-i", input.path});
     const std::string label = "lane" + std::to_string(i + 1);
-    filters += "[" + std::to_string(i + 1) + ":a:0]aresample=async=1:first_pts=0,"
-               "apad,atrim=0:" + std::to_string(length) + "[" + label + "];";
-    append_mix(label, lanes[i].first == "voice" ? "1" : lanes[i].first == "melody" ? "0.55" : "0.85");
+    const std::string channel = "[" + std::to_string(i + 1) + ":a:0]";
+    if (input.name == "melody") {
+      // Trim SOURCE first, reset timestamps, then delay on the VIDEO timeline.
+      // The source may outlast the video; pad and trim exactly to video length.
+      const long long delay_ms = std::llround(input.at * 1000);
+      filters += channel + "atrim=start=" + std::to_string(input.from) +
+                 ",asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0,adelay=" +
+                 std::to_string(delay_ms) + ":all=1,apad,atrim=0:" +
+                 std::to_string(length) + "[" + label + "];";
+    } else {
+      filters += channel + "aresample=async=1:first_pts=0,apad,atrim=0:" +
+                 std::to_string(length) + "[" + label + "];";
+    }
+    append_mix(label, input.name == "voice" ? "1" : input.name == "melody" ? "0.55" : "0.85");
   }
   // Amix's default "duration=longest" is limited by our pads to the video
   // duration, so short takes do not prematurely cut off music or ambience.

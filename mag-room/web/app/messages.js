@@ -45,7 +45,6 @@
       // Keep the original code in the DOM only for page-signature matching.
       // It is never executed or edited; the textarea is the source of truth.
       pre.hidden = true;
-      pane.append(edited.input, pre);
       const codeTab = el('button', { role: 'tab', type: 'button', text: 'Code' });
       const previewTab = canRun ? el('button', { role: 'tab', type: 'button', text: 'Vorschau' }) : null;
       function show(next) {
@@ -72,9 +71,8 @@
         el('div', { class: 'seg code-tabs', role: 'tablist' }, codeTab, previewTab),
         edited.status, edited.resetButton, copyButton);
       pre.replaceWith(block);
-      // pre.replaceWith moves the original away; attach it again to keep
-      // placePages() signature matching for HTML published by a bot.
-      pane.append(pre);
+      // Keep the original hidden pre for server page-signature matching.
+      pane.append(edited.input, pre);
       block.append(header, pane, preview);
       show('code');
     });

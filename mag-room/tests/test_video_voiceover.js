@@ -61,7 +61,7 @@ function fixture(scene = false) {
   d.dispatchEvent(new w.Event('DOMContentLoaded'));
   return { dom, w, d, perms, Recorder, setType: (t) => { type = t; }, get stopped() { return streamStopped; } };
 }
-const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.textContent.includes(text));
+const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') || b.textContent).includes(text));
 
 (async () => {
   const f = fixture(), { w, d } = f, { MAG } = w;
@@ -78,16 +78,21 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
   assert.equal(ui.querySelectorAll('video').length, 1);
   assert.equal(ui.querySelectorAll('select').length, 0, 'no bloated source/mix selectors');
   assert.equal(ui.querySelectorAll('.voice-lanes button').length, 3);
+  assert(ui.querySelector('.voice-lanes.seg'), 'use MAG native segmented control');
+  assert.equal(ui.querySelectorAll('.voice-actions .icon-btn').length, 4,
+    'use existing MAG icon actions including contextual discard');
+  assert.equal(ui.querySelectorAll('.voice-controls .pill').length, 0,
+    'no crowded pills or separate button styles');
   assert.equal(f.perms.length, 0, 'microphone permission never on mount');
   const record = async (lane) => {
     ui.querySelector('.voice-lanes button[aria-label="' + lane + '"]').click();
-    find(ui, 'Aufnehmen').click(); // permission gesture
+    find(ui, 'Mikrofon freigeben').click(); // permission gesture
     await flush();
     assert.equal(f.perms.at(-1).video, false);
-    find(ui, 'Start').click(); // active user tap, starts MediaRecorder and video
+    find(ui, 'Aufnahme starten').click(); // active user tap, starts MediaRecorder and video
     assert.equal(f.Recorder.last.state, 'recording');
     assert.equal(ui.querySelectorAll('video').length, 1);
-    find(ui, 'Stoppen').click();
+    find(ui, 'Aufnahme stoppen').click();
     await flush();
     assert.equal(f.Recorder.last.state, 'inactive');
     const t = uploads.at(-1);
@@ -101,7 +106,7 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
     voiceover_lane: 'voice', voiceover_for: original.file };
   message = { ...message, attachments: [...message.attachments, v1] };
   ui._voiceoverRefresh(message);
-  assert(ui.querySelector('.voice-lanes [aria-label="Stimme"]').textContent.includes('✓'));
+  assert(ui.querySelector('.voice-lanes [aria-label="Stimme"]').classList.contains('has-take'), 'existing take is a discreet dot');
 
   await record('Melodie');
   const mel = { file: 'mel.weba', kind: 'audio', voiceover_kind: 'take',
@@ -132,7 +137,7 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
     a.voiceover_kind === 'take' && a.voiceover_lane === 'voice').length, 1,
     'no stale voice attachment in the SSE snapshot');
   assert.equal(ui.querySelectorAll('video').length, 1, 'retake does not add a player');
-  find(ui, 'Mix & MP4').click();
+  find(ui, 'Mix und MP4 erstellen').click();
   await flush();
   assert.equal(bakes.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(bakes[0].body)), {
@@ -147,23 +152,118 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
   ui._voiceoverRefresh(message);
   assert.equal(ui.querySelectorAll('video').length, 1, 'only ONE video player after bake');
   assert.equal(ui.querySelectorAll('.voice-exports a').length, 2, 'one mix + one MP4 download');
+  assert.equal(ui.querySelectorAll('.voice-exports .pill').length, 0,
+    'exports are plain links, not more buttons');
+  assert.match(ui.querySelector('.voice-exports').textContent, /Audiomix.*MP4/);
   assert.equal(ui.querySelectorAll('.voice-lanes button').length, 3);
 
   MAG.state.you = { role: 'guest' };
   const guest = MAG.voiceover.player(message, original);
-  assert(!find(guest, 'Aufnehmen') && !find(guest, 'Mix & MP4'));
-  assert(find(guest, 'Anhören'), 'guests can hear all three lanes');
+  assert(!find(guest, 'Mikrofon') && !find(guest, 'Mix und MP4 erstellen'));
+  assert(find(guest, 'Mit Tonspuren anhören'), 'guests can hear all three lanes');
   MAG.state.you = { role: 'owner' };
   w.navigator.mediaDevices.getUserMedia = async () => {
     const e = new Error('denied'); e.name = 'NotAllowedError'; throw e;
   };
   const refused = MAG.voiceover.player(message, original);
   d.body.append(refused);
-  find(refused, 'Aufnehmen').click();
+  find(refused, 'Mikrofon freigeben').click();
   await flush();
   assert.match(refused.textContent, /Mikrofon verweigert/);
   assert.equal(uploads.length, 4, 'denial does not save a take');
   f.dom.window.close();
+
+  // A melody song can be a real uploaded File, separately cued on video
+  // and song timelines. No microphone permission or second player involved.
+  const mf = fixture(), wm = mf.w, dm = mf.d, musicCalls = [], cueCalls = [];
+  const track = { file: 'imported.mp3', name: 'music.mp3', kind: 'audio',
+    mime: 'audio/mpeg', duration: 2.8, voiceover_kind: 'take', voiceover_lane: 'melody',
+    voiceover_for: 'clip.mp4', voiceover_at: 0, voiceover_from: 0 };
+  wm.MAG.api = async (method, endpoint, payload) => {
+    if (endpoint.startsWith('/api/video/voiceover?')) {
+      musicCalls.push({ method, endpoint, payload });
+      return track;
+    }
+    if (endpoint === '/api/video/voiceover/cue') {
+      cueCalls.push(payload);
+      return { at: payload.at, from: payload.from };
+    }
+    throw Error('Unexpected melody API request ' + endpoint);
+  };
+  const clip = { file: 'clip.mp4', name: 'clip.mp4', kind: 'video' };
+  let melodyMessage = { id: 'melody999', attachments: [clip] };
+  const musicUI = wm.MAG.voiceover.player(melodyMessage, clip);
+  dm.body.append(musicUI);
+  assert.equal(musicUI.querySelector('.voice-melody').hidden, true,
+    'melody detail row stays folded for other lanes');
+  musicUI.querySelector('.voice-lanes button[aria-label="Melodie"]').click();
+  assert.equal(musicUI.querySelector('.voice-melody').hidden, false,
+    'one compact melody detail row instead of another sheet');
+  assert(find(musicUI, 'Musikdatei hochladen'), 'file action in melody row');
+  assert.equal(mf.perms.length, 0, 'file upload must never activate microphone');
+  const picker = musicUI.querySelector('input[type=file]');
+  const file = new wm.File(['X'.repeat(512)], 'cue-melodie.mp3', { type: 'audio/mpeg' });
+  Object.defineProperty(picker, 'files', { value: [file], configurable: true });
+  picker.dispatchEvent(new wm.Event('change'));
+  await flush();
+  assert.equal(musicCalls.length, 1);
+  assert(musicCalls[0].endpoint.includes('lane=melody&name=cue-melodie.mp3'));
+  assert.equal(musicCalls[0].payload, file);
+  assert.equal(musicUI.querySelectorAll('video').length, 1);
+  assert.equal(musicUI.querySelector('.voice-cues').hidden, false);
+  const at = musicUI.querySelector('[aria-label="Melodie ab Videosekunde"]');
+  const from = musicUI.querySelector('[aria-label="Song ab Sekunde"]');
+  at.value = '0.4';
+  at.dispatchEvent(new wm.Event('change'));
+  await flush();
+  assert.equal(cueCalls[0].at, 0.4);
+  assert.equal(cueCalls[0].from, 0);
+  from.value = '0.9';
+  from.dispatchEvent(new wm.Event('change'));
+  await flush();
+  assert.equal(cueCalls[1].from, 0.9);
+  assert.equal(cueCalls[1].at, 0.4);
+  melodyMessage = { ...melodyMessage, attachments: [...melodyMessage.attachments,
+    { ...track, voiceover_at: 0.4, voiceover_from: 0.9 }] };
+  musicUI._voiceoverRefresh(melodyMessage);
+  assert.equal(Number(at.value), 0.4, 'SSE preserves stored video cue');
+  assert.equal(Number(from.value), 0.9, 'SSE preserves song in-point');
+  const mv = musicUI.querySelector('video');
+  // Each lane has its own audio element. The first one is "voice", so
+  // testing querySelector('audio') would silently inspect the wrong lane.
+  const ma = musicUI.querySelector('audio[data-lane="melody"]');
+  assert(ma, 'melody audio element has a stable lane identity');
+  find(musicUI, 'Mit Tonspuren anhören').click();
+  await flush();
+  assert.equal(ma.paused, false,
+    'delayed melody is armed directly by the preview tap, not a later autoplay');
+  mv.currentTime = 0.25;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  assert.equal(ma.muted, true, 'song must be inaudible before its video cue');
+  assert.equal(ma.paused, false, 'keep muted audio active before the cue to avoid autoplay blocks');
+  mv.currentTime = 0.75;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  await flush();
+  assert.equal(ma.paused, false, 'the correct melody lane plays after the cue');
+  assert.equal(ma.muted, false, 'melody becomes audible after the cue');
+  assert(Math.abs(ma.currentTime - 1.25) < 0.02,
+    'preview must seek into the song: 0.75 video - 0.4 cue + 0.9 song');
+  mv.pause();
+  assert.equal(ma.paused, true, 'pausing video also pauses melody');
+  mv.play();
+  mv.currentTime = 0.1;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  assert.equal(ma.muted, true, 'scrubbing backwards before cue silences melody');
+  mv.currentTime = 0.9;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  assert.equal(ma.muted, false, 'returning after cue resumes audible melody');
+  assert.equal(mf.perms.length, 0);
+  wm.MAG.state.you = { role: 'guest' };
+  const musicGuest = wm.MAG.voiceover.player(melodyMessage, clip);
+  assert(!find(musicGuest, 'Musikdatei hochladen'), 'guest has no file-upload control');
+  assert.equal(musicGuest.querySelector('.voice-cues'), null,
+    'guest has no editable cue fields mounted');
+  mf.dom.window.close();
 
   // Scene cards have TWO independent live keep nodes: the WebGL stage first,
   // the video/recording second. Both must keep exact DOM identity over SSE.
@@ -194,9 +294,9 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
   assert(canvas && video);
   const inline = mounted.querySelector('.voiceover');
   inline.querySelector('button:not(.on)'); // native control exists
-  find(inline, 'Aufnehmen').click();
+  find(inline, 'Mikrofon freigeben').click();
   await flush();
-  find(inline, 'Start').click();
+  find(inline, 'Aufnahme starten').click();
   assert.equal(sc.Recorder.last.state, 'recording');
   Stream.instance.event({ t: 'message', seq: 2, m: {
     ...scene, attachments: [...scene.attachments, {
@@ -212,7 +312,7 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
   assert.equal(sc.Recorder.last.state, 'recording', 'recording remains live');
   assert.equal(sc.stopped, 0, 'SSE did not close microphone');
   assert.equal(after.querySelectorAll('video').length, 1, 'no duplicate baked/take players');
-  find(inline, 'Verwerfen').click();
+  find(inline, 'Aufnahme verwerfen').click();
   await flush();
   assert.equal(sc.stopped, 1, 'recording cleanup still works after reconciliation');
   sc.dom.window.close();

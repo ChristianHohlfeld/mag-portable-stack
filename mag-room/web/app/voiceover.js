@@ -1,4 +1,4 @@
-// Three compact, independent microphone lanes on an existing video card.
+// Three compact audio lanes on an existing video card (microphone or music file).
 // Recordings and mixdowns stay ordinary room attachments; no additional UI
 // player or job queue. Never acquire a microphone outside a direct owner tap.
 'use strict';
@@ -36,35 +36,65 @@
     const video = el('video', { class: klass, controls: true, preload: 'metadata',
       playsInline: true, src: url(source) });
     const box = el('div', { class: 'voiceover', dataset: { keep: 'video:' + original } }, video);
-    const announce = el('small', { class: 'voice-status', role: 'status', 'aria-live': 'polite' });
+    const announce = el('small', { class: 'voice-status note', role: 'status', 'aria-live': 'polite' });
     const status = (msg, error = false) => {
       announce.textContent = msg;
       announce.classList.toggle('err', error);
     };
     const buttons = new Map();
-    const laneBar = el('div', { class: 'voice-lanes', role: 'group', 'aria-label': 'Nachvertonung' });
-    const options = LANES.map(([key, title]) => {
-      const b = el('button', { type: 'button', class: 'pill',
-        'aria-label': title, title: title + ' aufnehmen',
-        onclick: () => { if (recorder?.state === 'recording') return; lane = key; paint(); } });
+    const laneBar = el('div', { class: 'voice-lanes seg', role: 'group',
+      'aria-label': 'Tonspur wählen' });
+    LANES.forEach(([key, title]) => {
+      const b = el('button', { type: 'button', 'aria-label': title,
+        title: title + ' auswählen',
+        onclick: () => { if (recorder?.state === 'recording') return; lane = key; paint(); }
+      }, el('span', { class: 'voice-take-dot', 'aria-hidden': 'true' }), title);
       buttons.set(key, b);
       laneBar.append(b);
-      return b;
     });
-    const mic = el('button', { type: 'button', class: 'pill', text: '● Aufnehmen', title: 'Mikrofonaufnahme' });
-    const discardButton = el('button', { type: 'button', class: 'pill', title: 'Aufnahme verwerfen',
-      text: 'Verwerfen', hidden: true });
-    const preview = el('button', { type: 'button', class: 'pill', text: '▶ Anhören',
-      title: 'Original mit allen drei Spuren wiedergeben', hidden: true });
-    const bake = el('button', { type: 'button', class: 'pill', text: 'Mix & MP4',
-      title: 'Alle drei Spuren zu einem Mix zusammenführen und in ein neues MP4 einbrennen', hidden: true });
-    const downloads = el('span', { class: 'voice-exports' });
-    const toolbar = el('div', { class: 'voice-controls' }, laneBar,
-      owner ? mic : null, owner ? discardButton : null, preview, owner ? bake : null, downloads);
+    const mic = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Mikrofon freigeben', title: 'Mikrofon freigeben',
+      html: MAG.icons.mic });
+    // Melody-only file control; two small offsets instead of a timeline editor.
+    const songFile = el('input', { type: 'file', hidden: true,
+      accept: '.mp3,.wav,.m4a,.ogg,.weba,.flac,audio/mpeg,audio/wav,audio/mp4,audio/ogg,audio/webm,audio/flac' });
+    const songUpload = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Musikdatei hochladen', title: 'MP3, WAV, M4A, Ogg, WebM oder FLAC hochladen',
+      html: MAG.icons.file });
+    const songName = el('span', { class: 'voice-song-name', title: 'Aktuelle Melodie',
+      text: 'Musikdatei wählen' });
+    const videoAt = el('input', { type: 'number', class: 'voice-cue-input',
+      min: '0', step: '0.1', value: '0', inputMode: 'decimal',
+      'aria-label': 'Melodie ab Videosekunde' });
+    const songFrom = el('input', { type: 'number', class: 'voice-cue-input',
+      min: '0', step: '0.1', value: '0', inputMode: 'decimal',
+      'aria-label': 'Song ab Sekunde' });
+    const cues = el('span', { class: 'voice-cues' },
+      el('label', {}, 'Video ab', videoAt, 's'),
+      el('label', {}, 'Song ab', songFrom, 's'));
+    const discardButton = el('button', { type: 'button', class: 'icon-btn voice-discard',
+      'aria-label': 'Aufnahme verwerfen', title: 'Aufnahme verwerfen',
+      html: MAG.icons.x, hidden: true });
+    const preview = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Mit Tonspuren anhören', title: 'Mit Tonspuren anhören',
+      html: MAG.icons.speak, hidden: true });
+    const bake = el('button', { type: 'button', class: 'icon-btn',
+      'aria-label': 'Mix und MP4 erstellen', title: 'Mix und MP4 erstellen',
+      html: MAG.icons.film, hidden: true });
+    const downloads = el('span', { class: 'voice-exports', 'aria-label': 'Fertige Dateien' });
+    const actions = el('div', { class: 'voice-actions', role: 'group',
+      'aria-label': 'Tonspuren bearbeiten' },
+      owner ? mic : null, owner ? discardButton : null, preview, owner ? bake : null);
+    const toolbar = el('div', { class: 'voice-controls' }, laneBar, actions);
+    const melodyRow = el('div', { class: 'voice-melody', hidden: true },
+      owner ? songUpload : null, owner ? songFile : null,
+      songName, owner ? cues : null);
+    const footer = el('div', { class: 'voice-footer' }, downloads, announce);
     const audios = Object.fromEntries(LANES.map(([id]) =>
-      [id, el('audio', { preload: 'metadata', hidden: true })]));
+      [id, el('audio', { preload: 'metadata', hidden: true,
+        dataset: { lane: id } })]));
     const audiosBox = el('div', { hidden: true }, ...Object.values(audios));
-    box.append(audiosBox, toolbar, announce);
+    box.append(audiosBox, toolbar, melodyRow, footer);
     // One stable audio element per lane, shared with the original video
     // timeline. The video controls remain native and work on iOS/Android.
     function sync() {
@@ -76,44 +106,80 @@
           audio.dataset.file = take.file;
           audio.src = url(take);
         }
-        try {
-          if (Math.abs((audio.currentTime || 0) - video.currentTime) > 0.2)
-            audio.currentTime = video.currentTime;
-        } catch (_) {}
+        const at = key === 'melody' ? Number(take.voiceover_at || 0) : 0;
+        const from = key === 'melody' ? Number(take.voiceover_from || 0) : 0;
+        const position = video.currentTime - at + from;
+        const audible = video.currentTime >= at && position >= 0 &&
+          position < Number(take.duration || Infinity);
         audio.playbackRate = video.playbackRate;
         audio.volume = video.volume;
-        if (video.paused || video.ended) audio.pause();
-        else if (audio.paused) audio.play().catch(() => {
-          status('Für die Spuren bitte ▶ Anhören antippen.');
+        if (video.paused || video.ended || position >= Number(take.duration || Infinity)) {
+          audio.pause();
+          continue;
+        }
+        if (!audible) {
+          // A delayed melody is started *muted* by the user's preview tap.
+          // Keep it running silently until its cue: pausing here would
+          // require a NEW play() outside the tap (blocked on mobile Safari).
+          audio.muted = true;
+          continue;
+        }
+        try {
+          if (Math.abs((audio.currentTime || 0) - position) > 0.2)
+            audio.currentTime = position;
+        } catch (_) {}
+        // Do not unmute before seeking to the requested point in the song.
+        audio.muted = false;
+        if (audio.paused) audio.play().catch(() => {
+          status('Bitte die Vorschau antippen.');
         });
       }
     }
     const have = () => LANES.some(([key]) => !!tracks[key]);
     function paint() {
-      for (const [key, title] of LANES) {
+      for (const [key] of LANES) {
         const b = buttons.get(key);
-        b.classList.toggle('on', lane === key && owner);
-        b.setAttribute('aria-pressed', String(lane === key && owner));
-        b.textContent = (tracks[key] ? '✓ ' : '') + title;
+        b.classList.toggle('on', lane === key);
+        b.classList.toggle('has-take', !!tracks[key]);
+        b.setAttribute('aria-pressed', String(lane === key));
       }
       preview.hidden = !have();
       bake.hidden = !have() || !owner;
       bake.disabled = busy || recorder?.state === 'recording';
       mic.disabled = busy || stopping || !compatible;
-      if (recorder?.state === 'recording') mic.textContent = '■ Stoppen';
-      else if (stream) mic.textContent = '● Start ' + LANES.find(([key]) => key === lane)[1];
-      else mic.textContent = '● Aufnehmen';
+      const micLabel = recorder?.state === 'recording' ? 'Aufnahme stoppen und behalten'
+        : stream ? 'Aufnahme starten' : 'Mikrofon freigeben';
+      mic.setAttribute('aria-label', micLabel);
+      mic.title = micLabel;
+      mic.innerHTML = recorder?.state === 'recording' ? MAG.icons.stop : MAG.icons.mic;
+      mic.classList.toggle('voice-recording', recorder?.state === 'recording');
+      melodyRow.hidden = !owner || lane !== 'melody';
+      cues.hidden = !tracks.melody;
+      songUpload.disabled = busy || recorder?.state === 'recording';
+      videoAt.disabled = songFrom.disabled = busy || recorder?.state === 'recording' || !tracks.melody;
+      songName.textContent = tracks.melody?.name || 'Musikdatei wählen';
+      songName.title = tracks.melody?.name || 'Musikdatei hochladen';
+      if (tracks.melody) {
+        const at = String(Number(tracks.melody.voiceover_at || 0));
+        const from = String(Number(tracks.melody.voiceover_from || 0));
+        if (document.activeElement !== videoAt) videoAt.value = at;
+        if (document.activeElement !== songFrom) songFrom.value = from;
+        if (Number.isFinite(video.duration)) videoAt.max = String(video.duration);
+        if (Number.isFinite(Number(tracks.melody.duration)))
+          songFrom.max = String(tracks.melody.duration);
+        songUpload.title = 'Musikdatei wählen oder ersetzen';
+      }
       discardButton.hidden = !stream && recorder?.state !== 'recording';
-      discardButton.textContent = recorder?.state === 'recording' ? 'Verwerfen' : '✕';
       discardButton.title = recorder?.state === 'recording' ? 'Aufnahme verwerfen' : 'Mikrofon schließen';
+      discardButton.setAttribute('aria-label', discardButton.title);
       downloads.replaceChildren();
       if (tracks.mix) downloads.append(el('a', {
-        class: 'pill', href: url(tracks.mix, '?download=1'), download: tracks.mix.name,
-        title: 'Gemischte Audiospur herunterladen', text: 'Mix'
+        href: url(tracks.mix, '?download=1'), download: tracks.mix.name,
+        title: 'Fertigen Audiomix herunterladen', text: 'Audiomix'
       }));
       if (tracks.baked) downloads.append(el('a', {
-        class: 'pill', href: url(tracks.baked, '?download=1'), download: tracks.baked.name,
-        title: 'MP4 mit eingebrannter Nachvertonung herunterladen', text: 'MP4'
+        href: url(tracks.baked, '?download=1'), download: tracks.baked.name,
+        title: 'MP4 mit Nachvertonung herunterladen', text: 'MP4'
       }));
     }
     // Called by the chat's generic preservation path after an SSE update.
@@ -132,11 +198,19 @@
         const take = tracks[key], audio = audios[key];
         if (!take) continue;
         if (audio.dataset.file !== take.file) { audio.dataset.file = take.file; audio.src = url(take); }
-        audio.currentTime = 0;
+        const at = key === 'melody' ? Number(take.voiceover_at || 0) : 0;
+        audio.currentTime = key === 'melody' ? Number(take.voiceover_from || 0) : 0;
+        // Activate EVERY lane in this direct user gesture. Delayed songs
+        // run silently until the cue and are realigned before unmuting by
+        // sync(). Otherwise a late play() can be rejected as autoplay.
+        audio.muted = at > 0;
         audio.play().catch(() => status('Tonspur konnte nicht abgespielt werden.', true));
       }
       // Synchronous inside click: explicit user activation on mobile Safari.
-      video.play().catch(() => status('Video: bitte im Player auf Play drücken.', true));
+      video.play().catch(() => {
+        for (const audio of Object.values(audios)) audio.pause();
+        status('Video: bitte im Player auf Play drücken.', true);
+      });
     });
     const compatible = !!navigator.mediaDevices?.getUserMedia &&
       typeof MediaRecorder !== 'undefined' && window.isSecureContext;
@@ -146,6 +220,55 @@
       mic.disabled = true;
       status('Mikrofon benötigt HTTPS und MediaRecorder.', true);
     }
+
+    songUpload.addEventListener('click', () => {
+      if (!busy && recorder?.state !== 'recording') songFile.click();
+    });
+    songFile.addEventListener('change', async () => {
+      const file = songFile.files?.[0];
+      songFile.value = ''; // selecting the same file again is always allowed
+      if (!file || busy || recorder?.state === 'recording') return;
+      if (file.size < 128 || file.size > 32 * 1024 * 1024)
+        return status('Melodie muss zwischen 128 Byte und 32 MB groß sein.', true);
+      busy = true; paint(); status('Musikdatei wird gespeichert …');
+      try {
+        const uploaded = await MAG.api('POST', '/api/video/voiceover?message=' +
+          encodeURIComponent(message.id) + '&video=' + encodeURIComponent(original) +
+          '&lane=melody&name=' + encodeURIComponent(file.name), file);
+        tracks.melody = uploaded;
+        status('Melodie geladen. Start im Video und im Song einstellbar.');
+      } catch (e) { status('Musik-Upload fehlgeschlagen: ' + e.message, true); }
+      finally { busy = false; paint(); }
+    });
+    async function saveCue() {
+      const take = tracks.melody;
+      if (!take || busy || recorder?.state === 'recording') return;
+      const at = Number(videoAt.value), from = Number(songFrom.value);
+      const videoLength = Number.isFinite(video.duration) ? video.duration : Infinity;
+      if (!videoAt.value || !songFrom.value || !Number.isFinite(at) || !Number.isFinite(from) ||
+          at < 0 || from < 0 || at >= videoLength ||
+          (Number.isFinite(Number(take.duration)) && from >= Number(take.duration))) {
+        status('Startzeiten müssen innerhalb von Video und Song liegen.', true);
+        videoAt.value = String(Number(take.voiceover_at || 0));
+        songFrom.value = String(Number(take.voiceover_from || 0));
+        return;
+      }
+      busy = true; paint();
+      try {
+        const saved = await MAG.api('POST', '/api/video/voiceover/cue', {
+          message: message.id, video: original, file: take.file, at, from
+        });
+        tracks.melody = { ...take, voiceover_at: saved.at, voiceover_from: saved.from };
+        status('Melodie-Position gespeichert.');
+        sync();
+      } catch (e) {
+        status('Position konnte nicht gespeichert werden: ' + e.message, true);
+        videoAt.value = String(Number(take.voiceover_at || 0));
+        songFrom.value = String(Number(take.voiceover_from || 0));
+      } finally { busy = false; paint(); }
+    }
+    videoAt.addEventListener('change', saveCue);
+    songFrom.addEventListener('change', saveCue);
 
     function stopMic() {
       stream?.getTracks().forEach((t) => t.stop());

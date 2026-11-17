@@ -848,21 +848,40 @@ article.flash { animation: flash 1.6s ease-out; }
 /* The label sits on the button's middle, not on a baseline pushed down by the height. */
 .m3 .line-acts.go .pill b { line-height: 1; display: block; }
 
-/* One slim, phone-safe row under the same player. Raw lane files and bakes
-   live in the Files gallery instead of multiplying media players. */
-.voiceover { width: min(100%, 580px); min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* The video editor uses MAG's own segmented buttons, icon actions and links.
+   No second card, no custom colors, and no inline toolbar overflow. */
+.voiceover { width: min(100%, 580px); min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .voiceover video { display: block; width: 100%; max-height: 60vh; border-radius: 10px; background: #000; }
-.voiceover .voice-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 3px 0; }
-.voiceover .voice-lanes { display: flex; flex: 1 1 auto; gap: 3px; min-width: 0; }
-.voiceover .voice-lanes .pill { flex: 1 1 0; min-width: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
-.voiceover .voice-controls .pill { padding: 4px 7px; font-size: 12px; min-height: 32px; border-radius: 8px; }
-.voiceover .voice-controls .pill:disabled { opacity: .5; }
-.voiceover .voice-controls .pill.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.voiceover .voice-exports { display: inline-flex; gap: 3px; }
-.voiceover .voice-status { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.voiceover .voice-controls { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; min-width: 0; }
+.voiceover .voice-lanes { flex: 0 1 auto; min-width: 0; }
+.voiceover .voice-lanes button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 6px 9px; white-space: nowrap; font-size: 12.5px; }
+.voiceover .voice-take-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); opacity: 0; }
+.voiceover .voice-lanes button.has-take .voice-take-dot { opacity: 1; }
+.voiceover .voice-actions { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 2px; }
+.voiceover .voice-actions .icon-btn { width: 36px; height: 36px; }
+.voiceover .voice-actions .icon-btn svg { width: 19px; height: 19px; }
+.voiceover .voice-actions .icon-btn.voice-recording,
+.voiceover .voice-actions .icon-btn.voice-discard { color: var(--bad); }
+.voiceover .voice-actions .icon-btn[hidden] { display: none; }
+.voiceover .voice-melody { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.voiceover .voice-melody .icon-btn { width: 32px; height: 32px; flex: none; }
+.voiceover .voice-melody .icon-btn svg { width: 18px; height: 18px; }
+.voiceover .voice-song-name { min-width: 0; flex: 1 1 auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.voiceover .voice-cues { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; font-size: 12px; }
+.voiceover .voice-cues label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--muted); }
+.voiceover .voice-cue-input { box-sizing: border-box; width: 58px; min-height: 30px; padding: 3px 4px; font: inherit; font-size: 13px; text-align: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums; }
+.voiceover .voice-footer { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.voiceover .voice-footer:has(.voice-exports:empty) .voice-exports { display: none; }
+.voiceover .voice-exports { display: inline-flex; align-items: center; gap: 12px; font-size: 12.5px; }
+.voiceover .voice-status { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
 .voiceover .voice-status:empty { display: none; }
 .voiceover .voice-status.err { color: var(--bad); }
-@media (max-width: 460px) {
-  .voiceover .voice-lanes { flex-basis: 100%; }
-  .voiceover .voice-controls > .pill { flex: 1 0 auto; }
+@media (max-width: 420px) {
+  .voiceover .voice-controls { flex-wrap: wrap; }
+  .voiceover .voice-lanes { flex: 1 1 auto; }
+  .voiceover .voice-lanes button { padding: 6px 7px; font-size: 12px; }
+  .voiceover .voice-actions { margin-left: auto; }
+  .voiceover .voice-melody { flex-wrap: wrap; }
+  .voiceover .voice-song-name { max-width: none; }
+  .voiceover .voice-cues { width: 100%; justify-content: flex-start; padding-left: 4px; }
 }

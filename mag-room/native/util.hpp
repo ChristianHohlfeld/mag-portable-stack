@@ -343,7 +343,7 @@ inline std::string mime_for(const std::string &name) {
       {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
       {"odt", "application/vnd.oasis.opendocument.text"}, {"odp", "application/vnd.oasis.opendocument.presentation"},
       {"ods", "application/vnd.oasis.opendocument.spreadsheet"}, {"rtf", "application/rtf"}, {"doc", "application/msword"},
-      {"wav", "audio/wav"}, {"ogg", "audio/ogg"}, {"weba", "audio/webm"}, {"m4a", "audio/mp4"}, {"mp4", "video/mp4"},
+      {"wav", "audio/wav"}, {"flac", "audio/flac"}, {"ogg", "audio/ogg"}, {"weba", "audio/webm"}, {"m4a", "audio/mp4"}, {"mp4", "video/mp4"},
       {"webm", "video/webm"}, {"mov", "video/quicktime"}, {"glb", "model/gltf-binary"},
       {"stl", "model/stl"}, {"ply", "application/octet-stream"}, {"gltf", "model/gltf+json"},
       {"geojson", "application/geo+json"}, {"xml", "application/xml"}, {"map", "application/json"},

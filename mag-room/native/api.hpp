@@ -179,6 +179,10 @@ public:
       if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
       return voiceover_upload(fd, r);
     }
+    if (r.method == "POST" && p == "/api/video/voiceover/cue") {
+      if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      return voiceover_cue(fd, r);
+    }
     if (r.method == "POST" && p == "/api/video/bake") {
       if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
       return voiceover_bake(fd, r);
@@ -955,14 +959,38 @@ private:
     Val m;
     if (!room_.get(id, m) || !voiceover::original(m, video))
       return http::send_error(fd, 404, "Originalvideo in dieser Nachricht nicht gefunden");
-    if (r.body.size() < 128 || r.body.size() > (12u << 20))
-      return http::send_error(fd, 413, "Audioaufnahme muss zwischen 128 Byte und 12 MB liegen");
+    const bool music = lane == "melody";
+    const size_t limit = (music ? 32u : 12u) << 20;
+    if (r.body.size() < 128 || r.body.size() > limit)
+      return http::send_error(fd, 413, music ? "Melodie muss zwischen 128 Byte und 32 MB liegen"
+                                              : "Audioaufnahme muss zwischen 128 Byte und 12 MB liegen");
     const std::string mime = lower(r.header("content-type"));
-    const std::string ext = starts_with(mime, "audio/webm") ? "weba"
-                            : starts_with(mime, "audio/mp4") ? "m4a"
-                            : starts_with(mime, "audio/ogg") ? "ogg" : "";
-    if (ext.empty()) return http::send_error(fd, 415, "Audioformat nicht unterstützt (WebM, MP4 oder Ogg)");
-    Val a = room_.store_file("nachvertonung-" + lane + "-" + std::to_string(now_ms()) + "." + ext, r.body, "chris");
+    const std::string name = safe_name(r.param("name"));
+    const std::string suffix = name.find_last_of('.') == std::string::npos ? ""
+                                 : lower(name.substr(name.find_last_of('.') + 1));
+    // The native recorder keeps its existing formats and limits. For melody
+    // files accept common music formats and octet-stream only when the
+    // original extension is one we explicitly support. ffprobe validates
+    // the *actual bytes* below, never trusting a client MIME declaration.
+    std::string ext = starts_with(mime, "audio/webm") ? "weba"
+                    : starts_with(mime, "audio/mp4") ? "m4a"
+                    : starts_with(mime, "audio/ogg") ? "ogg" : "";
+    if (music) {
+      if (starts_with(mime, "audio/mpeg") || starts_with(mime, "audio/mp3")) ext = "mp3";
+      else if (starts_with(mime, "audio/wav") || starts_with(mime, "audio/wave") ||
+               starts_with(mime, "audio/x-wav") || starts_with(mime, "audio/x-pn-wav") ||
+               starts_with(mime, "audio/vnd.wave")) ext = "wav";
+      else if (starts_with(mime, "audio/flac") || starts_with(mime, "audio/x-flac")) ext = "flac";
+      else if ((mime.empty() || starts_with(mime, "application/octet-stream")) &&
+               (suffix == "mp3" || suffix == "wav" || suffix == "m4a" ||
+                suffix == "ogg" || suffix == "weba" || suffix == "flac")) ext = suffix;
+    }
+    if (ext.empty()) return http::send_error(fd, 415, "Audioformat nicht unterstützt");
+    // Keep the verified format as the stored extension even if a client
+    // supplies a mismatching filename or a truncated 80-char basename.
+    const std::string display = music && suffix == ext ? name
+        : "nachvertonung-" + lane + "-" + std::to_string(now_ms()) + "." + ext;
+    Val a = room_.store_file(display, r.body, "chris");
     if (!a.isObj()) return http::send_error(fd, 500, "Audio konnte nicht gespeichert werden");
     const std::string path = room_.file_path(jstr(a, "file"));
     const double duration = voiceover::seconds(path);
@@ -973,6 +1001,10 @@ private:
     a["voiceover_kind"] = "take";
     a["voiceover_for"] = video;
     a["voiceover_lane"] = lane;
+    if (music) {
+      a["voiceover_at"] = 0.0;
+      a["voiceover_from"] = 0.0;
+    }
     a["duration"] = duration;
     a["created"] = (double)now_s();
     // Only one current take per (original video, lane). Replace atomically in
@@ -1008,6 +1040,48 @@ private:
     http::send_json(fd, 201, a);
   }
 
+  // Adjust the current melody without uploading it again. The two offsets
+  // live on the melody attachment, so SSE/restart and the bake always agree.
+  void voiceover_cue(int fd, const http::Request &r) {
+    const Val arg = jparse(r.body);
+    const std::string id = jstr(arg, "message"), video = jstr(arg, "video"),
+                      file = jstr(arg, "file");
+    const Val *at_arg = arg.find("at"), *from_arg = arg.find("from");
+    if (!is_id(id) || !at_arg || !from_arg ||
+        at_arg->type != Val::NUM || from_arg->type != Val::NUM)
+      return http::send_error(fd, 400, "Melodie-Positionen müssen Zahlen in Sekunden sein");
+    const double at = jnum(arg, "at"), from = jnum(arg, "from");
+    if (!std::isfinite(at) || !std::isfinite(from) || at < 0 || from < 0)
+      return http::send_error(fd, 400, "Ungültige Melodie-Position");
+    // Lock against ffmpeg snapshotting the old offsets; retakes revalidate
+    // the exact stored attachment ID inside room_.update below.
+    std::unique_lock<std::mutex> guard(voiceover_render_mu_, std::try_to_lock);
+    if (!guard.owns_lock()) return http::send_error(fd, 409, "Video wird gerade gemischt");
+    Val m;
+    if (!room_.get(id, m) || !voiceover::original(m, video) ||
+        !voiceover::take(m, video, file, "melody"))
+      return http::send_error(fd, 404, "Aktuelle Melodie-Spur nicht gefunden");
+    const std::string video_path = room_.file_path(video), song_path = room_.file_path(file);
+    const double video_length = voiceover::seconds(video_path), song_length = voiceover::seconds(song_path);
+    if (!video_length || !song_length || at >= video_length || from >= song_length)
+      return http::send_error(fd, 400, "Position muss innerhalb von Video und Song liegen");
+    bool found = false;
+    if (!room_.update(id, [&](Val &message) {
+      if (Val *atts = message.find("attachments"); atts && atts->isArr())
+        for (Val &a : *atts->arr)
+          if (jstr(a, "file") == file && jstr(a, "voiceover_kind") == "take" &&
+              jstr(a, "voiceover_lane") == "melody" && jstr(a, "voiceover_for") == video) {
+            a["voiceover_at"] = at;
+            a["voiceover_from"] = from;
+            found = true;
+          }
+    }) || !found) return http::send_error(fd, 404, "Melodie wurde inzwischen ersetzt");
+    Val result = Val::object();
+    result["at"] = at;
+    result["from"] = from;
+    http::send_json(fd, 200, result);
+  }
+
   void voiceover_bake(int fd, const http::Request &r) {
     const Val arg = jparse(r.body);
     const std::string id = jstr(arg, "message"), video = jstr(arg, "video"),
@@ -1023,7 +1097,7 @@ private:
       return http::send_error(fd, 404, "Originalvideo nicht in dieser Nachricht");
     const Val *chosen = arg.find("lanes");
     if (!chosen || !chosen->isObj()) return http::send_error(fd, 400, "Spuren fehlen");
-    std::vector<std::pair<std::string, std::string>> lanes;
+    std::vector<voiceover::LaneInput> lanes;
     Val saved = Val::object();
     for (const char *lane : {"voice", "melody", "effects"}) {
       const std::string file = jstr(*chosen, lane);
@@ -1032,7 +1106,15 @@ private:
         return http::send_error(fd, 404, std::string("Die ausgewählte ") + lane + "-Tonspur gehört nicht zu diesem Video");
       const std::string path = room_.file_path(file);
       if (path.empty() || !exists(path)) return http::send_error(fd, 404, "Tonspur fehlt");
-      lanes.emplace_back(lane, path);
+      voiceover::LaneInput input;
+      input.name = lane;
+      input.path = path;
+      if (input.name == "melody") {
+        const Val *take = voiceover::attachment(m, file);
+        input.at = jnum(*take, "voiceover_at");
+        input.from = jnum(*take, "voiceover_from");
+      }
+      lanes.push_back(input);
       saved[lane] = file;
     }
     if (lanes.empty()) return http::send_error(fd, 400, "Mindestens eine Tonspur aufnehmen");

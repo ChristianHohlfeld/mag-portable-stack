@@ -454,7 +454,7 @@ class RoomContract(unittest.TestCase):
         self.assertIn("clock_now", {tool["function"]["name"] for tool in requests[0]["tools"]})
         observed = "\n".join(str(m.get("content", "")) for m in requests[-1]["messages"]
                              if m.get("role") == "tool")
-        self.assertRegex(observed, r"Aktuelle Systemzeit des MAG-Servers.*\\d{4}-\\d{2}-\\d{2}")
+        self.assertRegex(observed, r"Aktuelle Systemzeit des MAG-Servers.*\d{4}-\d{2}-\d{2}")
         self.assertIn("Uhrzeit geprüft.", r.texts("noah"))
 
     def test_new_message_preempts_stale_plain_answer(self):

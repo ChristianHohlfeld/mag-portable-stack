@@ -57,7 +57,7 @@
   const ids=new WeakMap();
   function nativeId(el){return el.closest?.('.voiceover')||el;}
   function mediaHandler(node){
-    if(!(node instanceof HTMLMediaElement))return;
+    if(!(node instanceof HTMLMediaElement) || node.dataset.magTts==='1')return;
     const id=nativeId(node);
     const audios=()=>id===node?[node]:[...id.querySelectorAll('audio,video')];
     const handler={

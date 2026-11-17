@@ -216,6 +216,13 @@ class Room:
         (self.tmp / "state" / "bots.json").write_text(json.dumps([bot("lena", "Lena", "agent1"), bot("noah", "Noah", "")]))
         self.proc = None
         self.start()
+        # The supervisor marks a model ready before its asynchronous slot
+        # checkpoint restore / cold prefix prefill finishes. Do not let the
+        # first scripted reply be consumed as a 1-token prefix warm-up.
+        # This also makes the initial slot-action baseline deterministic.
+        self.wait(lambda: all(b["kv"] == "warm" for b in self.state()["bots"]),
+                  "initial model prefixes warmed", 25)
+        self.idle()
 
     def start(self):
         self.log = open(self.tmp / "magroom.log", "a")
@@ -1366,8 +1373,7 @@ class RoomContract(unittest.TestCase):
                         "melody must be silent before its VIDEO cue")
         later = segment(0.70, 0.95)
         self.assertGreater(rms(later), 120, "melody begins at the video cue")
-        crossings = sum((later[i - 1] < 0 <= later[i]) or
-                        (later[i - 1] >= 0 > later[i])
+        crossings = sum(later[i - 1] < 0 <= later[i]
                         for i in range(1, len(later)))
         # This window is 0.25 seconds: 1000 Hz yields about 250
         # positive zero crossings (220 Hz only about 55).
@@ -3368,6 +3374,10 @@ class RoomContract(unittest.TestCase):
 
         r.lena.reply = reply
         r.say("@Lena Untersuche https://example.org/large und prüfe die Dokumente")
+        # A newly queued browser goal can be momentarily idle before the
+        # worker claims it. Require the actual second inference request that
+        # carries the browser observation, not just a transient idle status.
+        r.wait(lambda: len(requests) >= 2, "browser observation delivered to model", 25)
         r.idle()
         observation = next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool")
         self.assertLess(len(observation), 3900)

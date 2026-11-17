@@ -463,6 +463,7 @@ class RoomContract(unittest.TestCase):
                 last = str(body["messages"][-1].get("content", ""))
                 self.assertIn("eigene Beendigungsentscheidung", last)
                 self.assertIn("Chris kann alle eure Nachrichten im Raum-Chat lesen", last)
+                self.assertIn("Projekte", last, "autonomous turns must not revive completed projects")
                 replies[name] += 1
                 return "Ein neuer Gedanke von %s, Runde %d." % (name, replies[name])
             return reply
@@ -1106,6 +1107,49 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=www")[0], 200)
         self.assertFalse((published / "nested" / "app.js").exists())
         self.assertTrue((published / "index.html").exists())
+
+    def test_bot_delete_file_unpublishes_guest_site_and_rejects_escape(self):
+        r = self.room
+        home = r.tmp / "guests" / "agent1"
+        home.mkdir(parents=True, exist_ok=True)
+        guest_www = home / "www"
+        guest_www.mkdir(exist_ok=True)
+        (guest_www / "old-route.html").write_text("<!doctype html><title>Alt</title>")
+        published = r.tmp / "www" / "agent1"
+        published.mkdir(parents=True, exist_ok=True)
+        (published / "old-route.html").write_text("stale public copy")
+        (home / "publish-site").write_text(
+            "rm -rf " + str(published) + "\n"
+            "cp -a www " + str(published) + "\n"
+        )
+        answers = iter([
+            {"content": "", "tool_calls": [{"name": "delete_file", "arguments": {"path": "www/old-route.html"}}]},
+            "Gelöscht.",
+        ])
+        r.lena.reply = lambda body: next(answers)
+        r.say("@Lena hallo")
+        r.idle()
+        self.assertFalse((guest_www / "old-route.html").exists())
+        self.assertFalse((published / "old-route.html").exists())
+        self.assertTrue((published / "index.html").exists())
+        step = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"]
+                if p["k"] == "step" and p["tool"] == "delete_file"]
+        self.assertEqual(len(step), 1)
+        self.assertEqual(step[0]["state"], "ok")
+        self.assertIn("Website aktualisiert", step[0]["output"])
+
+        answers = iter([
+            {"content": "", "tool_calls": [{"name": "delete_file", "arguments": {"path": "/etc/passwd"}}]},
+            "Abgelehnt.",
+        ])
+        r.lena.reply = lambda body: next(answers)
+        r.say("@Lena hallo nochmal")
+        r.idle()
+        step = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"]
+                if p["k"] == "step" and p["tool"] == "delete_file"]
+        self.assertEqual(len(step), 2)
+        self.assertEqual(step[-1]["state"], "error")
+        self.assertIn("Löschen fehlgeschlagen", step[-1]["output"])
 
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room

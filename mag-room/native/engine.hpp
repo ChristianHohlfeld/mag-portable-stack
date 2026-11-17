@@ -66,7 +66,7 @@ public:
       // a minute per 4000 tokens), so the budget stays moderate.
       // Both bots get the same default context independent of roster order.
       // Explicit MAG_ROOM_CTX_<BOT> overrides remain possible for smaller models.
-      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", 12000));
+      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", 16000));
       bots_.push_back(std::move(rt));
       ++index;
     }

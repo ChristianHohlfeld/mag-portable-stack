@@ -467,11 +467,15 @@
   }
   function mount(card) {
     if (card._frame || card._mode !== 'preview') return;
-    const frame = el('iframe', { title: card._title, src: card._src });
-    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
+    const edited = card._editable?.changed();
+    const frame = edited
+      ? MAG.codeEditor.frame(card._title, () => MAG.codeEditor.html('html', card._editable.get(), card._base))
+      : el('iframe', { title: card._title, src: card._src });
+    if (!edited)
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
     frame.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; accelerometer; gyroscope; gamepad; xr-spatial-tracking');
     frame.setAttribute('referrerpolicy', 'no-referrer');
-    frame.setAttribute('credentialless', '');   // a bot's page may load from anywhere, without anybody's cookies
+    frame.setAttribute('credentialless', '');   // no MAG credentials in either preview
     card._frame = frame;
     card._stage.replaceChildren(frame);
     framed.push(card);
@@ -489,48 +493,106 @@
     card._stage.replaceChildren(el('button', { class: 'idle', text: 'Vorschau laden', onclick: () => mount(card) }));
   }
   function buildPage(m, page, pre) {
-    const base = MAG.bot(page.bot || m.from)?.site;
+    const botId = page.bot || m.from;
+    const base = MAG.bot(botId)?.site;
     if (!base || !page.path) return null;
     const href = base + '/' + page.path.split('/').map(encodeURIComponent).join('/');
-    const stage = el('div', { class: 'stage' }), code = el('div', { class: 'code md', hidden: true });
-    const source = () => (pre ? (pre.querySelector('code') || pre).textContent : m.parts?.[page.part]?.input?.content || '');
-    const tab = (mode, label) => el('button', { role: 'tab', text: label, onclick: () => show(mode) });
+    const stage = el('div', { class: 'stage' }), code = el('div', { class: 'code', hidden: true });
+    const original = pre ? (pre.querySelector('code') || pre).textContent
+      : m.parts?.[page.part]?.input?.content || '';
+    const block = pre?.closest('.codeblock');
+    const key = block?.dataset.codeKey || m.id + ':page:' + page.path;
+    let card = null, timer = null;
+    const fullscreenLabel = el('span', { text: 'Vollbild' });
+    const full = el('a', { class: 'tool', href, target: '_blank', rel: 'noopener',
+      'aria-label': 'Vollbild' }, MAG.icon('full'), fullscreenLabel);
+    const editor = MAG.codeEditor.editor(key, original, 'html', () => {
+      if (!card) return;
+      const modified = editor.changed();
+      const frameModified = card._frame?.classList.contains('code-preview-frame') || false;
+      if (card._frame && modified !== frameModified) {
+        unmount(card);
+        if (card._visible && card._mode === 'preview') mount(card);
+      } else if (card._frame && modified) {
+        clearTimeout(timer);
+        timer = setTimeout(() => card._frame?._refresh?.(), 400);
+      }
+      if (!modified) card._closeFull?.();
+      card.classList.toggle('code-edited', modified);
+      full.setAttribute('aria-label', modified ? 'Bearbeitete Vorschau als Vollbild' : 'Vollbild im neuen Tab');
+    });
+    const tab = (mode, label) => el('button', { role: 'tab', type: 'button',
+      text: label, onclick: () => show(mode) });
     const tabs = { preview: tab('preview', 'Vorschau'), code: tab('code', 'Code') };
     const copied = el('span', { text: 'Kopieren' });
-    const card = el('div', { class: 'page', dataset: { path: page.path } },
+    card = el('div', { class: 'page', dataset: { path: page.path } },
       el('div', { class: 'bar' },
         el('div', { class: 'seg', role: 'tablist' }, tabs.preview, tabs.code),
         el('span', { class: 'grow' }),
-        el('button', { class: 'tool', 'aria-label': 'Code kopieren', onclick: () => copy(source(), copied) }, MAG.icon('copy'), copied),
-        el('a', { class: 'tool', href, target: '_blank', rel: 'noopener', 'aria-label': 'Vollbild in neuem Tab' }, MAG.icon('full'), el('span', { text: 'Vollbild' }))),
+        el('button', { class: 'tool', type: 'button', 'aria-label': 'Code kopieren',
+          onclick: () => copy(editor.get(), copied) }, MAG.icon('copy'), copied),
+        full),
       stage, code,
-      el('a', { class: 'addr', href, target: '_blank', rel: 'noopener', text: href.replace(/^https?:\/\//, '') }));
-    Object.assign(card, { _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path, _stage: stage, _mode: 'preview', _visible: false, _frame: null });
+      el('a', { class: 'addr', href, target: '_blank', rel: 'noopener',
+        text: href.replace(/^https?:\/\//, '') + ' · lokale Änderungen werden nicht veröffentlicht' }));
+    Object.assign(card, {
+      _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path,
+      _base: base, _editable: editor,
+      _stage: stage, _mode: 'preview', _visible: false, _frame: null
+    });
+    card.classList.toggle('code-edited', editor.changed());
+    card._closeFull = () => {
+      card.classList.remove('code-fullscreen');
+      fullscreenLabel.textContent = 'Vollbild';
+    };
+    full.addEventListener('click', (event) => {
+      if (!editor.changed()) return; // original published page keeps its real URL
+      event.preventDefault();
+      if (card.classList.contains('code-fullscreen')) return card._closeFull();
+      card.classList.add('code-fullscreen');
+      fullscreenLabel.textContent = 'Schließen';
+      show('preview');
+      mount(card);
+    });
     function show(mode) {
       card._mode = mode;
-      for (const [key, node] of Object.entries(tabs)) { node.classList.toggle('on', key === mode); node.setAttribute('aria-selected', String(key === mode)); }
+      for (const [key, node] of Object.entries(tabs)) {
+        node.classList.toggle('on', key === mode);
+        node.setAttribute('aria-selected', String(key === mode));
+      }
       stage.hidden = mode !== 'preview';
       code.hidden = mode !== 'code';
-      if (mode === 'code') {
-        if (!code.firstChild) {
-          const block = pre || el('pre', {}, el('code', { class: 'language-html', text: source() }));
-          if (!pre && window.hljs && source().length < 40000) { try { hljs.highlightElement(block.firstChild); } catch {} }
-          code.append(block);
-        }
-        unmount(card);
-        stage.replaceChildren();
-      } else if (card._visible) mount(card);
+      if (mode === 'code') unmount(card);
+      else if (card._visible || card.classList.contains('code-fullscreen')) mount(card);
     }
+    code.append(editor.input, el('div', { class: 'code-edit-note' },
+      editor.status, editor.resetButton));
     if (pre) {
-      const block = pre.closest('.codeblock') || pre;
-      block.before(card);
+      const old = pre.closest('.codeblock') || pre;
+      old.before(card);
+      // The original hidden pre remains inside the page, but the editable
+      // textarea is the only code shown. No draft is written to the VM.
       code.append(pre);
-      if (block !== pre) block.remove();
+      if (old !== pre) old.remove();
+    } else if (!original && S.you.role === 'owner' && MAG.bot(botId)?.vm) {
+      // Pages written by write_file can have no fenced code in the chat.
+      // Reuse the existing read-only owner VM-file endpoint to fill the
+      // editor; reading never publishes or mutates the bot's files.
+      const path = 'www/' + page.path;
+      MAG.fetch('/api/vm/' + encodeURIComponent(botId) + '/file?path=' +
+        encodeURIComponent(path) + '&text=1')
+        .then((response) => response.ok ? response.text() : null)
+        .then((text) => { if (text !== null) editor.setOriginal(text); })
+        .catch(() => {});
     }
     show('preview');
     watch(card);
     return card;
   }
+  // Escape always leaves edited fullscreen, even after a chat rerender.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.querySelector('.page.code-fullscreen')?._closeFull?.();
+  });
   // Puts each page where it belongs: in place of the code block it was made
   // from, or below the step that wrote it.
   function placePages(m, body) {

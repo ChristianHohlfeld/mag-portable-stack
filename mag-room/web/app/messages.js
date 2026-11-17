@@ -66,10 +66,17 @@
       previewTab?.addEventListener('click', (e) => { e.preventDefault(); show('preview'); });
       const copyButton = el('button', { class: 'copy', type: 'button', text: 'Kopieren',
         onclick: (e) => { e.preventDefault(); copy(edited.get(), e.currentTarget); } });
+      const fullButton = el('button', { class: 'copy', type: 'button', text: 'Vollbild',
+        onclick: (e) => {
+          e.preventDefault();
+          block.classList.toggle('code-fullscreen');
+          fullButton.textContent = block.classList.contains('code-fullscreen') ? 'Schließen' : 'Vollbild';
+        } });
+      block._closeFull = () => { block.classList.remove('code-fullscreen'); fullButton.textContent = 'Vollbild'; };
       const header = el('div', { class: 'head' },
         el('span', { class: 'code-lang', text: lang || 'Code' }),
         el('div', { class: 'seg code-tabs', role: 'tablist' }, codeTab, previewTab),
-        edited.status, edited.resetButton, copyButton);
+        edited.status, edited.resetButton, copyButton, fullButton);
       pre.replaceWith(block);
       // Keep the original hidden pre for server page-signature matching.
       pane.append(edited.input, pre);
@@ -591,7 +598,7 @@
   }
   // Escape always leaves edited fullscreen, even after a chat rerender.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') document.querySelector('.page.code-fullscreen')?._closeFull?.();
+    if (e.key === 'Escape') document.querySelector('.code-fullscreen')?._closeFull?.();
   });
   // Puts each page where it belongs: in place of the code block it was made
   // from, or below the step that wrote it.

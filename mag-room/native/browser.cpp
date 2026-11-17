@@ -567,8 +567,8 @@ int main(int argc, char **argv) {
         if (r.path == "/state")
           out = snapshot();
         else if (r.path == "/read") {
-          out = c.eval("({url:location.href,title:document.title,text:document."
-                       "body.innerText.slice(0,12000)})");
+          out = c.eval("({url:location.href,title:document.title,text:(document."
+                       "body?.innerText||'').slice(0,12000)})");
           Val meta = snapshot();
           out["blocked"] = meta.find("blocked") ? *meta.find("blocked") : Val(false);
           if (out.find("blocked") && out.find("blocked")->asBool())
@@ -638,7 +638,7 @@ int main(int argc, char **argv) {
             Val p = Val::object();
             p["format"] = "png";
             out["png"] = str(c.call("Page.captureScreenshot", p), "data");
-            out["text"] = c.eval("document.body.innerText.slice(0,8000)");
+            out["text"] = c.eval("(document.body?.innerText||'').slice(0,8000)");
             out["errors"] = Val::array();
             out["console"] = Val::array();
           }

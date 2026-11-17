@@ -975,9 +975,19 @@
     const files = (m.attachments || []).filter((a) => a.file);
     const shareable = files.length || (words && !m.model3d);
     if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
+      // One tap reads this and every subsequent loaded text message in
+      // chronological order. Speeds apply only to that playback session.
+      MAG.speaking?.startFrom ? { icon: 'play', label: 'Play from here',
+        run: () => MAG.speaking.startFrom(m.id, 1) } : null,
+      ...[1.25, 1.5, 1.75, 2].map((rate) => MAG.speaking?.startFrom ? {
+        icon: 'speak', label: rate.toFixed(rate % 1 ? 2 : 1).replace(/0$/, '').replace('.', ',') + '× Talk Speed · ab hier',
+        run: () => MAG.speaking.startFrom(m.id, rate)
+      } : null),
+      MAG.speaking?.readingFrom?.() ? { icon: 'stop', label: 'Vorlesen stoppen',
+        run: () => MAG.speaking.stop() } : null,
       shareable ? { icon: 'share', label: 'Teilen', run: () => MAG.share(files, files.length ? '' : m.text) } : null,
       // A video goes back to a 3D scene whose figures do what the video shows.
-      files.find((a) => a.kind === 'video') && MAG.sceneFromVideo ? { icon: 'cube', label: '3D-Szene aus dem Video', run: () => MAG.sceneFromVideo(files.find((a) => a.kind === 'video')) } : null,
+      files.find((a) => a.kind === 'video') && MAG.sceneFromVideo ? { icon: 'cube', label: '3D-Szene aus diesem Video', run: () => MAG.sceneFromVideo(files.find((a) => a.kind === 'video')) } : null,
       { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
     ]); }));
     return row.children.length ? row : null;

@@ -59,10 +59,31 @@ inline bool has_word(const std::string &hay, const std::string &needle) {
   return false;
 }
 
+// A German plural imperative normally ends in -t. Only treat it as a group
+// invitation when followed by a conversational particle; a naked -t ending
+// is too ambiguous ("Er arbeitet", "Es stimmt"). No verb or task dictionary.
+inline bool plural_invitation(const std::string &text) {
+  const std::string t = lower(text);
+  const size_t b = t.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) return false;
+  size_t e = b;
+  while (e < t.size() && word_char((unsigned char)t[e])) ++e;
+  if (e - b < 4 || t[e - 1] != 't') return false;
+  const size_t next = t.find_first_not_of(" \t", e);
+  if (next == std::string::npos) return false;
+  const auto particle = [&](const char *p) {
+    const size_t n = std::string(p).size();
+    return t.compare(next, n, p) == 0 &&
+           (next + n == t.size() || !word_char((unsigned char)t[next + n]));
+  };
+  return particle("mal") || particle("bitte");
+}
+
 // "beide", "ihr", "euch" and "@alle" address everybody anywhere; a bare
 // "alle"/"allen" only at the start or after a greeting ("Hi alle"), so
 // "lösch alle Dateien" stays an ordinary sentence.
 inline bool addresses_all(const std::string &text) {
+  if (plural_invitation(text)) return true;
   const std::string t = lower(text);
   for (const char *w : {"beide", "beiden", "ihr", "euch", "@alle", "@all", "@beide"})
     if (has_word(t, w)) return true;

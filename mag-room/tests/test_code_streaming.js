@@ -109,6 +109,46 @@ const source = (filename) => fs.readFileSync(path.join(root, filename), 'utf8');
     assert.strictEqual(doc.querySelector('.code-preview-frame'), frame,
       'status update must preserve mounted preview, not restart WebGL/audio');
     assert.equal(input.selectionStart, 5);
+    // Jobs are server-side structural messages, not text deltas. All three
+    // media types use empty parts arrays while queued/running; do not let
+    // the text-only streaming shortcut swallow their SSE status snapshots.
+    let jobSeq = 22;
+    for (const [id, kind, extra] of [
+      ['video-live', 'video', { model: 'h3', prompt: 'Ein Film' }],
+      ['image-live', 'image', { prompt: 'Ein Bild' }],
+      ['model-live', '', { quality: 'normal' }],
+    ]) {
+      const initial = {
+        id, from: 'idol', role: 'service', ts: Date.now(),
+        state: 'streaming', text: '', parts: [], attachments: [],
+        model3d: { kind, job: id, state: 'queued', stage: 'Warteschlange',
+          progress: 0, ...extra },
+      };
+      const send = (m) => Stream.instance.event({ t: 'message', seq: jobSeq++, m });
+      const card = () => doc.querySelector('.msg[data-id="' + id + '"] .m3');
+      send(initial);
+      assert(card()?.classList.contains('queued'), id + ' must show queued status');
+      const running = { ...initial, model3d: { ...initial.model3d,
+        state: 'running', stage: 'Erzeugung', phase: 2, phases: 5,
+        step: 10, steps: 50 } };
+      send(running);
+      assert(card()?.classList.contains('running'), id + ' must enter running without refresh');
+      assert(card().querySelector('.prog'), id + ' must show the progress bar immediately');
+      assert.match(card().textContent, /Abbrechen/, id + ' must retain cancel while running');
+      const progress = { ...running, model3d: { ...running.model3d, step: 35 } };
+      send(progress);
+      const fill = kind === 'video' || kind === 'image'
+        ? card().querySelector('.prog .segs i')
+        : card().querySelector('.prog .segs i:nth-child(2) b');
+      assert.equal(fill?.style.width, '70%', id + ' must advance the live progress bar');
+      const done = { ...progress, state: 'done',
+        model3d: { ...progress.model3d, state: 'done' } };
+      send(done);
+      assert(card()?.classList.contains('done'), id + ' must finish without refresh');
+      assert.equal(card().querySelector('.prog'), null, id + ' must clear the running bar');
+    }
+    console.log('Live job status: video/image/3D cards update queued -> running -> progress -> done via SSE');
+
     console.log('Streaming code: lightweight output, completed editor and active preview survive status updates');
   } finally {
     dom.window.close();

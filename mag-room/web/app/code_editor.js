@@ -74,8 +74,13 @@
       try {
         const saved = JSON.parse(localStorage.getItem(PREFIX + key) || 'null');
         if ((saved?.hash === d.hash || saved?.base === original) &&
-            typeof saved.text === 'string')
+            typeof saved.text === 'string') {
           d.text = saved.text;
+          // Gradually migrate old base+text entries; a previous oversized
+          // draft must not occupy localStorage indefinitely.
+          if (typeof saved.base === 'string' || d.text.length > MAX_SAVED_CHARS)
+            queueSave(key, d);
+        }
         else if (!original && (typeof saved?.hash === 'string' ||
                  typeof saved?.base === 'string') &&
                  typeof saved.text === 'string')

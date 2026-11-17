@@ -57,6 +57,7 @@
           previewTimer = setTimeout(() => previewFrame?._refresh?.(), 400);
         }
       });
+      block._editor = edited;
       // Keep the original code in the DOM only for page-signature matching.
       // It is never executed or edited; the textarea is the source of truth.
       pre.hidden = true;
@@ -1299,7 +1300,13 @@
       if (former && former._sourceOriginal === n._sourceOriginal &&
           // A completed code block must upgrade from display to editor.
           !(former.classList.contains('codeblock-live') &&
-            !n.classList.contains('codeblock-live'))) n.replaceWith(former);
+            !n.classList.contains('codeblock-live'))) {
+        n.replaceWith(former);
+        // Building the discarded twin briefly registered a new status
+        // observer for this draft. Give persistence updates back to the
+        // textarea we actually kept on screen.
+        (former._editor || former._editable)?.activate?.();
+      }
     });
   }
   function upsert(m, fresh) {

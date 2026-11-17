@@ -156,6 +156,19 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 }
 #offline { font-size: 12px; color: var(--warn); padding: 0 4px; white-space: nowrap; }
 
+/* Narrow view switch: same segmented control as the rest of MAG. It has
+   its own line so bot chips and header actions never become cramped on phones. */
+#viewbar { display: flex; justify-content: flex-end; align-items: center;
+  padding: 4px max(var(--pad), env(safe-area-inset-right)) 4px max(var(--pad), env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line); background: var(--bg); }
+#viewbar .seg { font-size: 12.5px; }
+#viewbar .seg button { padding: 3px 11px; min-height: 26px; }
+#list.media-only > .msg:not(.media-item) { display: none !important; }
+/* A bot might attach generated media to an ordinary response. Show the
+   attachment, but never its chatter, thinking, browser steps or pages. */
+#list.media-only > .msg.media-attachment > .body,
+#list.media-only > .msg.media-attachment > .note { display: none !important; }
+
 /* ---- timeline ------------------------------------------------------------ */
 #scroll {
   flex: 1;
@@ -166,7 +179,7 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
   scroll-behavior: auto;
   -webkit-overflow-scrolling: touch;
 }
-#empty { color: var(--muted); text-align: center; margin: 24vh 24px 0; line-height: 1.45; }
+#empty, #media-empty { color: var(--muted); text-align: center; margin: 24vh 24px 0; line-height: 1.45; }
 #empty b { display: block; color: var(--text); font-size: 22px; font-weight: 650; letter-spacing: -.02em; margin-bottom: 6px; }
 #older { display: block; margin: 0 auto 12px; color: var(--muted); font-size: 13.5px; padding: 6px 13px; border-radius: 16px; border: 1px solid var(--line); }
 .msg { margin: 0 0 18px; position: relative; }

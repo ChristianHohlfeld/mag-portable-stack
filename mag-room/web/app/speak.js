@@ -21,6 +21,11 @@
   const GOOD_VOICE = /natural|premium|siri|enhanced|neural|online/i;
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
   const LIVE_IDLE_MS = 30000;
+  // The ONNX worker serializes speak requests. The former 24-item lookahead
+  // armed 120-second timeouts for items still waiting behind many others.
+  // One playing, two preparing: keep latency bounded without losing voices.
+  const MODEL_AHEAD_LIMIT = 2;
+  const AUDIO_MONITOR_MS = 1000, AUDIO_STALL_MS = 135000;
   // A part may take a while on a phone without WebGPU. Loading the model is a
   // download of about 400 MB the first time: it has no limit at all (the
   // worker asks again for what does not come, by itself, for as long as the
@@ -196,7 +201,9 @@
     const busy = playing && !!current.loading;
     button.setAttribute('aria-pressed', String(playing));
     button.setAttribute('aria-busy', String(busy));
-    const label = busy ? 'Stimme wird geladen' : playing ? 'Vorlesen stoppen' : voiceState.state && voiceState.state !== 'ready' ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
+    const label = busy ? 'Wartet auf Audiodaten · Vorlesen stoppen'
+      : playing ? 'Vorlesen stoppen'
+      : voiceState.state && voiceState.state !== 'ready' ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
     button.setAttribute('aria-label', label);
     button.title = label;
     button.innerHTML = busy ? '<span class="spin"></span>' : playing ? MAG.icons.stop : MAG.icons.speak;
@@ -422,6 +429,45 @@
     part.p.then((res) => { part.res = res; }, () => {}); // awaited later; avoid an unhandled rejection
     return part;
   }
+  // The WebAudio context can be "running" while the next ONNX fragment is
+  // still processing and no AudioBufferSource is audible. Keep the UI honest
+  // and recover if no more samples arrive at all. These timings are client-
+  // side only: the MAG server never sees TTS events.
+  function clearAudioMonitor(pb) {
+    if (pb?.audioMonitor) clearInterval(pb.audioMonitor);
+    if (pb) pb.audioMonitor = null;
+  }
+  function monitorAudio(pb) {
+    if (current !== pb) return clearAudioMonitor(pb);
+    if (document.visibilityState !== 'visible') {
+      // Browser background suspension must not consume the stall budget.
+      pb.silentSince = performance.now();
+      return;
+    }
+    const ctx = tts.ctx;
+    if (ctx && ctx.state !== 'running') resume(ctx);
+    const scheduled = !!(ctx && ctx.state === 'running' &&
+      pb.end > ctx.currentTime + 0.02 && tts.sources.size);
+    if (pb.loading === scheduled) {
+      pb.loading = !scheduled;
+      setButtons();
+    }
+    if (scheduled) pb.silentSince = 0;
+    else {
+      pb.silentSince ||= performance.now();
+      if (performance.now() - pb.silentSince >= AUDIO_STALL_MS) {
+        stop();
+        MAG.toast('Vorlesen abgebrochen: keine neuen Audiodaten. Bitte erneut starten.', true);
+      }
+    }
+  }
+  function startAudioMonitor(pb) {
+    pb.loading = true;
+    pb.silentSince = performance.now();
+    setButtons();
+    clearAudioMonitor(pb);
+    pb.audioMonitor = setInterval(() => monitorAudio(pb), AUDIO_MONITOR_MS);
+  }
   // The parts of a reading are laid end to end on the audio clock: a part
   // that is ready while the one before it still plays starts on the very
   // sample where that one ends, without a gap of the page's own timers.
@@ -467,23 +513,33 @@
   // before it takes to play costs no pause, and the reading does not stop
   // between sentences.
   async function modelPlay(pb) {
+    startAudioMonitor(pb);
     const ahead = [];
-    let more = true;
+    let more = true, producerError = null;
     (async () => {
-      while (current === pb && more) {
-        if (ahead.length >= 24) { await new Promise((go) => { pb.room = go; }); continue; }
-        const text = await nextText(pb);
-        if (text == null || current !== pb) break;
-        ahead.push(request(pb, text));
+      try {
+        while (current === pb && more) {
+          if (ahead.length >= MODEL_AHEAD_LIMIT) {
+            await new Promise((go) => { pb.room = go; });
+            pb.room = null;
+            continue;
+          }
+          const text = await nextText(pb);
+          if (text == null || current !== pb) break;
+          ahead.push(request(pb, text));
+          pb.have?.();
+        }
+      } catch (e) { producerError = e; }
+      finally {
+        more = false;
         pb.have?.();
       }
-      more = false;
-      pb.have?.();
     })();
     for (;;) {
       while (!ahead.length && more && current === pb) await new Promise((go) => { pb.have = go; });
       if (current !== pb) return;
       if (!ahead.length) {
+        if (producerError) throw producerError;
         if (pb.end && !(await reach(pb, pb.end))) return;
         return finish(pb);
       }
@@ -558,6 +614,7 @@
   }
   function finish(pb) {
     if (current !== pb) return;
+    clearAudioMonitor(pb);
     current = null;
     if (pb.sequence && readingFrom === pb.sequence) {
       // Keep the same speech engine, voices and rate across speakers.
@@ -570,7 +627,12 @@
     readingFrom = null;
     const pb = current;
     current = null; // make pending callbacks and loops harmless
-    if (pb) { const w = pb.wake; pb.wake = null; w?.(); }
+    if (pb) {
+      clearAudioMonitor(pb);
+      for (const field of ['wake', 'have', 'room']) {
+        const wake = pb[field]; pb[field] = null; wake?.();
+      }
+    }
     if (systemOk) synth.cancel();
     for (const src of tts.sources) { try { src.stop(); } catch (_) {} }
     tts.sources.clear();
@@ -670,6 +732,7 @@
   // the model has spoken a part of this message (no second voice in mid-message).
   function fallback(pb) {
     if (current !== pb) return false;
+    clearAudioMonitor(pb);
     pb.loading = false;
     if (!systemOk || pb.spoken) {
       // Never strand a multi-message reading on one failed voice.

@@ -3352,7 +3352,22 @@ private:
     b.wire["fresh"] = false;
     const int tries = b.cut_off;
     b.cut_off = 0;
-    if (!appended && !read_before && reason != "continue") return;
+    if (!appended && !read_before && reason != "continue" &&
+        !(reason == "bot" && unlimited_dialogue)) return;
+    // The previous bot may have emitted only a hidden PASS or filler; this
+    // bot then has no new public message to append. In unlimited mode it
+    // still needs a genuine prompt cue, or the dispatcher wakes a worker
+    // which silently exits without calling the model.
+    if (!appended && !read_before && reason == "bot" && unlimited_dialogue) {
+      Val n = Val::object();
+      n["role"] = "user";
+      n["content"] = "(Interner Dialogimpuls, nicht von Chris: Der andere Bot hat "
+                     "gerade keinen sichtbaren Beitrag geliefert. Übernimm den "
+                     "Gesprächsfaden mit einem NEUEN sinnvollen Gedanken, ohne "
+                     "frühere Nutzeraufträge auszuführen. Keine Werkzeuge.)";
+      b.wire["messages"].push(n);
+      save_wire(b);
+    }
     // What Chris wrote while this bot was at work was handed to it in that
     // turn, and it wrote on knowing it. The turn his message queued has
     // nothing left to answer then; what else arrived meanwhile (a scene, a 3D

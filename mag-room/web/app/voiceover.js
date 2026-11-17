@@ -31,7 +31,9 @@
       a.voiceover_kind === 'take' && a.voiceover_for === sourceFile && a.kind === 'audio');
     const video = el('video', { class: klass, controls: true, preload: 'metadata',
       playsInline: true, src: url(source) });
-    const box = el('div', { class: 'voiceover' }, video);
+    const box = el('div', { class: 'voiceover', dataset: {
+      keep: sourceFile + ':' + takes.map((a) => a.file).join(',')
+    } }, video);
     const owner = MAG.state?.you?.role === 'owner';
     if (!owner && !takes.length) return box;
 
@@ -46,6 +48,9 @@
     // pause, speed changes and scrubbing. No WebAudio context required.
     const active = () => selected && mode !== 'original';
     function sync() {
+      // During microphone capture, do not mix in a previously selected take
+      // or override the user's explicit monitor/mute choice.
+      if (recorder?.state === 'recording') return;
       if (!active()) { audio.pause(); video.muted = false; return; }
       video.muted = mode === 'dub';
       if (audio.src !== location.origin + url(selected)) audio.src = url(selected);
@@ -123,7 +128,8 @@
       }
     });
     record.addEventListener('click', () => {
-      if (!stream || !supportedMime() || recorder?.state === 'recording') return;
+      if (recorder?.state === 'recording') return stopRecording();
+      if (!stream || !supportedMime()) return;
       if (!video.readyState) { status('Video lädt noch. Bitte kurz im Player öffnen.', true); return; }
       discarded = false;
       let chunks = [], bad = false;
@@ -152,6 +158,7 @@
           } catch (err) { status('Speichern fehlgeschlagen: ' + err.message, true); }
         }, { once: true });
         video.pause();
+        audio.pause();
         video.currentTime = 0;
         video.muted = !monitor.checked;
         recorder.start(250);
@@ -161,9 +168,8 @@
         status('● Aufnahme läuft · Video und Mikrofon ab Sekunde 0');
       } catch (err) { stopTracks(); record.disabled = true; status(micError(err), true); }
     });
-    record.addEventListener('click', () => { if (recorder?.state === 'recording') stopRecording(); });
-    // Separate handler above is intentionally guarded by state and is safely
-    // idempotent when a stop click races the recorder's final ondataavailable.
+    // The same button starts and stops; never register a second click
+    // listener that would immediately stop the recording just started.
     cancel.addEventListener('click', () => stopRecording(true));
     video.addEventListener('ended', () => { if (recorder?.state === 'recording') stopRecording(); });
     window.addEventListener('pagehide', () => { if (recorder?.state === 'recording') stopRecording(true); stopTracks(); }, { once: true });

@@ -64,8 +64,11 @@ const message = (id, state, extra = {}) => ({
   assert.equal(button('img'),null,'no video retry on images');
   button('vid2').click();
   button('vid2').click();
-  assert.deepEqual(calls,[{method:'POST',url:'/api/video/retry',body:{message:'vid2'}}],
-    'one retry call for exactly the selected continuation, double-click suppressed');
+  assert.equal(calls.length,1,'double-click must start only one job');
+  assert.equal(calls[0].method,'POST');
+  assert.equal(calls[0].url,'/api/video/retry');
+  assert.equal(calls[0].body.message,'vid2','exact selected continuation');
+  assert.equal(Object.keys(calls[0].body).length,1,'no altered prompt or unrelated part');
   assert.equal(button('vid2').disabled,true);
   resolveRequest({});
   await pause();

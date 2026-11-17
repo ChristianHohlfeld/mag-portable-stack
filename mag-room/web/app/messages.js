@@ -1340,7 +1340,10 @@
   }
   function paintEmpty() {
     empty.hidden = mediaOnly || S.messages.size > 0;
-    mediaEmpty.hidden = !mediaOnly || [...S.messages.values()].some(isMediaMessage);
+    // Legacy embedded chats and jsdom fixtures do not include this optional
+    // view. Their existing timeline and editor behavior must remain intact.
+    if (mediaEmpty) mediaEmpty.hidden = !mediaOnly ||
+      [...S.messages.values()].some(isMediaMessage);
   }
   function setView(mode, resetPosition = true) {
     mediaOnly = mode === 'media';
@@ -1499,11 +1502,14 @@
   document.addEventListener('DOMContentLoaded', () => {
     scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity');
     empty = $('#empty'); mediaEmpty = $('#media-empty'); olderBtn = $('#older');
-    $('#viewbar').addEventListener('click', (event) => {
-      const button = event.target.closest('button[data-view]');
-      if (button) setView(button.dataset.view);
-    });
-    setView(mediaOnly ? 'media' : 'all', false);
+    const viewbar = $('#viewbar');
+    if (viewbar && mediaEmpty) {
+      viewbar.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-view]');
+        if (button) setView(button.dataset.view);
+      });
+      setView(mediaOnly ? 'media' : 'all', false);
+    } else mediaOnly = false; // Existing embedded/test timelines have no filter UI.
     // Scroll position alone is not intent: native anchoring or a group
     // redraw can produce small downward scroll events. Only a fresh USER
     // gesture toward the true bottom is allowed to re-enable follow mode.

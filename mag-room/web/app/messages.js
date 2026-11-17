@@ -681,7 +681,7 @@
       setTimeout(() => words.focus(), 50);
     });
   }
-  function buildAttachment(a) {
+  function buildAttachment(a, m) {
     // What the bots were told about a picture is its caption (and its alt text).
     if (a.kind === 'image') {
       const pic = el('button', { class: 'att-img', title: a.description || a.name, onclick: () => lightbox(fileUrl(a), a.name, a.description, a.file) },
@@ -691,8 +691,12 @@
         el('button', { class: 'pill', title: '3D-Modell aus diesem Bild (danach animierbar)', onclick: () => makeModel(a) }, MAG.icon('cube'), el('b', { text: '3D' })),
         el('button', { class: 'pill', title: 'Video aus diesem Bild', onclick: () => makeVideo(a) }, MAG.icon('play'), el('b', { text: 'Video' }))));
     }
+    if (a.voiceover_kind === 'take') return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name,
+      title: 'Rohaufnahme der Nachvertonung herunterladen' }, MAG.icon('down'), 'Mikrofonspur');
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
-    if (a.kind === 'video') return el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
+    if (a.kind === 'video') return a.voiceover_kind === 'baked' || !MAG.voiceover
+      ? el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true })
+      : MAG.voiceover.player(m, a);
     return el('a', { class: 'att-file', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon(a.kind === 'model' ? 'cube' : 'file'),
       el('span', { text: a.name }), el('small', { text: MAG.bytes(a.size) }));
   }
@@ -1036,7 +1040,8 @@
       MAG.viewer3d.attach(canvas, fileUrl(glb));
     }
     if (running) card.append(progress3d(m3));
-    if (film) card.append(el('video', { class: 'film', controls: true, loop: true, preload: 'metadata', playsInline: true, src: fileUrl(film) }));
+    if (film) card.append(MAG.voiceover && film.voiceover_kind !== 'baked'
+      ? MAG.voiceover.player(m, film, 'film') : el('video', { class: 'film', controls: true, preload: 'metadata', playsInline: true, src: fileUrl(film) }));
     const link = (a) => {
       const ext = a.name.split('.').pop().toLowerCase();
       return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (sceneFiles[ext] || a.name) + ' herunterladen' },
@@ -1129,7 +1134,7 @@
     const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from, state: m.state || '' } });
     const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
     const files = m.model3d && !picture ? [] : m.attachments || [];
-    const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
+    const atts = files.length ? el('div', { class: 'atts' }, files.map((a) => buildAttachment(a, m))) : null;
     if (user) {
       // The bubble, what was attached, and below them the actions.
       // A routine that came due speaks like a request, marked as the routine's.

@@ -291,8 +291,9 @@ public:
       w["days"] = days(list);
     } else if (when->find("every_minutes")) {
       const double n = jnum(*when, "every_minutes");
-      if (n < 15) return "Höchstens alle 15 Minuten.";
-      w["every_minutes"] = std::min(n, 60.0 * 24 * 31);
+      if (!std::isfinite(n) || n < 1 || n > 60.0 * 24 * 31 || std::floor(n) != n)
+        return "Intervall muss eine ganze Zahl von 1 bis 44640 Minuten sein.";
+      w["every_minutes"] = n;
     } else if (const std::string t = jstr(*when, "once"); !t.empty()) {
       const int64_t at = parse_local(t);
       if (at <= now_s()) return "Der Zeitpunkt (JJJJ-MM-TT HH:MM) muss in der Zukunft liegen.";
@@ -588,9 +589,41 @@ private:
     }
   }
 
+  // A routine must never enqueue a second instruction while its bot is
+  // working or the previous routine message still awaits a bot answer.
+  // Compare message order, not timestamps: two messages can share a second.
+  static bool routine_unanswered(const std::vector<Val> &history, const std::string &bot,
+                                 int64_t now_ms) {
+    bool bot_answer = false;
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+      if (jstr(*it, "from") == bot && jstr(*it, "role") == "bot")
+        bot_answer = true;
+      if (!jstr(*it, "routine").empty()) {
+        const Val *mentions = it->find("mentions");
+        bool for_bot = false;
+        if (mentions && mentions->isArr())
+          for (const Val &mention : mentions->asArr())
+            if (mention.type == Val::STR && mention.str == bot) for_bot = true;
+        if (for_bot && !bot_answer) {
+          // Model unavailable, cancelled or PASS without visible answer:
+          // don't hold this routine forever. A stalled instruction expires
+          // after a bounded 5-minute lease, while a genuinely running model
+          // is separately protected by busy(bot).
+          const int64_t ts = (int64_t)jnum(*it, "ts");
+          return ts <= 0 || now_ms < ts || now_ms - ts < 5 * 60 * 1000;
+        }
+      }
+    }
+    return false;
+  }
+
   void due_by_time() {
     std::vector<Val> due;
+    // Reserve a bot on its first due routine within this very tick. Without
+    // this, two due routines for one bot would both enqueue before fire().
+    std::set<std::string> bots_scheduled;
     const int64_t now = now_s();
+    const auto messages = room_.all();
     {
       std::lock_guard<std::mutex> lk(routines_mu_);
       Val all = read_json(path());
@@ -599,9 +632,14 @@ private:
       for (auto &r : *all.arr) {
         const int64_t next = (int64_t)jnum(r, "next");
         if (jbool(r, "paused") || next <= 0 || next > now) continue;
-        // Late by more than 12 hours (the room was down): skipped, not made up.
-        if (now - next <= 12 * 3600) {
+        // A missed tick is coalesced, never piled up behind a running
+        // turn or an instruction already sitting in the room queue.
+        const std::string bot = jstr(r, "bot");
+        const bool occupied = bots_scheduled.count(bot) ||
+                              (busy && busy(bot)) || routine_unanswered(messages, bot, now * 1000);
+        if (!occupied && now - next <= 12 * 3600) {
           due.push_back(r);
+          bots_scheduled.insert(bot);
           r["last"] = (double)now;
         }
         r["next"] = (double)next_after(r["when"], now);

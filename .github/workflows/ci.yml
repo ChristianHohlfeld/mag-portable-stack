@@ -66,6 +66,8 @@ jobs:
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_media_initial.js
           node mag-room/tests/test_zip_range.js
           node mag-room/tests/test_glb_pinch.js
+          node mag-room/tests/test_routine_minutes.js
+          node mag-room/tests/test_routine_coalesce.js
           node mag-room/tests/test_browser_body_null.js
           node mag-room/tests/test_screen_awake.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_goal_group.js

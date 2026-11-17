@@ -7,7 +7,7 @@
   let pinned = true, unread = 0;
   // This is a local presentation preference, never a server-side filter:
   // every message and tool event continues to arrive and remains in S.messages.
-  let mediaOnly = false;
+  let mediaOnly = false, mediaLoading = false, mediaMore = false, mediaCursor = '', mediaRequest = null;
   try { mediaOnly = localStorage.getItem('mag-media-only') === '1'; } catch (_) {}
   let lastScrollTop = 0, touchY = null;
   let inputDirection = 'none', inputUntil = 0; // only an explicit user gesture may re-pin
@@ -1184,7 +1184,11 @@
   }
   // Every queued/running/completed/failed/aborted media job uses model3d.
   // This is view state only; the room and live players are not changed.
-  function isMediaMessage(m) { return !!m.model3d; }
+  function isMediaMessage(m) {
+    return !!m.model3d || (m.attachments || []).some(a =>
+      !a.voiceover_kind && (a.kind === 'video' || a.kind === 'audio' ||
+        (a.kind === 'image' && m.role !== 'user')));
+  }
   function build(m) {
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' +
@@ -1365,8 +1369,34 @@
   function paintEmpty() {
     const hasMedia = [...S.messages.values()].some(isMediaMessage);
     empty.hidden = mediaOnly ? hasMedia : S.messages.size > 0;
-    if (mediaOnly && !hasMedia) empty.textContent = 'Noch kein Bild, Video oder 3D.';
+    if (mediaOnly && !hasMedia) empty.textContent = mediaLoading
+      ? 'Medien werden geladen …' : 'Noch keine Medien vorhanden.';
     else if (empty.dataset.originalHtml) empty.innerHTML = empty.dataset.originalHtml;
+  }
+  async function loadMedia(reset = false) {
+    if (mediaRequest) return mediaRequest;
+    if (!reset && !mediaMore) return;
+    mediaLoading = true;
+    paintEmpty();
+    const cursor = reset ? '' : mediaCursor;
+    mediaRequest = (async () => {
+      try {
+        const page = await MAG.api('GET', '/api/media?limit=200' +
+          (cursor ? '&before=' + encodeURIComponent(cursor) : ''));
+        // Keep all chat messages and live SSE state; only add older media.
+        for (const m of page.messages || []) if (!S.messages.has(m.id)) S.messages.set(m.id, m);
+        mediaCursor = page.messages?.[0]?.id || cursor;
+        mediaMore = !!page.more;
+        if (mediaOnly) MAG.onMediaPage?.();
+      } catch (err) {
+        MAG.toast?.('Medien konnten nicht geladen werden: ' + err.message, true);
+      } finally {
+        mediaLoading = false;
+        mediaRequest = null;
+        if (mediaOnly) { paintEmpty(); olderBtn.hidden = !mediaMore; }
+      }
+    })();
+    return mediaRequest;
   }
   function setMediaOnly(value, resetPosition = true) {
     mediaOnly = !!value;
@@ -1380,6 +1410,8 @@
     try { localStorage.setItem('mag-media-only', mediaOnly ? '1' : '0'); } catch (_) {}
     paintDays();
     paintEmpty();
+    olderBtn.hidden = mediaOnly ? !mediaMore : !S.more;
+    if (mediaOnly && S.ready) loadMedia(true);
     if (resetPosition) toBottom();
   }
 
@@ -1463,7 +1495,7 @@
     const ordered = [...S.messages.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
     for (const m of ordered) { const node = build(m); nodes.set(m.id, node); list.append(node); }
     paintEmpty();
-    olderBtn.hidden = !S.more;
+    olderBtn.hidden = mediaOnly ? !mediaMore : !S.more;
     paintDays();
     toBottom();
   }
@@ -1566,10 +1598,15 @@
       }
     }, { passive: true });
     jump.addEventListener('click', toBottom);
-    olderBtn.addEventListener('click', () => MAG.loadOlder().catch((x) => MAG.toast(x.message, true)));
+    olderBtn.addEventListener('click', () =>
+      (mediaOnly ? loadMedia(false) : MAG.loadOlder()).catch((x) => MAG.toast(x.message, true)));
     new ResizeObserver(() => { if (pinned) setScrollTop(scroller.scrollHeight); }).observe(scroller);
   });
-  MAG.on('reset', () => { renderAll(); showPushTarget(); });
+  MAG.on('reset', () => {
+    mediaCursor = ''; mediaMore = false;
+    renderAll(); showPushTarget();
+    if (mediaOnly) loadMedia(true);
+  });
   MAG.on('message', (m) => { upsert(m, !nodes.has(m.id)); showPushTarget(); });
   MAG.on('gone', (id) => {
     nodes.get(id)?.remove(); nodes.delete(id);
@@ -1629,6 +1666,14 @@
       if (goalPhases.get(key) !== phase) refreshGroup(m);
     }
   });
+  MAG.onMediaPage = () => {
+    // Media history arrives as an ordinary append-only snapshot, but must not
+    // replace existing player DOM nodes that are currently playing.
+    const ordered = [...S.messages.values()].sort((a,b) => a.id < b.id ? -1 : 1);
+    for (const m of ordered) if (!nodes.has(m.id)) upsert(m, false);
+    paintDays();
+    olderBtn.hidden = !mediaMore;
+  };
   MAG.on('older', () => {
     const before = scroller.scrollHeight;
     const ordered = [...S.messages.values()].sort((a, b) => (a.id < b.id ? -1 : 1));

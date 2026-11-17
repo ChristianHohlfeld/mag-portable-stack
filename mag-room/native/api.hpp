@@ -99,6 +99,7 @@ public:
       if (p == "/api/version") { Val v = Val::object(); v["version"] = version_; return http::send_json(fd, 200, v); }
       if (p == "/api/state") return state(fd, r, who);
       if (p == "/api/messages") return messages(fd, r);
+      if (p == "/api/media") return media_messages(fd, r);
       if (p == "/api/events") return events(fd);
       if (starts_with(p, "/api/file/") && ends_with(p, "/thumb")) return file_thumb(fd, url_decode(p.substr(10, p.size() - 10 - 6)));
       if (starts_with(p, "/api/file/") && ends_with(p, "/excerpt")) return file_excerpt(fd, url_decode(p.substr(10, p.size() - 10 - 8)));
@@ -599,6 +600,42 @@ private:
     v["messages"] = room_.page(r.param("before"), limit, nullptr, &more);
     v["more"] = more;
     http::send_json(fd, 200, v);
+  }
+
+  // Dedicated newest-media snapshot: the ordinary 150-message chat window
+  // can be all text while older or currently processing media exists.
+  // Subsequent updates still arrive through the same SSE message stream.
+  void media_messages(int fd, const http::Request &r) {
+    size_t limit = (size_t)atoi(r.param("limit").c_str());
+    if (limit < 1 || limit > 500) limit = 200;
+    const std::string before = r.param("before");
+    const auto all = room_.all();
+    Val page = Val::array();
+    bool more = false;
+    for (auto it = all.rbegin(); it != all.rend(); ++it) {
+      const Val &m = *it;
+      const std::string id = jstr(m, "id");
+      if (!before.empty() && id >= before) continue;
+      bool media = m.find("model3d") != nullptr;
+      if (!media) {
+        if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+          for (const Val &a : atts->asArr())
+            if (jstr(a, "voiceover_kind").empty() &&
+                (jstr(a, "kind") == "video" || jstr(a, "kind") == "audio" ||
+                 (jstr(a, "kind") == "image" && jstr(m, "role") != "user"))) {
+              media = true; break;
+            }
+      }
+      if (!media) continue;
+      if (page.asArr().size() >= limit) { more = true; break; }
+      page.push(m);
+    }
+    // Keep the same chronological order as /api/messages.
+    std::reverse(page.arr->begin(), page.arr->end());
+    Val out = Val::object();
+    out["messages"] = page;
+    out["more"] = more;
+    http::send_json(fd, 200, out);
   }
 
   void events(int fd) {

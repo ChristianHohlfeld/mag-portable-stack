@@ -285,7 +285,7 @@
   // The stream is opened first and buffered; then the snapshot is fetched and
   // only newer events are applied. A reconnect repeats this, so the view
   // always equals the server's state and nothing is lost or doubled.
-  let source = null, buffer = null, retry = 0;
+  let source = null, buffer = null, retry = 0, chatCursor = '';
   async function sync() {
     try {
       const snap = await MAG.api('GET', '/api/state?limit=150');
@@ -297,6 +297,7 @@
         if (!sync.later) sync.later = setInterval(() => { if (!MAG.speaking?.busy?.()) { clearInterval(sync.later); location.reload(); } }, 1000);
       }
       S.messages = new Map(snap.messages.map((m) => [m.id, m]));
+      chatCursor = snap.messages?.[0]?.id || '';
       Object.assign(S, { bots: snap.bots, settings: snap.settings, you: snap.you, features: snap.features, zone: snap.zone, seq: snap.seq, more: snap.more, ready: true });
       emit('reset');
       emit('bots');
@@ -337,10 +338,12 @@
   });
 
   MAG.loadOlder = async function () {
-    const first = [...S.messages.keys()].sort()[0];
-    if (!first) return;
-    const page = await MAG.api('GET', '/api/messages?limit=150&before=' + first);
-    for (const m of page.messages) S.messages.set(m.id, m);
+    // Older media may already be hydrated separately. It must NOT shift
+    // the ordinary chat cursor or skip all intervening text messages.
+    if (!chatCursor) return;
+    const page = await MAG.api('GET', '/api/messages?limit=150&before=' + chatCursor);
+    if (page.messages?.length) chatCursor = page.messages[0].id;
+    for (const m of page.messages || []) S.messages.set(m.id, m);
     S.more = page.more;
     emit('older', page.messages);
   };

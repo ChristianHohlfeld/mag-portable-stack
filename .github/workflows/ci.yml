@@ -54,6 +54,7 @@ jobs:
           npm install --prefix /tmp/mag-live-jsdom jsdom@26.1.0
           NODE_PATH=/tmp/mag-live-jsdom/node_modules MAG_SKIP_CHROME=1 node mag-room/tests/test_live_view.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_web_ui.js
+          NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_chip_pointer.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_code_editor.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_code_streaming.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_video_voiceover.js

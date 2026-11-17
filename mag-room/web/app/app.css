@@ -155,6 +155,27 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
   .chip .state { display: none; }
 }
 #offline { font-size: 12px; color: var(--warn); padding: 0 4px; white-space: nowrap; }
+/* The settings action has a reserved tap target even on the narrowest PWA.
+   Bot statuses and optional header actions yield space before settings does. */
+#top { width: 100%; box-sizing: border-box; }
+#top #settings { flex: 0 0 44px; width: 44px; height: 44px; position: relative; z-index: 2; }
+#top .chip { min-width: 0; flex: 1 1 0; max-width: 190px; }
+#top .chip .open { min-width: 0; grid-template-columns: minmax(0,max-content) minmax(0,1fr); }
+#top .chip .state { min-width: 0; }
+@media(max-width: 520px) {
+  #top { padding-left: max(4px,env(safe-area-inset-left)); padding-right: max(4px,env(safe-area-inset-right)); gap: 3px; }
+  #top .chip { flex: 1 1 0; min-width: 0; }
+  #top .chip .open { padding: 0 5px 0 2px; }
+  #top .chip .state, #top .spacer, #top #offline { display: none; }
+  #top #files, #top #media-filter { flex: 0 0 32px; width: 32px; height: 40px; }
+  #top #settings { flex: 0 0 44px; width: 44px; height: 44px; }
+}
+@media(max-width: 345px) {
+  #top .chip .tog { width: 22px; }
+  #top .chip .open { padding-right: 1px; font-size: 12px; }
+  #top #files { display: inline-flex; flex: 0 0 32px; width: 32px; min-width: 32px; } /* Only entry to the media library: never hide it. */
+}
+
 
 /* Optional media-only view. Hide visually, preserve DOM, SSE and live players. */
 #app.media #list > .msg:not([data-media="1"]) { display: none !important; }

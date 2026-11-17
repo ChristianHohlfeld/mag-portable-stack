@@ -189,7 +189,8 @@ class FakeBrowser:
 class Room:
     """One magroom process with two scripted model servers."""
 
-    def __init__(self, **env):
+    def __init__(self, connect_events=True, **env):
+        self.connect_events = connect_events
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="magroom-"))
         self.lena, self.noah, self.idol, self.scene = FakeLlama("Lena"), FakeLlama("Noah"), FakeIdol(), FakeScene()
         self.port = free_port()
@@ -229,8 +230,10 @@ class Room:
                 time.sleep(0.05)
         else:
             raise RuntimeError("magroom did not start: " + (self.tmp / "magroom.log").read_text())
-        self.stream = urllib.request.urlopen(self.url("/api/events"), timeout=600)
-        threading.Thread(target=self._listen, args=(self.stream,), daemon=True).start()
+        self.stream = None
+        if self.connect_events:
+            self.stream = urllib.request.urlopen(self.url("/api/events"), timeout=600)
+            threading.Thread(target=self._listen, args=(self.stream,), daemon=True).start()
         # Both scripted models are "ready" once the room has probed them.
         self.wait(lambda: all(b["model"]["state"] == "ready" for b in self.state()["bots"]), "models ready")
         self.wait(lambda: not any(b["busy"] or b["phase"] != "idle" for b in self.state()["bots"]), "prefix warm-up")
@@ -303,7 +306,8 @@ class Room:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait()
-        self.stream.close()
+        if self.stream is not None:
+            self.stream.close()
         self.log.close()
 
     def close(self):
@@ -382,8 +386,10 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(2 <= len(r.lena.chats()) + len(r.noah.chats()) <= 3)
 
     def test_autonomous_chat_can_start_without_human_or_browser(self):
-        r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
+        # No SSE socket and no frontend: only the room and its two workers.
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
         self.addCleanup(r.close)
+        self.assertIsNone(r.stream)
         self.assertEqual(r.messages(), [])
         r.lena.reply = lambda body: "Noah, welche neue Idee hast du?"
         r.noah.reply = lambda body: "Ein interessanter Gedanke: Wir können uns ohne Chris unterhalten."
@@ -396,6 +402,52 @@ class RoomContract(unittest.TestCase):
                "both bots speak without a browser", 30)
         self.assertEqual([m for m in r.messages() if m.get("from") == "chris"], [])
         self.assertLessEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_chat_unlimited_continues_past_both_hidden_caps(self):
+        """Unattended zero-limit conversations have no 4-turn or 24-turn fuse,
+        and both bots know the room is readable even without a browser."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        self.assertIsNone(r.stream)
+        turns = [0]
+
+        def converse(body):
+            turns[0] += 1
+            if turns[0] >= 29:
+                return "PASS"
+            return "Ein weiterer Gedanke %d." % turns[0]
+
+        r.lena.reply = r.noah.reply = converse
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "web": False, "auto_chat": True, "bot_rounds": 0})[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 26,
+               "more than 24 visible unattended bot turns", 55)
+        r.idle(25)
+        self.assertGreaterEqual(len(r.lena.chats()) + len(r.noah.chats()), 27)
+        self.assertEqual([m for m in r.messages() if m["from"] == "chris"], [])
+        for model in (r.lena, r.noah):
+            self.assertTrue(any("Chris kann alle eure Nachrichten im Raum-Chat lesen" in
+                                str(m.get("content", ""))
+                                for req in model.chats() for m in req["messages"]))
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_observer_cue_can_be_disabled_independently(self):
+        r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        r.lena.reply = r.noah.reply = lambda body: "Eine eigene Überlegung."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "web": False, "auto_chat": True, "bot_rounds": 2,
+            "auto_chat_visible": False})[0], 200)
+        self.assertFalse(r.state()["settings"]["auto_chat_visible"])
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()) and
+                       any(m["from"] == "lena" for m in r.messages()),
+               "two autonomous turns without observer cue", 35)
+        for model in (r.lena, r.noah):
+            self.assertFalse(any("Chris kann alle eure Nachrichten im Raum-Chat lesen" in
+                                 str(m.get("content", ""))
+                                 for req in model.chats() for m in req["messages"]))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_autonomous_chat_respects_paused_bot(self):

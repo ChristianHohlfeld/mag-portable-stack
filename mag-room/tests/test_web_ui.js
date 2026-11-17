@@ -83,6 +83,14 @@ const panels = read('panels.js');
 assert(panels.includes("class: 'chip-stop'"), 'stopping a busy bot remains one tap away');
 assert(panels.includes("'/api/stop'"), 'header stop must hit backend stop endpoint');
 
+// The independent optional toggles must reflect the persisted settings,
+// not a second local variable whose state can contradict the server.
+assert(panels.includes("row('Unbegrenzt unterhalten'"), 'unlimited chat has a dedicated toggle');
+assert(panels.includes("toggle((s.bot_rounds ?? 0) === 0"), 'zero rounds means truly unlimited');
+assert(panels.includes("bot_rounds: v ? 0 : 4"), 'disabling unlimited selects the explicit four-round default');
+assert(panels.includes("row('Mitlesen kenntlich machen'"), 'observer-awareness has its own toggle');
+assert(panels.includes("toggle(s.auto_chat_visible !== false"), 'observer-awareness persists independently');
+
 // Both model-specific thinking variants have a real off switch. When
 // effort is enabled for the first time, the displayed "Kurz" is saved,
 // not merely a placeholder. Preserve the existing header Stop tests.

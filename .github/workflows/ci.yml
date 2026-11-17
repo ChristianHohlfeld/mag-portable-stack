@@ -68,6 +68,9 @@ jobs:
           python3 ops/scene/tests/test_worker.py
       - name: Phone control daemon (not part of a release; the room's phone tools are tested against it)
         run: python3 devices/s23/tests/test_s23ctl.py
+      - name: Room regression (VM reset + unattended tool retry)
+        run: |
+          python3 mag-room/tests/test_native.py RoomContract.test_a_bot_is_reset_to_its_first_day_whatever_state_it_is_in RoomContract.test_autonomous_tool_call_cannot_end_dialogue_or_run_tool
       - name: Room contract (fake models, fake guest)
         run: |
           command -v ffmpeg

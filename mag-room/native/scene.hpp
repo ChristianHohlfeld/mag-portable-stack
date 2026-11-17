@@ -14,12 +14,14 @@
 #include "room.hpp"
 
 #include <thread>
+#include <functional>
 
 namespace mag {
 
 class Scenes {
 public:
   explicit Scenes(Room &room) : room_(room) {}
+  std::function<void(const std::string &, bool)> on_finished;
 
   static bool is_scene(const Val &message) {
     const Val *m3 = message.find("model3d");
@@ -142,7 +144,8 @@ public:
     m3["spec"] = told;
     m3["prompt"] = wish();
     m["model3d"] = m3;
-    room_.add(m);
+    const Val stored = room_.add(m);
+    if (on_finished) on_finished(jstr(stored, "id"), true);
     ok = true;
     char seconds[32];
     snprintf(seconds, sizeof seconds, "%.1f", jnum(job, "seconds"));
@@ -384,6 +387,7 @@ private:
       m3["error"] = error;
       m3["stage"] = state == "cancelled" ? "Abgebrochen" : "Fehler";
     });
+    if (state == "error" && on_finished) on_finished(message_id, false);
   }
 
   // Follows the film of one scene and mirrors it into its message.
@@ -438,6 +442,7 @@ private:
             m3["film"] = jstr(film, "file");
             if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
+          if (on_finished) on_finished(message_id, true);
           return;
         }
         if (state == "error" || state == "cancelled") {

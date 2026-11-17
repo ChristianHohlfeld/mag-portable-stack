@@ -760,6 +760,18 @@
     node.classList.add('flash');
     return true;
   };
+  // Deep-link from a push when opening a sleeping PWA, or a postMessage to
+  // a window already open. Wait for the state snapshot if it is not yet here.
+  let pushTarget = new URLSearchParams(location.search).get('m') || '';
+  const showPushTarget = () => {
+    if (!pushTarget || !MAG.showMessage(pushTarget)) return;
+    pushTarget = '';
+  };
+  navigator.serviceWorker?.addEventListener('message', (e) => {
+    if (typeof e.data?.show !== 'string') return;
+    pushTarget = e.data.show;
+    showPushTarget();
+  });
   // What a model or a scene should do is said right below it. The line goes
   // into the chat as a message about it, to the bot that built the scene if
   // it is there, else to one that is. A scene shows the request it was made
@@ -1491,8 +1503,8 @@
     olderBtn.addEventListener('click', () => MAG.loadOlder().catch((x) => MAG.toast(x.message, true)));
     new ResizeObserver(() => { if (pinned) setScrollTop(scroller.scrollHeight); }).observe(scroller);
   });
-  MAG.on('reset', renderAll);
-  MAG.on('message', (m) => upsert(m, !nodes.has(m.id)));
+  MAG.on('reset', () => { renderAll(); showPushTarget(); });
+  MAG.on('message', (m) => { upsert(m, !nodes.has(m.id)); showPushTarget(); });
   MAG.on('gone', (id) => {
     nodes.get(id)?.remove(); nodes.delete(id);
     // The deleted message may have been the anchor for a multi-turn goal.

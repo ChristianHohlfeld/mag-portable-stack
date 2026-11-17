@@ -628,6 +628,88 @@ class RoomContract(unittest.TestCase):
                                 for req in model.chats() for m in req["messages"]))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
+    def test_live_self_talk_switches_reach_both_bots_on_next_turn(self):
+        """Flip the four settings while a conversation is IN FLIGHT.
+        Existing warm wire stays; each new request must append current policy.
+        """
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        lena_started, noah_started = threading.Event(), threading.Event()
+        lena_release, noah_release = threading.Event(), threading.Event()
+        seen = {"lena": [], "noah": []}
+
+        def response(bot):
+            def run(body):
+                notes = [str(m.get("content", "")) for m in body["messages"]
+                         if m.get("role") == "user"]
+                seen[bot].append(notes[-1] if notes else "")
+                if bot == "lena" and len(seen[bot]) == 1:
+                    lena_started.set()
+                    if not lena_release.wait(15):
+                        raise AssertionError("first turn release timeout")
+                if bot == "noah" and len(seen[bot]) == 1:
+                    noah_started.set()
+                    if not noah_release.wait(15):
+                        raise AssertionError("second turn release timeout")
+                return "Neuer Gedanke von %s, Antwort %d." % (bot, len(seen[bot]))
+            return run
+
+        r.lena.reply, r.noah.reply = response("lena"), response("noah")
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "web": False, "auto_chat": True, "bot_rounds": 1,
+            "pass_enabled": True, "auto_chat_visible": False})[0], 200)
+        try:
+            self.assertTrue(lena_started.wait(25), "Lena must start autonomous chat")
+            # While Lena speaks: enable readership, unlimited replies,
+            # and disable voluntary PASS. The FOLLOWING Noah turn sees all.
+            self.assertEqual(r.api("PUT", "/api/settings", {
+                "auto_chat_visible": True, "bot_rounds": 0,
+                "pass_enabled": False})[0], 200)
+            lena_release.set()
+            self.assertTrue(noah_started.wait(25), "Noah must get next turn")
+            self.assertIn("Chris kann alle eure Nachrichten im Raum-Chat lesen", seen["noah"][0])
+            self.assertIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert",
+                          seen["noah"][0])
+            # Now revoke both while Noah's reply is IN FLIGHT.
+            self.assertEqual(r.api("PUT", "/api/settings", {
+                "auto_chat_visible": False, "pass_enabled": True})[0], 200)
+            noah_release.set()
+            r.wait(lambda: len(seen["lena"]) >= 2,
+                   "Lena's next bot turn must read new policy", 35)
+            latest = seen["lena"][1]
+            self.assertIn("für diesen Gesprächszug deaktiviert", latest)
+            # This is still an autonomous bot round: it uses the autonomous
+            # PASS instruction, not the human-started observer variant.
+            self.assertIn("Wenn die Unterhaltung erschöpft ist, antworte exakt PASS", latest)
+            self.assertNotIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert", latest)
+            self.assertFalse("Chris kann alle eure Nachrichten im Raum-Chat lesen" in latest,
+                             "old observer notice may remain in history, NOT the latest directive")
+            self.assertEqual(r.state()["settings"]["bot_rounds"], 0)
+        finally:
+            lena_release.set()
+            noah_release.set()
+            r.api("PUT", "/api/settings", {"auto_chat": False})
+
+    def test_human_started_bot_reply_inherits_observer_setting(self):
+        """A human-started discussion also tells BOTH peers about readership."""
+        r = self.room
+        r.lena.reply = lambda body: "Lena hat dazu einen neuen Gedanken."
+        r.noah.reply = lambda body: "Noah ergänzt einen weiteren Gedanken."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat_visible": True, "pass_enabled": False,
+            "bot_rounds": 2})[0], 200)
+        r.say("Redet miteinander")
+        r.idle()
+        for model in (r.lena, r.noah):
+            followups = [req for req in model.chats() if any(
+                "Du wurdest nicht direkt angesprochen" in str(m.get("content", ""))
+                for m in req.get("messages", []))]
+            if followups:
+                self.assertTrue(any(
+                    "Chris kann alle eure Nachrichten im Raum-Chat lesen" in
+                    str(m.get("content", ""))
+                    for req in followups for m in req["messages"]))
+
     def test_autonomous_observer_cue_can_be_disabled_independently(self):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
         self.addCleanup(r.close)

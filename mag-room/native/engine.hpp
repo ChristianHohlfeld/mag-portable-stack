@@ -3011,6 +3011,19 @@ private:
         b.running.clear();
         b.message.clear();
         b.cancel.reset();
+        // Do not drop the autonomous flag on the first PASS: another bot
+        // might still be generating and must retain its no-tools boundary.
+        // Reset only when the entire spontaneous exchange has gone quiet.
+        if (auto_burst_) {
+          bool pending = false;
+          for (const auto &peer : bots_)
+            if (peer->running == "autonomous" || peer->running == "bot" ||
+                (peer->want && (peer->reason == "autonomous" || peer->reason == "bot"))) {
+              pending = true;
+              break;
+            }
+          if (!pending) auto_burst_ = false;
+        }
       }
       cv_.notify_all(); // a reset waits for the turn to be over
       publish_bots(true);

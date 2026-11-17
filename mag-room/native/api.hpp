@@ -212,6 +212,9 @@ public:
       // A continuation reuses its ORIGINAL predecessor (not the completed
       // composite or the latest chat video); the previous result stays intact.
       if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      // A retry may take up to two minutes to enter the GPU queue. The lock
+      // prevents two simultaneous taps from creating two expensive jobs.
+      std::lock_guard<std::mutex> retry_guard(video_retry_mu_);
       const std::string message_id = jstr(jparse(r.body), "message");
       Val original;
       if (message_id.empty() || !room_.get(message_id, original) || !original.find("model3d"))
@@ -223,6 +226,23 @@ public:
         return http::send_error(fd, 409, "Nur abgeschlossene H3-Videoteile können erneut generiert werden.");
       const std::string prompt = jstr(m3, "prompt");
       if (trim(prompt).empty()) return http::send_error(fd, 409, "Originalprompt fehlt.");
+      // Durable idempotency: retain the retry message ID on the source card.
+      // On another tap (or after a server restart), return the same ongoing
+      // job instead of launching a second GPU job. Once the attempt has
+      // finished, a deliberate later retry is still possible.
+      const std::string previous_id = jstr(original, "video_retry_id");
+      Val previous;
+      // Only an unfinished retry is idempotent. A finished, failed or
+      // cancelled attempt may immediately be retried deliberately.
+      if (!previous_id.empty() && room_.get(previous_id, previous) &&
+          previous.find("model3d") &&
+          (jstr(previous["model3d"], "state") == "queued" ||
+           jstr(previous["model3d"], "state") == "running")) {
+        Val out = Val::object();
+        out["model3d"] = previous_id;
+        out["reused"] = true;
+        return http::send_json(fd, 200, out);
+      }
       const int seconds = (int)jnum(m3, "seconds", 5);
       std::string error, id;
       const std::string predecessor = jstr(m3, "continues");
@@ -251,6 +271,12 @@ public:
         id = idol_.film(image, prompt, "chris", error, seconds, jstr(m3, "use", "first"));
       }
       if (id.empty()) return http::send_error(fd, 409, error.empty() ? "Videoteil konnte nicht neu gestartet werden." : error);
+      // The worker already created the retry room message; write its ID
+      // before releasing the per-API lock, so concurrent requests reuse it.
+      room_.update(message_id, [&](Val &m) {
+        m["video_retry_id"] = id;
+        m["video_retry_at"] = (double)now_ms();
+      });
       Val out = Val::object();
       out["model3d"] = id;
       return http::send_json(fd, 200, out);
@@ -495,6 +521,8 @@ private:
   std::string version_, web_;
   // Serializes bake reads against removal of superseded lane files.
   std::mutex voiceover_render_mu_;
+  // Serializes check/start/record of a retried H3 segment.
+  std::mutex video_retry_mu_;
 
   static constexpr const char *kNoAccess =
       "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"

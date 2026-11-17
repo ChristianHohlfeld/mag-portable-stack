@@ -83,12 +83,19 @@ const panels = read('panels.js');
 assert(panels.includes("class: 'chip-stop'"), 'stopping a busy bot remains one tap away');
 assert(panels.includes("'/api/stop'"), 'header stop must hit backend stop endpoint');
 
-// The independent optional toggles must reflect the persisted settings,
-// not a second local variable whose state can contradict the server.
-assert(panels.includes("row('Unbegrenzt unterhalten'"), 'unlimited chat has a dedicated toggle');
-assert(panels.includes("toggle((s.bot_rounds ?? 0) === 0"), 'zero rounds means truly unlimited');
-assert(panels.includes("bot_rounds: v ? 0 : 4"), 'disabling unlimited selects the explicit four-round default');
-assert(panels.includes("row('Mitlesen kenntlich machen'"), 'observer-awareness has its own toggle');
+// Self-talk is one compact settings group, not separate conflicting
+// "Unbegrenzt" and "Bots untereinander" controls. Every field persists
+// through the server and applies identically to either bot.
+assert(panels.includes("text: 'Bots miteinander'"), 'both agents share one conversation settings group');
+assert(panels.includes("row('Eigenständig reden'"), 'background chat has an explicit opt-in');
+assert(panels.includes("toggle(s.auto_chat === true"), 'background chat uses persisted setting');
+assert(panels.includes("row('Gesprächslänge'"), 'there is one authoritative round-length selector');
+assert(panels.includes("[0, 'Unbegrenzt']"), 'zero means truly unlimited');
+assert(panels.includes("bot_rounds: +v"), 'selection updates the backend round limit');
+assert(!panels.includes("row('Unbegrenzt unterhalten'"), 'duplicate unlimited toggle was removed');
+assert(panels.includes("row('Selbst beenden (PASS)'"), 'voluntary stopping is a separate option');
+assert(panels.includes("toggle(s.pass_enabled !== false"), 'PASS setting is shared and persisted');
+assert(panels.includes("row('Mitlesen bekannt'"), 'room readership appears in same group');
 assert(panels.includes("toggle(s.auto_chat_visible !== false"), 'observer-awareness persists independently');
 
 // Both model-specific thinking variants have a real off switch. When

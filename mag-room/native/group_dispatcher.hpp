@@ -6,12 +6,15 @@
 //  - explicit addressing wins (AutoGen GroupChat "speaker selection": a
 //    mentioned agent is the next speaker; "auto"/"round_robin" otherwise),
 //  - with no addressee every active bot answers the human message for real,
-//  - bot replies trigger further replies, particularly direct @mentions; the
-//    conversation runs server-side on its own like a human chat; a bot may
-//    choose an invisible PASS when it has nothing to say right now,
-//  - when every bot PASSes in a row the chat rests until the next message,
-//  - optional round budget MAG_ROOM_BOT_ROUNDS (0 = unlimited, the default;
-//    counted in engine.hpp),
+//  - bot replies trigger further replies, particularly direct @mentions;
+//    conversations run server-side without browser/SSE;
+//  - optional PASS lets bots decline a round; with PASS disabled engine.hpp
+//    validates a substantive reply or retries once, never executing an
+//    unattended tool;
+//  - when all bots voluntarily PASS with the option on, the current exchange
+//    rests; the room may start a new autonomous exchange after its interval;
+//  - optional bot follow-up budget MAG_ROOM_BOT_ROUNDS (0 = unlimited,
+//    no hidden fuse; autonomous opener does not use up a follow-up),
 //  - a new human message or Stop pre-empts every pending follow-up.
 #include <algorithm>
 #include <cctype>

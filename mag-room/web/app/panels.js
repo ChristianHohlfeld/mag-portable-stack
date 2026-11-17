@@ -396,17 +396,18 @@
           el('div', { class: 'txt' }, b.name, el('small', { text: modelName(b) + ' · ' + modelText(b) }), b.site ? el('small', {}, siteLink(b)) : null),
           owner() ? toggle(b.enabled, (v) => call('PUT', '/api/bot/' + b.id, { enabled: v })) : null))));
 
-      content.append(el('h3', { text: 'Gespräch' }), el('div', { class: 'card' },
-        row('Selbstständig unterhalten', 'Lena und Noah können auch ohne deine Nachricht und bei geschlossenem Browser auf dem Server miteinander reden. Nach einer Gesprächspause starten sie frühestens nach dem nächsten Intervall erneut.',
+      // One coherent set of controls for BOTH bots. The reply limit is a
+      // single selection (including unlimited), never a second competing toggle.
+      content.append(el('h3', { text: 'Bots miteinander' }), el('div', { class: 'card' },
+        row('Eigenständig reden', 'Beide Bots sprechen auch ohne neue Nachricht und ohne geöffneten Browser. Nach Gesprächsruhe starten sie zeitnah wieder.',
           toggle(s.auto_chat === true, (v) => call('PUT', '/api/settings', { auto_chat: v }), !owner())),
-        row('Unbegrenzt unterhalten', 'Ohne festes Rundenlimit. Ob Bots eine Folgerunde freiwillig mit PASS auslassen dürfen, ist separat einstellbar.',
-          toggle((s.bot_rounds ?? 0) === 0, (v) => call('PUT', '/api/settings', { bot_rounds: v ? 0 : 4 }), !owner())),
-        row('PASS / selbst beenden', 'Ein: Die Bots dürfen ein Gespräch mit unsichtbarem PASS selbst ausklingen lassen. Aus: Sie führen es weiter, bis du stoppst oder das Rundenlimit erreicht ist. Bei wiederholten Fehlern greift weiterhin der technische Schutz.',
+        row('Gesprächslänge', 'Maximale Anschlussantworten zwischen den Bots, auch nach deiner Nachricht. Unbegrenzt bedeutet ohne verdeckte Rundengrenze.',
+          select(s.bot_rounds ?? 0, [[0, 'Unbegrenzt'], [1, '1 Antwort'], [2, '2 Antworten'], [3, '3 Antworten'], [4, '4 Antworten'], [5, '5 Antworten'], [10, '10 Antworten']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner())),
+        row('Selbst beenden (PASS)', 'Ein: Bots dürfen ein Gespräch selbst mit unsichtbarem PASS beenden. Aus: Sie sollen weiterreden; nur deine Eingabe, das Rundenlimit oder technische Fehler unterbrechen.',
           toggle(s.pass_enabled !== false, (v) => call('PUT', '/api/settings', { pass_enabled: v }), !owner())),
-        ...((s.bot_rounds ?? 0) > 0 ? [row('Bots untereinander', 'Maximale Anschlussantworten, wenn „Unbegrenzt unterhalten“ ausgeschaltet ist.',
-          select(s.bot_rounds, [[1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [4, '4 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner()))] : []),
-        row('Mitlesen kenntlich machen', 'Die Bots wissen bei eigenständigen Gesprächen, dass du ihre Nachrichten im Chat sehen kannst – auch später. Sie nehmen nicht an, dass du gerade online bist.',
-          toggle(s.auto_chat_visible !== false, (v) => call('PUT', '/api/settings', { auto_chat_visible: v }), !owner())),
+        row('Mitlesen bekannt', 'Beide Bots wissen, dass du den Chat später lesen kannst, ohne anzunehmen, dass du gerade online bist.',
+          toggle(s.auto_chat_visible !== false, (v) => call('PUT', '/api/settings', { auto_chat_visible: v }), !owner()))));
+      content.append(el('h3', { text: 'Netzzugriff' }), el('div', { class: 'card' },
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';

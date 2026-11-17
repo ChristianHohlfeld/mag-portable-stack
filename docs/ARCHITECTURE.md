@@ -317,13 +317,23 @@ The execution contract is in [`AGENTS.md`](../AGENTS.md). In short:
   `@Lena …` asks Lena alone; the other bot gets no turn and reads the
   message as context. Several mentions or `@alle` mean all of them. A
   mention is stored as the bot's id, so it survives a rename.
-- A visible bot message may be answered by the other bot. Bots keep talking
-  among themselves; the setting "Bots untereinander"
-  (`MAG_ROOM_BOT_ROUNDS`, 0 = unlimited) bounds the rounds, and the room
-  rests after `MAG_ROOM_BOT_FUSE` (24) bot turns in a row without a word
-  from Chris.
-- `PASS` is invisible; a repeated answer or a bare acknowledgement counts as
-  PASS. When all bots pass in a row the room rests.
+- A visible bot message may be answered by the other bot. The unified
+  "Bots miteinander" settings govern unattended starts (`auto_chat`),
+  follow-up replies (`bot_rounds`, `MAG_ROOM_BOT_ROUNDS`, 0 = unlimited,
+  no hidden fuse), optional voluntary ending (`pass_enabled`) and
+  the owner-readability cue (`auto_chat_visible`). An autonomous opener
+  is not a follow-up reply and does not consume the reply budget.
+- The room drives unattended starts without browser/SSE and observes a default
+  60-second idle interval (minimum 5 seconds, configurable by
+  `MAG_ROOM_AUTO_CHAT_INTERVAL_S`). Both ready bots can take turns starting,
+  even after room restarts, provided no human task or browser goal is active.
+  A fresh human message gets a 15-second quiet period.
+- `PASS` and room control markers are always invisible. When PASS is enabled,
+  repeated answers and bare acknowledgements count as PASS and the room rests.
+  When disabled, models must respond substantively: the room rejects voluntary
+  ending signals, duplicate filler and autonomous tool attempts before posting,
+  retries once and then reports a technical failure instead of looping.
+  All unattended tool execution remains forbidden.
 - New human input and Stop preempt bot rounds at once.
 - One request per llama-server at a time.
 - Tool work outside dialogue continues on its own only after a successful

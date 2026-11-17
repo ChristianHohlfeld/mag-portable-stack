@@ -136,6 +136,29 @@ const visible = (w,node) => !!node && !node.hidden && w.getComputedStyle(node).d
   assert(visible(g.w,row(g.d,human.id)));
   g.dom.window.close();
 
+  // Reset while a previous media page is in flight: the latest first page
+  // must win, and the previous response must not mutate cursor or messages.
+  const raced = await fixture([human, lena]);
+  const pendingPages = [];
+  raced.w.MAG.api = async (method, url) => {
+    if (!url.startsWith('/api/media')) throw Error('unexpected ' + url);
+    return new Promise(resolve => pendingPages.push({url, resolve}));
+  };
+  const raceFilter = raced.d.querySelector('#media-filter');
+  raceFilter.click(); // starts page A
+  assert.equal(pendingPages.length, 1);
+  raceFilter.click(); // back to chat, page A still waiting
+  raceFilter.click(); // new reset starts page B without waiting for A
+  assert.equal(pendingPages.length, 2, 'new reset must not reuse stale pending request');
+  pendingPages[1].resolve({messages:[image('000030','done')], more:false});
+  await wait(); await wait();
+  pendingPages[0].resolve({messages:[image('000025','done')], more:true});
+  await wait(); await wait();
+  assert(raced.S.messages.has('000030'), 'newest media is retained');
+  assert(!raced.S.messages.has('000025'), 'old response is ignored');
+  assert(visible(raced.w, row(raced.d,'000030')));
+  raced.dom.window.close();
+
   const legacy = await fixture([human,lena], '1', true); await wait();
   assert(visible(legacy.w,row(legacy.d,lena.id)),
     'older DOM fixtures without the new button still render normally');

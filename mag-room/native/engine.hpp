@@ -3303,14 +3303,20 @@ private:
     b.wire["fresh"] = false;
     const int tries = b.cut_off;
     b.cut_off = 0;
-    if (!appended && !read_before && reason != "continue") return;
+    if (!appended && !read_before && reason != "continue") {
+      logf("engine: " + b.id + " no reply: no unread dialogue (turn=" + reason + ")");
+      return;
+    }
     // What Chris wrote while this bot was at work was handed to it in that
     // turn, and it wrote on knowing it. The turn his message queued has
     // nothing left to answer then; what else arrived meanwhile (a scene, a 3D
     // result) is read, not answered a second time.
     const bool answered = b.read_at_work && !from_chris && !read_before;
     b.read_at_work = false;
-    if (reason == "human" && answered) return;
+    if (reason == "human" && answered) {
+      logf("engine: " + b.id + " no duplicate reply: latest user input already read in preceding turn");
+      return;
+    }
     // From here the bot is at work, and the log says so. A restart of the
     // room (every deploy is one) that cuts the turn off leaves the mark, and
     // the room that starts takes the turn up again (see work()).
@@ -4453,6 +4459,9 @@ private:
     const bool pass = !t.visible && t.steps == 0 && t.id.empty() && !failed &&
                       (trim(unshown).empty() || group_chat::is_pass(unshown) || group_chat::name_only(unshown, names()));
     if (pass) {
+      // Keep PASS genuinely invisible, but make unexplained missing replies
+      // auditable without recording the user's private chat text in logs.
+      logf("engine: " + b.id + " chose PASS/empty (turn=" + reason + ")");
       tag_turn(b, t);
       // A Stop without any output is not a PASS: it must not rest the room.
       after_turn(b, reason, false, !cancelled, false, "");

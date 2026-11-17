@@ -1134,15 +1134,17 @@
   // what must not happen by accident. A job that is still under way can be
   // deleted already; an answer that is still being written cannot.
   function actions(m) {
-    if (m.state === 'streaming' && !m.model3d) return null;
+    const streaming = m.state === 'streaming';
     const user = m.role === 'user', row = el('div', { class: 'acts' });
     const button = (icon, label, run) => el('button', { class: 'act', 'aria-label': label, title: label, html: MAG.icons[icon], onclick: run });
     if (user) row.append(el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) }));
-    const words = m.model3d || m.state === 'streaming' ? '' : m.text; // a 3D result has nothing to copy or read aloud
+    // While the message grows its text lives in the text parts, not m.text.
+    const words = m.model3d ? '' : ((m.parts || []).filter(p=>p.k==='text')
+      .map(p=>p.text || '').join('') || m.text || '');
     if (words) row.append(button('copy', 'Kopieren', async (e) => {
       const b = e.currentTarget;
       try {
-        await navigator.clipboard.writeText(m.text);
+        await navigator.clipboard.writeText(words);
         b.innerHTML = MAG.icons.check;
         setTimeout(() => { b.innerHTML = MAG.icons.copy; }, 1300);
       } catch { MAG.toast('Kopieren nicht möglich', true); }
@@ -1155,7 +1157,7 @@
     // Teilen: the message's files (a 3D result's model, scene and film too), or its words.
     const files = (m.attachments || []).filter((a) => a.file);
     const shareable = files.length || (words && !m.model3d);
-    if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
+    if (S.you.role === 'owner' && !streaming) row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
       // One tap reads this and every subsequent loaded text message in
       // chronological order. Speeds apply only to that playback session.
       MAG.speaking?.startFrom ? { icon: 'play', label: 'Play from here',
@@ -1618,7 +1620,18 @@
     }
     paintEmpty(); paintDays();
   });
-  MAG.on('delta', (m, part) => { dirty.add(m.id + ':' + part); schedule(); });
+  MAG.on('delta', (m, part) => {
+    dirty.add(m.id + ':' + part);schedule();
+    // Initial streaming card may have been empty. Add the read/stop button
+    // as soon as the first text delta arrives; don't rebuild the message.
+    const node=nodes.get(m.id);
+    if(node && !node.querySelector('.act[data-speak]') &&
+       (m.parts || []).some(p=>p?.k==='text' && p.text?.trim())) {
+      node.querySelector('.acts')?.remove();
+      const bar=actions(m);
+      if(bar) { node.append(bar); MAG.speaking?.paint?.(); }
+    }
+  });
   // A model's thoughts are its own: raw, often English, never shown in the chat (Chris, 2026-11-12).
   MAG.on('step', (m, part) => {
     const node = nodes.get(m.id);

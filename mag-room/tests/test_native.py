@@ -449,6 +449,45 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("[[MAG:", " ".join(r.texts()))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
+    def test_autonomous_pass_policy_symmetric_across_bots(self):
+        """Either bot can start and follow up, with identical PASS-off rules.
+        No browser or SSE connection is needed."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        self.assertIsNone(r.stream)
+
+        def make_reply(name):
+            def reply(body):
+                last = str(body["messages"][-1].get("content", ""))
+                self.assertIn("eigene Beendigungsentscheidung", last)
+                self.assertIn("Chris kann alle eure Nachrichten im Raum-Chat lesen", last)
+                return "Ein neuer Gedanke von " + name + "."
+            return reply
+
+        r.lena.reply, r.noah.reply = make_reply("Lena"), make_reply("Noah")
+        settings = {"auto_chat": True, "bot_rounds": 2,
+                    "pass_enabled": False, "auto_chat_visible": True, "web": False}
+        self.assertEqual(r.api("PUT", "/api/settings", settings)[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 2,
+               "first autonomous session with both bots", 35)
+        r.idle()
+        first = [m for m in r.messages() if m["from"] in ("lena", "noah")]
+        self.assertEqual([(m["from"], m["reason"]) for m in first],
+                         [("lena", "autonomous"), ("noah", "bot")])
+
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 4,
+               "second autonomous session with reversed bot order", 35)
+        r.idle()
+        all_bots = [m for m in r.messages() if m["from"] in ("lena", "noah")]
+        self.assertEqual([(m["from"], m["reason"]) for m in all_bots[2:4]],
+                         [("noah", "autonomous"), ("lena", "bot")])
+        self.assertTrue(all("PASS" not in m["text"] for m in all_bots))
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
     def test_pass_toggle_off_fails_safely_after_two_passes(self):
         r = self.room
         r.lena.reply = lambda body: "Ein erster Gedanke."

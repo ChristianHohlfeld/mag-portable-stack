@@ -455,11 +455,14 @@
     // Use THIS playback's buffers and their actual sample-derived durations.
     // A future start is not currently audible; other message sources do not
     // mean the active message is speaking.
-    const scheduled = !!(ctx && ctx.state === 'running' &&
-      [...(pb.activeSources?.values() || [])].some(({ start, end }) =>
-        start <= ctx.currentTime && ctx.currentTime < end));
+    const scheduled = pb.native
+      ? !!(tts.nativeAudio && !tts.nativeAudio.paused && !tts.nativeAudio.ended)
+      : !!(ctx && ctx.state === 'running' &&
+        [...(pb.activeSources?.values() || [])].some(({ start, end }) =>
+          start <= ctx.currentTime && ctx.currentTime < end));
     if (pb.loading === scheduled) {
       pb.loading = !scheduled;
+      MAG.audio?.setState('tts',scheduled?'playing':'loading');
       setButtons();
     }
     if (scheduled) pb.silentSince = 0;

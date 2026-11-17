@@ -17,10 +17,11 @@ const image = (id, state = 'queued') => msg(id, 'service', 'idol', {
 });
 const audio = { file: 'sample.mp3', name: 'sample.mp3', kind: 'audio', size: 400 };
 const file = (kind, name) => ({ file: name, name, kind, size: 400 });
-const fixture = (snap, saved = null) => {
+const fixture = (snap, saved = null, legacy = false) => {
   const html = read('index.html');
   const dom = new JSDOM(html, { url: 'https://mag.test/', pretendToBeVisual: true, runScripts: 'outside-only' });
   const { window: w } = dom, { document: d } = w;
+  if (legacy) { d.querySelector('#viewbar')?.remove(); d.querySelector('#media-empty')?.remove(); }
   // Verify the actual app stylesheet, rather than simulating a second
   // filtering implementation inside the test.
   const css = d.createElement('style');
@@ -165,5 +166,15 @@ const visible = (w, node) => !!node && !node.hidden && w.getComputedStyle(node).
   g.d.querySelector('#viewbar [data-view=all]').click();
   assert(visible(g.w, row(g.d, user.id)), 'unfiltered timeline remains intact');
   g.dom.window.close();
-  console.log('Media filter: MAG tabs, bot/step hiding, queued jobs, SSE, player identity, persistence, empty state OK');
+
+  // Old embedded/test DOMs legitimately have no viewbar/media-empty.
+  // Their pre-existing code editors and SSE timelines must still mount.
+  const h = fixture({ ...snap, messages: [user, lena], seq: 20 }, 'media', true);
+  await wait();
+  assert.equal(h.d.querySelector('#viewbar'), null);
+  assert.equal(h.d.querySelector('#media-empty'), null);
+  assert(!h.d.querySelector('#list').classList.contains('media-only'));
+  assert(visible(h.w, row(h.d, lena.id)), 'legacy fixture remains in normal chat mode');
+  h.dom.window.close();
+  console.log('Media filter: MAG tabs, bot/step hiding, queued jobs, SSE, player identity, persistence and legacy DOM OK');
 })().catch((e) => { console.error(e); process.exitCode = 1; });

@@ -221,6 +221,96 @@
   const listeners = {};
   MAG.on = (type, fn) => (listeners[type] ||= []).push(fn);
   const emit = (type, ...args) => (listeners[type] || []).forEach((fn) => fn(...args));
+  // One audio focus and transport state for speech, video cards, voiceover
+  // preview and file gallery. A voiceover's original+lanes share one focus.
+  const audioFocus = (MAG.audio = (() => {
+    let focus = null, phase = 'idle';
+    const media = () => [...document.querySelectorAll('audio,video')];
+    const group = el => el?.closest?.('.voiceover') || el;
+    const session = navigator.mediaSession;
+    const publish = () => {
+      if (session) {
+        try { session.playbackState = phase === 'playing' ? 'playing' :
+          phase === 'paused' ? 'paused' : 'none'; } catch (_) {}
+      }
+      document.dispatchEvent(new CustomEvent('mag-audio-state', {
+        detail: {state:phase,owner:focus?.kind || ''} }));
+    };
+    const release = owner => {
+      if (focus && focus.owner !== owner) return;
+      focus = null;phase='idle';publish();
+    };
+    const claim = (owner, stop, kind='media', state='playing') => {
+      if (focus?.owner === owner) { phase=state;publish();return; }
+      const previous = focus;
+      // Publish the new focus BEFORE invoking the old stop callback; an old
+      // reader may asynchronously finish and must not clear the new owner.
+      focus = {owner,stop,kind};phase=state;
+      try { previous?.stop?.(); } catch (_) {}
+      for (const node of media()) {
+        if (owner !== 'tts' && group(node) === owner) continue;
+        try { node.pause(); } catch (_) {}
+      }
+      publish();
+    };
+    const stop = () => {
+      const active=focus;
+      focus=null;phase='stopped';publish();
+      try { active?.stop?.(); } catch (_) {}
+      // Kill audio even if a component lost its focus registration.
+      for (const node of media()) { try { node.pause(); } catch (_) {} }
+      phase='idle';publish();
+    };
+    const pause = () => {
+      if (!focus) return;
+      phase='paused';
+      if (focus.kind==='speech') MAG.speaking?.pause?.();
+      else for (const node of media()) if (group(node)===focus.owner) {
+        try { node.pause(); } catch (_) {}
+      }
+      publish();
+    };
+    document.addEventListener('play',e=>{
+      const node=e.target;
+      if (!node || !['AUDIO','VIDEO'].includes(node.tagName) || node.dataset?.magTts === '1') return;
+      // Ignore focus changes among intentionally synchronized voiceover lanes.
+      const owner=group(node);
+      if (focus?.owner === owner) {phase='playing';publish();return;}
+      claim(owner,()=>{for(const n of media())if(group(n)===owner)try{n.pause()}catch(_){}});
+    },true);
+    document.addEventListener('pause',e=>{
+      if (!focus || focus.owner==='tts') return;
+      const node=e.target;
+      if (group(node)!==focus.owner) return;
+      if (media().filter(n=>group(n)===focus.owner).every(n=>n.paused)) {
+        phase='paused';publish();
+      }
+    },true);
+    document.addEventListener('ended',e=>{
+      if (!focus || focus.owner==='tts' || group(e.target)!==focus.owner) return;
+      if (media().filter(n=>group(n)===focus.owner).every(n=>n.paused || n.ended))
+        release(focus.owner);
+    },true);
+    const resumeFocus = () => {
+      if (!focus) return;
+      phase='playing';
+      if(focus.kind==='speech') MAG.speaking?.resume?.();
+      else {
+        const selected=media().find(n=>group(n)===focus.owner);
+        try { Promise.resolve(selected?.play?.()).catch(()=>{}); } catch (_) {}
+      }
+      publish();
+    };
+    if (session?.setActionHandler) {
+      try {
+        session.setActionHandler('stop',stop);
+        session.setActionHandler('pause',pause);
+        session.setActionHandler('play',resumeFocus);
+      } catch (_) {}
+    }
+    return {claim,release,stop,pause,resume:resumeFocus,
+      get state(){return phase},get owner(){return focus?.owner}};
+  })());
   MAG.bot = (id) => S.bots.find((b) => b.id === id);
   MAG.name = (from) => (from === 'chris' ? S.you.name || 'Chris' : from === 'idol' ? '3D' : MAG.bot(from)?.name || from);
 

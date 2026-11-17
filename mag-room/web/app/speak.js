@@ -206,12 +206,12 @@
       : voiceState.state && voiceState.state !== 'ready' ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
     button.setAttribute('aria-label', label);
     button.title = label;
-    button.innerHTML = busy ? '<span class="spin"></span>' : playing ? MAG.icons.stop : MAG.icons.speak;
+    button.innerHTML = playing ? MAG.icons.stop : MAG.icons.speak;
   }
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
   // ---- the model (worker) -----------------------------------------------------
-  const tts = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
+  const tts = { sink:null, destination:null, config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
                 };
   // The voices of Supertonic 3: ten styles of one model; each speaks German and English.
   const CONFIG = { models: 's3o', voices: [
@@ -489,7 +489,7 @@
     const buf = ctx.createBuffer(1, res.audio.length, res.rate);
     buf.copyToChannel(res.audio, 0);
     const src = ctx.createBufferSource();
-    src.buffer = buf; src.connect(ctx.destination);
+    src.buffer = buf; src.connect(tts.destination || ctx.destination);
     const at = Math.max(ctx.currentTime + 0.03, pb.end || 0);
     const end = at + buf.duration;
     pb.activeSources ||= new Map();
@@ -622,6 +622,7 @@
   function feed(pb, text, live) {
     const norm = normalize(text);
     pb.live = !!live;
+    pb.text = text;
     // A message whose parts were made ahead is cut as it was then, so the tap finds them; the rest after it as usual.
     if (pb.de && !pb.queued && !pb.live) {
       const cut = cuts.get(pb.key);
@@ -656,6 +657,7 @@
     if (current !== pb) return;
     clearAudioMonitor(pb);
     current = null;
+    MAG.audio?.release?.('tts');
     if (pb.sequence && readingFrom === pb.sequence) {
       // Keep the same speech engine, voices and rate across speakers.
       // Advancing in the utterance onend callback also works on mobile.
@@ -665,6 +667,7 @@
 
   function stop() {
     readingFrom = null;
+    MAG.audio?.release?.('tts');
     const pb = current;
     current = null; // make pending callbacks and loops harmless
     if (pb) {
@@ -676,9 +679,19 @@
         const wake = pb[field]; pb[field] = null; wake?.();
       }
     }
-    if (systemOk) synth.cancel();
+    if (systemOk) {
+      try { synth.pause?.(); } catch (_) {}
+      try { synth.cancel(); } catch (_) {}
+    }
     for (const src of tts.sources) { try { src.stop(); } catch (_) {} }
     tts.sources.clear();
+    // Forcefully tear down the old audio graph; a suspended Android PWA or
+    // scheduled WebAudio buffer must never keep speaking after Stop.
+    try { tts.sink?.pause?.(); } catch (_) {}
+    if (tts.sink) {try { tts.sink.srcObject = null; } catch (_) {}}
+    tts.destination = null;
+    const oldContext=tts.ctx; tts.ctx=null;
+    if (oldContext) {try {oldContext.close?.().catch?.(()=>{});}catch(_){}}
     // Drop synthesis that is queued for the stopped playback.
     if (tts.worker && pb) { try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {} }
     setButtons();
@@ -721,16 +734,17 @@
       // saved settings. Switching between Lena, Noah and Chris stays natural.
       rate: READ_FROM_SPEEDS.includes(options.rate) ? options.rate : null,
       sequence: chained ? options.sequence : null,
-      parts: [], at: 0, queued: 0, text, live: false, wake: null,
+      parts: [], at: 0, queued: 0, text, live: !!options.live, wake: null,
       spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
-    feed(pb, text, false);
-    if (!pb.parts.length) return false;
+    feed(pb, text, !!options.live);
+    if (!pb.parts.length && !pb.live) return false;
     // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
     // dropped, what is made stays, and this reading asks for its own parts in its own order.
     if (de && pb.voice && prepared.size && tts.worker) {
       try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
+    MAG.audio?.claim?.('tts',()=>stop(),'speech',pb.loading ? 'loading':'playing');
     setButtons();
     if (!de) {
       if (!systemOk) { current = null; setButtons(); return false; }
@@ -739,7 +753,32 @@
       return true;
     }
     // The audio context must be made or woken inside the tap (iOS).
-    try { tts.ctx = tts.ctx && tts.ctx.state !== 'closed' ? tts.ctx : new AudioCtx(); resume(tts.ctx); }
+    try {
+      tts.ctx = tts.ctx && tts.ctx.state !== 'closed' ? tts.ctx : new AudioCtx();
+      resume(tts.ctx);
+      // Route PCM to a persistent HTMLAudioElement MediaStream when supported.
+      // Android can keep this media element active under the lock screen;
+      // unsupported browsers retain the normal WebAudio output.
+      if (tts.ctx.createMediaStreamDestination && !tts.destination &&
+          typeof document.createElement === 'function') {
+        tts.sink ||= document.createElement('audio');
+        if ('srcObject' in tts.sink) {
+          tts.destination = tts.ctx.createMediaStreamDestination();
+          tts.sink.dataset.magTts = '1';
+          tts.sink.hidden = true;
+          if (!tts.sink.isConnected && document.body) document.body.append(tts.sink);
+          tts.sink.srcObject = tts.destination.stream;
+          Promise.resolve(tts.sink.play?.()).catch(() => {
+            // Playback permission denied: route any scheduled buffers to the
+            // standard output instead of leaving this reading inaudible.
+            tts.destination = null;
+            for (const src of tts.sources) {
+              try { src.connect(tts.ctx?.destination); } catch (_) {}
+            }
+          });
+        }
+      }
+    }
     catch { return fallback(pb); }
     const start = () => modelPlay(pb).catch(() => fallback(pb));
     // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
@@ -793,10 +832,27 @@
 
   // ---- the page ----------------------------------------------------------------
   // Reads a message aloud, or stops if it is the one being read.
+  function textOf(m) {
+    const parts = (m.parts || []).filter(p => p?.k === 'text').map(p=>p.text || '').join('');
+    const content = parts || m.text || '';
+    return m.role === 'bot' && MAG.tidy ? MAG.tidy(content) : content;
+  }
   MAG.speak = function (m, button) {
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
-    toggle(m.id, m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text, m.role === 'user' ? 'chris' : m.from);
+    if (current?.key === m.id) return stop();
+    return toggle(m.id, textOf(m), m.role === 'user' ? 'chris' : m.from,
+      {live:m.state === 'streaming'});
   };
+  function refreshLive(m) {
+    if (!current || current.key !== m.id) return;
+    const text=textOf(m);
+    current.text=text;
+    feed(current,text,m.state === 'streaming');
+    if (m.state !== 'streaming') current.wake?.();
+  }
+  MAG.on('delta',refreshLive);
+  MAG.on('message',refreshLive);
+  MAG.on('reset',()=>{if(current)stop();});
   function advanceReadFrom(seq) {
     if (readingFrom !== seq) return false;
     while (seq.at < seq.items.length && readingFrom === seq) {
@@ -985,6 +1041,8 @@
   document.addEventListener('scroll', later, { capture: true, passive: true });
   MAG.speaking = {
     paint, stop, busy: () => !!current,
+    pause: () => { if (systemOk) synth.pause?.(); try { tts.ctx?.suspend?.(); } catch (_) {} },
+    resume: () => { if (systemOk) synth.resume?.(); if (tts.ctx) resume(tts.ctx); },
     startFrom: startReadFrom,
     readingFrom: () => !!readingFrom
   };

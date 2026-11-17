@@ -562,7 +562,9 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(any("Werkzeuge sind in diesem eigenständigen Bot-Dialog" in
                             str(msg.get("content", "")) for req in r.lena.chats()
                             for msg in req["messages"]),
-                        "one corrected request must have a grounded no-tool instruction")
+                        "one corrected request must have a grounded no-tool instruction; last requests=" +
+                        repr([[m.get("content") for m in req.get("messages", [])[-4:]]
+                              for req in r.lena.chats()[-3:]]))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_autonomous_chat_restarts_after_cooldown_without_browser(self):

@@ -120,6 +120,44 @@
     return ['ready', 'bereit'];
   }
   const nudged = {}; // bot -> until when its chip moves
+  // Keep the chip DOM stable between pointerdown and click. Otherwise a
+  // status event can move the buttons under the finger and target Noah
+  // when the gesture began on Lena (or vice versa).
+  let headerHover = false, headerPress = null, headerDirty = false;
+  function installChipGuard() {
+    const bar = $('#top');
+    if (!bar) return;
+    bar.addEventListener('pointerenter', (e) => {
+      if (e.pointerType !== 'touch') headerHover = true;
+    });
+    bar.addEventListener('pointerleave', () => {
+      headerHover = false;
+      if (!headerPress && headerDirty) paintTop();
+    });
+    bar.addEventListener('pointerdown', (e) => {
+      const button = e.target.closest?.('.chip .tog, .chip .chip-stop');
+      if (!button) return;
+      const chip = button.closest('.chip');
+      headerPress = { id: chip.dataset.bot,
+        action: button.classList.contains('chip-stop') ? 'stop' : 'pause' };
+    }, true);
+    bar.addEventListener('click', (e) => {
+      if (!headerPress) return; // keyboard clicks remain native
+      const button = e.target.closest?.('.chip .tog, .chip .chip-stop');
+      const chip = button?.closest('.chip');
+      const action = button?.classList.contains('chip-stop') ? 'stop' : 'pause';
+      if (!chip || chip.dataset.bot !== headerPress.id || action !== headerPress.action) {
+        e.preventDefault();
+        e.stopImmediatePropagation(); // never forward the gesture to another bot
+      }
+      headerPress = null;
+      if (!headerHover && headerDirty) paintTop();
+    }, true);
+    bar.addEventListener('pointercancel', () => {
+      headerPress = null;
+      if (!headerHover && headerDirty) paintTop();
+    });
+  }
   // Pause: the bot stops answering, its model stays in memory, so it is back
   // at once. The room remembers it across reloads and deploys.
   const pause = (b, on) => MAG.api('PUT', '/api/bot/' + b.id, { enabled: !on })
@@ -127,6 +165,8 @@
   function paintTop() {
     const box = $('#chips');
     if (!box) return;
+    if (headerHover || headerPress) { headerDirty = true; return; }
+    headerDirty = false;
     box.replaceChildren(...S.bots.map((b) => {
       const [cls, text] = chipState(b);
       // The name opens the bot's sheet; the dot in front of it pauses the bot
@@ -652,6 +692,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    installChipGuard();
     $('#clear').addEventListener('click', clearRoom);
     $('#settings').addEventListener('click', settingsSheet);
     // The keyboard shrinks the visual viewport, not the layout viewport.

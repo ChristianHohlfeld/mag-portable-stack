@@ -91,7 +91,8 @@
       songName, owner ? cues : null);
     const footer = el('div', { class: 'voice-footer' }, downloads, announce);
     const audios = Object.fromEntries(LANES.map(([id]) =>
-      [id, el('audio', { preload: 'metadata', hidden: true })]));
+      [id, el('audio', { preload: 'metadata', hidden: true,
+        dataset: { lane: id } })]));
     const audiosBox = el('div', { hidden: true }, ...Object.values(audios));
     box.append(audiosBox, toolbar, melodyRow, footer);
     // One stable audio element per lane, shared with the original video
@@ -110,15 +111,26 @@
         const position = video.currentTime - at + from;
         const audible = video.currentTime >= at && position >= 0 &&
           position < Number(take.duration || Infinity);
-        if (!audible) { audio.pause(); continue; }
+        audio.playbackRate = video.playbackRate;
+        audio.volume = video.volume;
+        if (video.paused || video.ended || position >= Number(take.duration || Infinity)) {
+          audio.pause();
+          continue;
+        }
+        if (!audible) {
+          // A delayed melody is started *muted* by the user's preview tap.
+          // Keep it running silently until its cue: pausing here would
+          // require a NEW play() outside the tap (blocked on mobile Safari).
+          audio.muted = true;
+          continue;
+        }
         try {
           if (Math.abs((audio.currentTime || 0) - position) > 0.2)
             audio.currentTime = position;
         } catch (_) {}
-        audio.playbackRate = video.playbackRate;
-        audio.volume = video.volume;
-        if (video.paused || video.ended) audio.pause();
-        else if (audio.paused) audio.play().catch(() => {
+        // Do not unmute before seeking to the requested point in the song.
+        audio.muted = false;
+        if (audio.paused) audio.play().catch(() => {
           status('Bitte die Vorschau antippen.');
         });
       }
@@ -188,11 +200,17 @@
         if (audio.dataset.file !== take.file) { audio.dataset.file = take.file; audio.src = url(take); }
         const at = key === 'melody' ? Number(take.voiceover_at || 0) : 0;
         audio.currentTime = key === 'melody' ? Number(take.voiceover_from || 0) : 0;
-        if (at > 0) { audio.pause(); continue; }
+        // Activate EVERY lane in this direct user gesture. Delayed songs
+        // run silently until the cue and are realigned before unmuting by
+        // sync(). Otherwise a late play() can be rejected as autoplay.
+        audio.muted = at > 0;
         audio.play().catch(() => status('Tonspur konnte nicht abgespielt werden.', true));
       }
       // Synchronous inside click: explicit user activation on mobile Safari.
-      video.play().catch(() => status('Video: bitte im Player auf Play drücken.', true));
+      video.play().catch(() => {
+        for (const audio of Object.values(audios)) audio.pause();
+        status('Video: bitte im Player auf Play drücken.', true);
+      });
     });
     const compatible = !!navigator.mediaDevices?.getUserMedia &&
       typeof MediaRecorder !== 'undefined' && window.isSecureContext;

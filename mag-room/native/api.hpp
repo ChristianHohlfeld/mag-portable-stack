@@ -76,6 +76,24 @@ public:
       if (p == "/manifest.webmanifest") return manifest(fd);
       if (p == "/favicon.ico" || p == "/favicon.svg" || p == "/apple-touch-icon.png")
         return asset(fd, r, room_.cfg.web_dir + "/static" + p, false);
+      if (p == "/app/code-preview.html") {
+        // The only page allowed to render edited, untrusted HTML/CSS/JS.
+        // Serve it as a unique-origin document; never relax the MAG app's
+        // own CSP, and never grant allow-same-origin to this sandbox.
+        const http::Headers h = {
+            {"Content-Security-Policy",
+             "sandbox allow-scripts; default-src 'none'; "
+             "script-src 'unsafe-inline' 'unsafe-eval' https: blob:; "
+             "style-src 'unsafe-inline' https:; img-src https: data: blob:; "
+             "font-src https: data:; media-src https: data: blob:; "
+             "connect-src https: wss:; worker-src blob: https:; "
+             "frame-src 'self' data: blob: https:; base-uri https:; "
+             "object-src 'none'; form-action 'none'"},
+            {"Referrer-Policy", "no-referrer"},
+            {"Cache-Control", "no-store"},
+            {"Cross-Origin-Resource-Policy", "same-origin"}};
+        return http::send_file(fd, r, room_.cfg.web_dir + p, "text/html; charset=utf-8", h);
+      }
       if (starts_with(p, "/static/") || starts_with(p, "/app/")) return static_file(fd, r);
       if (p == "/api/version") { Val v = Val::object(); v["version"] = version_; return http::send_json(fd, 200, v); }
       if (p == "/api/state") return state(fd, r, who);

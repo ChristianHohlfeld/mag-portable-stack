@@ -1352,6 +1352,10 @@ class RoomContract(unittest.TestCase):
         if sys.byteorder != "little":
             samples.byteswap()
 
+        # Missing PTS on adelay's silent prefix once caused the muxer to
+        # discard that prefix and shorten the mixed stream by the cue offset.
+        self.assertGreaterEqual(len(samples), int(8000 * 1.7),
+                                "mixed audio must cover the entire video timeline")
         def segment(start, end):
             return samples[int(8000 * start):int(8000 * end)]
 

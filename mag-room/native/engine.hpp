@@ -185,6 +185,7 @@ public:
     round_limit_ = limit;
     last_human_ms_ = now_ms();
     auto_burst_ = false;
+    dialogue_stopped_ = false; // a new message from Chris starts a fresh conversation
     bot_turns_ = 0;
     passes_ = 0;
     std::vector<std::string> owners;
@@ -497,12 +498,21 @@ public:
       // changes (theme, observer text) never wake expensive model inference.
       if (enabled && (!auto_enabled_ || (pass_enabled_ && !pass_enabled) ||
                       (round_limit_ > 0 && limit == 0))) auto_last_ms_ = 0;
+      // The turn counter includes a bot reply as soon as it starts. A newly
+      // lowered cap may therefore already have been reached by in-flight work.
+      const bool limit_reached = limit > 0 && (round_limit_ == 0 || limit < round_limit_) &&
+                                 bot_turns_ >= limit;
+      const bool switched_off = !enabled && auto_enabled_;
+      if (enabled && !auto_enabled_) dialogue_stopped_ = false; // explicit re-enable permits a fresh session
       round_limit_ = limit;
       pass_enabled_ = pass_enabled;
-      if (!enabled && auto_enabled_ && auto_burst_) {
-        // Turning off autonomous chat stops any running/queued conversation.
-        // Do not cancel a separately requested human turn or open browser goal.
+      if (switched_off || limit_reached) {
+        // Stop this entire exchange, including a human-initiated bot follow-up.
+        // Never cancel direct human replies, continuations, or browser goals.
+        // The latch also prevents a finishing human turn from re-queuing peers.
+        dialogue_stopped_ = true;
         for (auto &b : bots_) {
+          if (b->goal_on || b->goal_arm) continue;
           if (b->want && (b->reason == "bot" || b->reason == "autonomous"))
             b->want = false;
           if ((b->running == "bot" || b->running == "autonomous") &&
@@ -876,6 +886,7 @@ private:
   int bot_turns_ = 0, passes_ = 0;
   long round_limit_ = 0;
   bool auto_enabled_ = false, auto_burst_ = false, pass_enabled_ = true;
+  bool dialogue_stopped_ = false; // live settings ended this bot exchange; next human message resets
   int64_t auto_last_ms_ = 0, last_human_ms_ = 0;
   size_t auto_next_ = 0;
   std::set<std::string> audience_; // bots Chris mentioned with @ (empty = everybody)
@@ -1026,6 +1037,7 @@ private:
     auto_next_ = (starter_index + 1) % available.size();
     write_atomic(room_.cfg.state_dir + "/auto-chat-next", std::to_string(auto_next_) + "\n", 0600);
     auto_burst_ = true;
+    dialogue_stopped_ = false; // a new unattended session starts after its cooldown
     bot_turns_ = 0; // the autonomous opener is not an Anschlussantwort
     passes_ = 0;
     audience_.clear(); // an old @mention must not mute a new autonomous session
@@ -4548,6 +4560,15 @@ private:
       tag_turn(b, t);
       return;
     }
+    // A settings/Stop cancellation may happen after the model sent its last
+    // token but before the final flush. Never turn withheld bot tokens into a
+    // new visible reply after the exchange was interrupted.
+    if ((reason == "bot" || reason == "autonomous") && (cancelled || cancel->stopped())) {
+      if (!t.id.empty()) room_.update(t.id, [](Val &m) { m["state"] = "stopped"; }, true);
+      tag_turn(b, t);
+      after_turn(b, reason, false, false, false, "");
+      return;
+    }
     const std::string unshown = t.held + t.tail;
     const bool pass = !t.visible && t.steps == 0 && t.id.empty() && !failed &&
                       (trim(unshown).empty() || group_chat::is_pass(unshown) || group_chat::name_only(unshown, names()));
@@ -4673,12 +4694,11 @@ private:
   // Decides what a finished turn triggers.
   void after_turn(Bot &b, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig) {
     const Val bots = room_.bots();
-    const long configured_limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
     std::lock_guard<std::mutex> lk(mu_);
-    // One limit for human-triggered and autonomous bot conversations alike.
-    // Zero stays unlimited: no implicit four-turn cap or hidden fuse.
-    const long limit = configured_limit;
-    round_limit_ = limit;
+    // Read the already synchronized limit. Taking a stale room snapshot
+    // before this lock could undo a simultaneous settings_changed() update.
+    const long limit = round_limit_;
+    if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous")) return;
     if (auto_burst_ && !auto_enabled_) return;
     // Only a visible answer is a round; a PASS or a stopped turn gives it back.
     if (reason == "bot" && !visible && bot_turns_ > 0) --bot_turns_;
@@ -4705,7 +4725,9 @@ private:
       return;
     }
     b.continues = 0;
-    if (limit > 0 && bot_turns_ >= limit) return;
+    // A finished human answer must not revive an exchange stopped while it
+    // was in flight. A separately requested tool continuation above is safe.
+    if (dialogue_stopped_ || (limit > 0 && bot_turns_ >= limit)) return;
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
       if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name

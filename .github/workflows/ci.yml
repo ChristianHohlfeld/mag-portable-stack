@@ -30,6 +30,8 @@ jobs:
           source ops/build-targets.sh
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher test-model-text s23ctl
+      - name: Publisher HTTP protocol (real ustar uploads; final Content-Length header)
+        run: python3 ops/bots/tests/test_publishd_http.py
       - name: Shell syntax
         run: bash ops/ci/check.sh
       - name: Model supervisor

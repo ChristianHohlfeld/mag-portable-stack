@@ -3292,6 +3292,7 @@ private:
     const long budget = b.budget + plugins_.weight(me);
     const Val settings = room_.settings();
     const bool pass_enabled = jbool(settings, "pass_enabled", true);
+    const bool unlimited_dialogue = (long)jnum(settings, "bot_rounds", room_.cfg.bot_rounds) == 0;
     ensure_wire(b, me, false);
 
     // Every bot-to-bot turn reads the CURRENT room settings. Keep the

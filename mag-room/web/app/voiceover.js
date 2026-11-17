@@ -94,7 +94,37 @@
     const hear = el('label', { class: 'voice-monitor' },
       el('input', { type: 'checkbox' }), ' Originalton mithören (Kopfhörer empfohlen)');
     const monitor = hear.querySelector('input');
-    const stopTracks = () => { stream?.getTracks().forEach((t) => t.stop()); stream = null; };
+    let observer = null;
+    function stopTracks() {
+      stream?.getTracks().forEach((t) => t.stop());
+      stream = null;
+      observer?.disconnect(); observer = null;
+      window.removeEventListener('pagehide', onLeave);
+      document.removeEventListener('visibilitychange', onHidden);
+    }
+    function onLeave() {
+      if (recorder?.state === 'recording') stopRecording(true);
+      stopTracks();
+    }
+    function onHidden() {
+      if (!document.hidden) return;
+      if (recorder?.state === 'recording') stopRecording();
+      else if (stream) {
+        stopTracks();
+        permit.textContent = 'Mikrofon freigeben';
+        record.disabled = true;
+        status('Mikrofon beim Verlassen geschlossen.');
+      }
+    }
+    function watchMicrophone() {
+      window.addEventListener('pagehide', onLeave);
+      document.addEventListener('visibilitychange', onHidden);
+      if (window.MutationObserver && document.body) {
+        observer = new MutationObserver(() => { if (!box.isConnected) onLeave(); });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+      if (!box.isConnected) onLeave();
+    }
     const stopRecording = (discard = false) => {
       if (!recorder || recorder.state === 'inactive') return;
       discarded = discard;
@@ -111,6 +141,12 @@
     }
     permit.addEventListener('click', async () => {
       // Never ask automatically: this click is the browser permission gesture.
+      if (stream) {
+        stopTracks();
+        record.disabled = true;
+        permit.textContent = 'Mikrofon freigeben';
+        return status('Mikrofon geschlossen.');
+      }
       permit.disabled = true;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -118,8 +154,11 @@
         });
         if (!stream.getAudioTracks().length) throw new Error('Keine Mikrofonspur erhalten.');
         if (!supportedMime()) throw new Error('Dieser Browser kann keine unterstützte Audiodatei aufnehmen.');
+        watchMicrophone();
+        if (!stream) return; // view disappeared while permission prompt was open
         record.disabled = false;
-        permit.textContent = 'Mikrofon bereit';
+        permit.disabled = false;
+        permit.textContent = 'Mikrofon schließen';
         status('Mikrofon erlaubt. Aufnahme startet mit dem Video ab Sekunde 0.');
       } catch (err) {
         stopTracks();
@@ -162,6 +201,7 @@
         video.currentTime = 0;
         video.muted = !monitor.checked;
         recorder.start(250);
+        permit.disabled = true;
         video.play().catch((err) => { stopRecording(true); status('Video startet nicht: ' + err.message, true); });
         record.textContent = 'Aufnahme stoppen';
         cancel.hidden = false;
@@ -172,11 +212,6 @@
     // listener that would immediately stop the recording just started.
     cancel.addEventListener('click', () => stopRecording(true));
     video.addEventListener('ended', () => { if (recorder?.state === 'recording') stopRecording(); });
-    window.addEventListener('pagehide', () => { if (recorder?.state === 'recording') stopRecording(true); stopTracks(); }, { once: true });
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden && recorder?.state === 'recording') stopRecording();
-    });
-
     const acts = el('div', { class: 'voice-controls' }, permit, record, cancel, hear);
     const bakeMode = el('select', { 'aria-label': 'Tonmischung beim Einbrennen' }, options([
       ['mix', 'Original und Nachvertonung mischen'], ['replace', 'Nur Nachvertonung als Standard']

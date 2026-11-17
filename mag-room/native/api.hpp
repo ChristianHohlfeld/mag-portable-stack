@@ -198,6 +198,54 @@ public:
       }
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && p == "/api/video/retry") {
+      // Retry only the chosen H3 segment with its stored prompt and duration.
+      // A continuation reuses its ORIGINAL predecessor (not the completed
+      // composite or the latest chat video); the previous result stays intact.
+      if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      const std::string message_id = jstr(jparse(r.body), "message");
+      Val original;
+      if (message_id.empty() || !room_.get(message_id, original) || !original.find("model3d"))
+        return http::send_error(fd, 404, "Videoteil nicht gefunden.");
+      const Val &m3 = original["model3d"];
+      const std::string state = jstr(m3, "state");
+      if (jstr(m3, "kind") != "video" || jstr(m3, "model") != "h3" ||
+          (state != "done" && state != "error" && state != "cancelled"))
+        return http::send_error(fd, 409, "Nur abgeschlossene H3-Videoteile können erneut generiert werden.");
+      const std::string prompt = jstr(m3, "prompt");
+      if (trim(prompt).empty()) return http::send_error(fd, 409, "Originalprompt fehlt.");
+      const int seconds = (int)jnum(m3, "seconds", 5);
+      std::string error, id;
+      const std::string predecessor = jstr(m3, "continues");
+      if (!predecessor.empty()) {
+        // extend reads the stored predecessor's video file and appends exactly
+        // this segment once, with a newly sampled seed.
+        id = idol_.extend(predecessor, prompt, "chris", error, seconds);
+      } else {
+        Val image;
+        const std::string source_file = jstr(m3, "image");
+        if (!source_file.empty()) {
+          for (const auto &entry : room_.all()) {
+            if (const Val *atts = entry.find("attachments"); atts && atts->isArr()) {
+              for (const auto &a : atts->asArr()) {
+                if (jstr(a, "file") == source_file && jstr(a, "kind") == "image") {
+                  image = a;
+                  break;
+                }
+              }
+            }
+            if (image.isObj()) break;
+          }
+          // Never silently turn image-to-video into text-to-video.
+          if (!image.isObj()) return http::send_error(fd, 409, "Ursprungsbild nicht mehr vorhanden.");
+        }
+        id = idol_.film(image, prompt, "chris", error, seconds, jstr(m3, "use", "first"));
+      }
+      if (id.empty()) return http::send_error(fd, 409, error.empty() ? "Videoteil konnte nicht neu gestartet werden." : error);
+      Val out = Val::object();
+      out["model3d"] = id;
+      return http::send_json(fd, 200, out);
+    }
     if (r.method == "POST" && p == "/api/video/continue") {
       // An H3 video goes on ({"message", "prompt", "seconds"}): a new part from
       // its last frame, and a new message with the whole video, joined.

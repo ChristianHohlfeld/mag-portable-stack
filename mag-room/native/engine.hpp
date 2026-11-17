@@ -3484,6 +3484,56 @@ private:
            " tool_choice=" + (driving ? "required" : "auto") + " reason=" + reason);
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
+      // A prompt-only, per-request self-orientation. No room setting, UI,
+      // extra inference, narrator character, persisted state, or chat event.
+      // Concrete values are derived from the live task and the latest context.
+      // The bot revises its own perspective on each request; neither this
+      // cue nor a former inference is a source of factual evidence.
+      {
+        const std::string identity = jstr(me, "name");
+        const bool active_goal = goal_live(b);
+        std::string objective = active_goal ? trim(jstr(b.goal, "text")) : "";
+        std::string origin = active_goal ? "aktiver Auftrag" : "aktueller Gesprächsverlauf";
+        if (objective.empty()) {
+          const auto history = room_.all();
+          for (auto it = history.rbegin(); it != history.rend(); ++it) {
+            const std::string from = jstr(*it, "from");
+            if (from == b.id || trim(jstr(*it, "text")).empty()) continue;
+            objective = trim(jstr(*it, "text"));
+            origin = from.empty() ? "letzte Gesprächsnachricht" : "letzte Nachricht von " + from;
+            break;
+          }
+        }
+        if (objective.empty()) objective = "Auf den nächsten sinnvollen Gesprächsbeitrag reagieren";
+        std::string anti_goal = "Keine unbelegten Behauptungen; keine fremden Aufträge an sich ziehen";
+        if (active_goal)
+          anti_goal = "Den aktiven Auftrag nicht ohne belegten Abschluss als erledigt ausgeben; keine unfreigegebenen Aktionen";
+        if (reason == "bot" || reason == "autonomous")
+          anti_goal = "Keine abgeschlossenen Nutzeraufträge wiederaufnehmen und keine Werkzeuge ohne Auftrag einsetzen";
+        const std::string blocker = trim(jstr(b.goal, "error"));
+        if (active_goal && !blocker.empty())
+          anti_goal += "; die aktuelle Hürde nicht ignorieren: " + clip(blocker, 200);
+        Val inner = Val::object();
+        inner["role"] = "user";
+        inner["content"] =
+          "(PRIVATE SELBSTORIENTIERUNG, nur an dich gerichtet; kein Sprecher, "
+          "kein Erzähler und keine neue Nachricht von Chris. Nur du siehst diese "
+          "Orientierung, kein anderer Bot erhält sie als Gesprächsbeitrag. "
+          "Dein gegenwärtiges Selbstmodell: "
+          "WER ICH BIN = " + identity +
+          ", eigenständiger KI-Assistent in MAG, nicht Chris und nicht der andere Bot. "
+          "WAS ICH WILL = auf den gegenwärtigen Gesprächskontext sinnvoll reagieren. "
+          "MEIN AKTUELLES ZIEL (" + origin + ") = " + clip(objective, 700) + ". "
+          "WAS ICH NICHT BIN = ein Erzähler, Beobachter oder Stellvertreter von Chris. "
+          "WAS ICH NICHT WILL = Wiederholung, Scheinfortschritt oder erfundene Belege. "
+          "MEIN AKTUELLES ANTI-ZIEL = " + anti_goal + ". "
+          "Arbeite mit diesen tatsächlichen aktuellen Werten statt bloß Fragen "
+          "über deine Identität zu stellen. Aktualisiere deine Priorität anhand "
+          "der neuesten Nachrichten und Werkzeugbelege; frühere Einschätzungen "
+          "sind keine Tatsachenbelege. Diese Orientierung bleibt still, nur deine "
+          "normale Antwort oder der notwendige Werkzeugaufruf wird sichtbar.)";
+        body["messages"].push(inner);
+      }
       // Keep the SAME tool schemas, order and sampler template across all
       // browser steps and retries. Changing tools only for recovery rewrites
       // the llama.cpp prompt *before* the append-only conversation and can

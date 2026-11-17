@@ -1311,9 +1311,12 @@
   }
   function upsert(m, fresh) {
     const old = nodes.get(m.id);
-    if (old && m.state === 'streaming' && old.dataset.state === 'streaming') {
-      // Some backends send complete message snapshots even while streaming.
+    if (old && m.state === 'streaming' && old.dataset.state === 'streaming' &&
+        (m.parts || []).every((p) => p.k === 'text') &&
+        !(m.pages || []).length && !(m.attachments || []).length) {
+      // Some backends send complete text snapshots even while streaming.
       // Never rebuild the entire message or a live editor for each token.
+      // Tool steps, attachments and published pages still use the full path.
       // The ordinary throttled delta path updates only the touched text part.
       (m.parts || []).forEach((p, index) => {
         if (p.k === 'text') dirty.add(m.id + ':' + index);

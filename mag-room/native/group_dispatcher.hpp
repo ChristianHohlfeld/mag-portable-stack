@@ -15,6 +15,7 @@
 //  - a new human message or Stop pre-empts every pending follow-up.
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,6 +25,20 @@ namespace group_chat {
 struct Bot {
   std::string id, name;
 };
+
+// Grounded time between two room messages, independent of local timezone or
+// daylight-saving transitions (timestamps are Unix milliseconds). Empty for
+// small gaps: never tell the model an elapsed interval that did not happen.
+inline std::string elapsed_gap(int64_t delta_ms) {
+  if (delta_ms < 5 * 60000LL) return "";
+  const int64_t minutes = delta_ms / 60000;
+  const int64_t days = minutes / (24 * 60);
+  const int64_t hours = (minutes / 60) % 24;
+  const int64_t mins = minutes % 60;
+  if (days) return std::to_string(days) + " d " + std::to_string(hours) +
+                    " h " + std::to_string(mins) + " min";
+  return std::to_string(hours) + " h " + std::to_string(mins) + " min";
+}
 
 inline std::string lower(std::string s) {
   for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

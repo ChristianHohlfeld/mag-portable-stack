@@ -1374,7 +1374,7 @@ private:
     const std::string id = bot_of(r.path);
     if (!room_.bot(id).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
     const Val input = jparse(r.body);
-    if (!input.isObj() || !input.find("text") || !input.find("text")->isStr())
+    if (!input.isObj() || !input.find("text") || input.find("text")->type != Val::STR)
       return http::send_error(fd, 400, "Text der Erinnerung fehlt");
     std::string text = trim(jstr(input, "text"));
     for (char &c : text) if (c == '\n' || c == '\r' || c == '\t') c = ' ';

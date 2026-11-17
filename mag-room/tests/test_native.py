@@ -362,6 +362,114 @@ class RoomContract(unittest.TestCase):
             self.assertEqual(noah["effort"], "low")
             self.assertTrue(noah["thinking"])
 
+    def test_auto_chat_off_cuts_off_human_started_bot_followup_now(self):
+        """OFF stops even a Chris-initiated bot exchange, not just auto_burst_."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        bot_started, release = threading.Event(), threading.Event()
+
+        def reply(who):
+            def respond(body):
+                last = text_of(body["messages"][-1].get("content", ""))
+                if "Du wurdest nicht direkt angesprochen" in last:
+                    bot_started.set()
+                    if not release.wait(15):
+                        raise AssertionError("release blocked bot followup")
+                    return "Diese bereits gestoppte Folgerunde darf nicht erscheinen."
+                return "Direkte Antwort von %s." % who
+            return respond
+
+        r.lena.reply, r.noah.reply = reply("Lena"), reply("Noah")
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "bot_rounds": 0, "pass_enabled": False, "auto_chat": False})[0], 200)
+        try:
+            r.say("Hallo euch beiden")
+            self.assertTrue(bot_started.wait(25), "a human-started bot followup must be in flight")
+            # Deliberately start with auto_chat off: this is NOT an autonomous
+            # burst. Toggling it on and off must cut the CURRENT conversation.
+            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
+            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        finally:
+            release.set()
+        r.idle(25)
+        time.sleep(0.4)
+        self.assertEqual(sorted(r.texts("lena") + r.texts("noah")),
+                         ["Direkte Antwort von Lena.", "Direkte Antwort von Noah."])
+        count = len(r.lena.chats()) + len(r.noah.chats())
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), count,
+                         "after_turn must not reschedule a stopped exchange")
+        # A later explicit human message opens a fresh conversation again.
+        r.lena.reply = r.noah.reply = lambda body: "Neue direkte Antwort."
+        r.say("Neue Frage")
+        r.idle(25)
+        self.assertGreaterEqual(r.texts("lena").count("Neue direkte Antwort."), 1)
+        self.assertGreaterEqual(r.texts("noah").count("Neue direkte Antwort."), 1)
+
+    def test_lowering_bot_rounds_cuts_off_already_started_followup(self):
+        """Changing 0 (unlimited) to the already reached cap is immediate."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        bot_started, release = threading.Event(), threading.Event()
+
+        def answer(who):
+            def respond(body):
+                last = text_of(body["messages"][-1].get("content", ""))
+                if "Du wurdest nicht direkt angesprochen" in last:
+                    bot_started.set()
+                    if not release.wait(15):
+                        raise AssertionError("release blocked bot reply")
+                    return "Die Runde jenseits des neuen Limits."
+                return "Antwort von %s." % who
+            return respond
+
+        r.lena.reply, r.noah.reply = answer("Lena"), answer("Noah")
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "bot_rounds": 0, "pass_enabled": False, "auto_chat": False})[0], 200)
+        try:
+            r.say("Redet kurz miteinander")
+            self.assertTrue(bot_started.wait(25), "first counted bot followup started")
+            self.assertEqual(r.api("PUT", "/api/settings", {"bot_rounds": 1})[0], 200)
+        finally:
+            release.set()
+        r.idle(25)
+        time.sleep(0.4)
+        self.assertEqual(sorted(r.texts("lena") + r.texts("noah")),
+                         ["Antwort von Lena.", "Antwort von Noah."])
+        count = len(r.lena.chats()) + len(r.noah.chats())
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), count)
+
+    def test_auto_chat_off_does_not_cancel_direct_human_answers(self):
+        """A still-streaming human reply finishes but cannot wake bot peers."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        human_started, release = threading.Event(), threading.Event()
+
+        def answer(who):
+            def respond(body):
+                last = text_of(body["messages"][-1].get("content", ""))
+                if "Du wurdest nicht direkt angesprochen" in last:
+                    return "Ungewollte Bot-Runde."
+                human_started.set()
+                if not release.wait(15):
+                    raise AssertionError("release blocked human reply")
+                return "Geschuetzte Antwort von %s." % who
+            return respond
+
+        r.lena.reply, r.noah.reply = answer("Lena"), answer("Noah")
+        try:
+            r.say("Hallo ihr beiden")
+            self.assertTrue(human_started.wait(25), "human response is in flight")
+            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
+            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        finally:
+            release.set()
+        r.idle(25)
+        time.sleep(0.5)
+        self.assertEqual(sorted(r.texts("lena") + r.texts("noah")),
+                         ["Geschuetzte Antwort von Lena.", "Geschuetzte Antwort von Noah."])
+
     def test_idle_room_calls_no_model(self):
         r = self.room
         time.sleep(1.5)
@@ -627,114 +735,6 @@ class RoomContract(unittest.TestCase):
                                 str(m.get("content", ""))
                                 for req in model.chats() for m in req["messages"]))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
-
-    def test_auto_chat_off_cuts_off_human_started_bot_followup_now(self):
-        """OFF stops even a Chris-initiated bot exchange, not just auto_burst_."""
-        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
-        self.addCleanup(r.close)
-        bot_started, release = threading.Event(), threading.Event()
-
-        def reply(who):
-            def respond(body):
-                last = text_of(body["messages"][-1].get("content", ""))
-                if "Du wurdest nicht direkt angesprochen" in last:
-                    bot_started.set()
-                    if not release.wait(15):
-                        raise AssertionError("release blocked bot followup")
-                    return "Diese bereits gestoppte Folgerunde darf nicht erscheinen."
-                return "Direkte Antwort von %s." % who
-            return respond
-
-        r.lena.reply, r.noah.reply = reply("Lena"), reply("Noah")
-        self.assertEqual(r.api("PUT", "/api/settings", {
-            "bot_rounds": 0, "pass_enabled": False, "auto_chat": False})[0], 200)
-        try:
-            r.say("Hallo euch beiden")
-            self.assertTrue(bot_started.wait(25), "a human-started bot followup must be in flight")
-            # Deliberately start with auto_chat off: this is NOT an autonomous
-            # burst. Toggling it on and off must cut the CURRENT conversation.
-            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
-            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
-        finally:
-            release.set()
-        r.idle(25)
-        time.sleep(0.4)
-        self.assertEqual(sorted(r.texts("lena") + r.texts("noah")),
-                         ["Direkte Antwort von Lena.", "Direkte Antwort von Noah."])
-        count = len(r.lena.chats()) + len(r.noah.chats())
-        time.sleep(0.5)
-        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), count,
-                         "after_turn must not reschedule a stopped exchange")
-        # A later explicit human message opens a fresh conversation again.
-        r.lena.reply = r.noah.reply = lambda body: "Neue direkte Antwort."
-        r.say("Neue Frage")
-        r.idle(25)
-        self.assertGreaterEqual(r.texts("lena").count("Neue direkte Antwort."), 1)
-        self.assertGreaterEqual(r.texts("noah").count("Neue direkte Antwort."), 1)
-
-    def test_lowering_bot_rounds_cuts_off_already_started_followup(self):
-        """Changing 0 (unlimited) to the already reached cap is immediate."""
-        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
-        self.addCleanup(r.close)
-        bot_started, release = threading.Event(), threading.Event()
-
-        def answer(who):
-            def respond(body):
-                last = text_of(body["messages"][-1].get("content", ""))
-                if "Du wurdest nicht direkt angesprochen" in last:
-                    bot_started.set()
-                    if not release.wait(15):
-                        raise AssertionError("release blocked bot reply")
-                    return "Die Runde jenseits des neuen Limits."
-                return "Antwort von %s." % who
-            return respond
-
-        r.lena.reply, r.noah.reply = answer("Lena"), answer("Noah")
-        self.assertEqual(r.api("PUT", "/api/settings", {
-            "bot_rounds": 0, "pass_enabled": False, "auto_chat": False})[0], 200)
-        try:
-            r.say("Redet kurz miteinander")
-            self.assertTrue(bot_started.wait(25), "first counted bot followup started")
-            self.assertEqual(r.api("PUT", "/api/settings", {"bot_rounds": 1})[0], 200)
-        finally:
-            release.set()
-        r.idle(25)
-        time.sleep(0.4)
-        self.assertEqual(sorted(r.texts("lena") + r.texts("noah")),
-                         ["Antwort von Lena.", "Antwort von Noah."])
-        count = len(r.lena.chats()) + len(r.noah.chats())
-        time.sleep(0.5)
-        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), count)
-
-    def test_auto_chat_off_does_not_cancel_direct_human_answers(self):
-        """A still-streaming human reply finishes but cannot wake bot peers."""
-        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
-        self.addCleanup(r.close)
-        human_started, release = threading.Event(), threading.Event()
-
-        def answer(who):
-            def respond(body):
-                last = text_of(body["messages"][-1].get("content", ""))
-                if "Du wurdest nicht direkt angesprochen" in last:
-                    return "Ungewollte Bot-Runde."
-                human_started.set()
-                if not release.wait(15):
-                    raise AssertionError("release blocked human reply")
-                return "Geschuetzte Antwort von %s." % who
-            return respond
-
-        r.lena.reply, r.noah.reply = answer("Lena"), answer("Noah")
-        try:
-            r.say("Hallo ihr beiden")
-            self.assertTrue(human_started.wait(25), "human response is in flight")
-            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
-            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
-        finally:
-            release.set()
-        r.idle(25)
-        time.sleep(0.5)
-        self.assertEqual(sorted(r.texts("lena") + r.texts("noah")),
-                         ["Geschuetzte Antwort von Lena.", "Geschuetzte Antwort von Noah."])
 
     def test_autonomous_observer_cue_can_be_disabled_independently(self):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")

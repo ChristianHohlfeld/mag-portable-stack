@@ -165,6 +165,79 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
   assert.equal(uploads.length, 4, 'denial does not save a take');
   f.dom.window.close();
 
+  // A melody song can be a real uploaded File, separately cued on video
+  // and song timelines. No microphone permission or second player involved.
+  const mf = fixture(), wm = mf.w, dm = mf.d, musicCalls = [], cueCalls = [];
+  const track = { file: 'imported.mp3', name: 'music.mp3', kind: 'audio',
+    mime: 'audio/mpeg', duration: 2.8, voiceover_kind: 'take', voiceover_lane: 'melody',
+    voiceover_for: 'clip.mp4', voiceover_at: 0, voiceover_from: 0 };
+  wm.MAG.api = async (method, endpoint, payload) => {
+    if (endpoint.startsWith('/api/video/voiceover?')) {
+      musicCalls.push({ method, endpoint, payload });
+      return track;
+    }
+    if (endpoint === '/api/video/voiceover/cue') {
+      cueCalls.push(payload);
+      return { at: payload.at, from: payload.from };
+    }
+    throw Error('Unexpected melody API request ' + endpoint);
+  };
+  const clip = { file: 'clip.mp4', name: 'clip.mp4', kind: 'video' };
+  let melodyMessage = { id: 'melody999', attachments: [clip] };
+  const musicUI = wm.MAG.voiceover.player(melodyMessage, clip);
+  dm.body.append(musicUI);
+  assert(!find(musicUI, 'Musikdatei'), 'file upload only in the selected melody lane');
+  musicUI.querySelector('.voice-lanes button[aria-label="Melodie"]').click();
+  assert(find(musicUI, 'Musikdatei'), 'one compact file button in melody lane');
+  assert.equal(mf.perms.length, 0, 'file upload must never activate microphone');
+  const picker = musicUI.querySelector('input[type=file]');
+  const file = new wm.File(['X'.repeat(512)], 'cue-melodie.mp3', { type: 'audio/mpeg' });
+  Object.defineProperty(picker, 'files', { value: [file], configurable: true });
+  picker.dispatchEvent(new wm.Event('change'));
+  await flush();
+  assert.equal(musicCalls.length, 1);
+  assert(musicCalls[0].endpoint.includes('lane=melody&name=cue-melodie.mp3'));
+  assert.equal(musicCalls[0].payload, file);
+  assert.equal(musicUI.querySelectorAll('video').length, 1);
+  assert.equal(musicUI.querySelector('.voice-cues').hidden, false);
+  const at = musicUI.querySelector('[aria-label="Melodie ab Videosekunde"]');
+  const from = musicUI.querySelector('[aria-label="Song ab Sekunde"]');
+  at.value = '0.4';
+  at.dispatchEvent(new wm.Event('change'));
+  await flush();
+  assert.equal(cueCalls[0].at, 0.4);
+  assert.equal(cueCalls[0].from, 0);
+  from.value = '0.9';
+  from.dispatchEvent(new wm.Event('change'));
+  await flush();
+  assert.equal(cueCalls[1].from, 0.9);
+  assert.equal(cueCalls[1].at, 0.4);
+  melodyMessage = { ...melodyMessage, attachments: [...melodyMessage.attachments,
+    { ...track, voiceover_at: 0.4, voiceover_from: 0.9 }] };
+  musicUI._voiceoverRefresh(melodyMessage);
+  assert.equal(Number(at.value), 0.4, 'SSE preserves stored video cue');
+  assert.equal(Number(from.value), 0.9, 'SSE preserves song in-point');
+  const mv = musicUI.querySelector('video');
+  const ma = musicUI.querySelector('audio');
+  find(musicUI, 'Anhören').click();
+  await flush();
+  mv.currentTime = 0.25;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  assert.equal(ma.paused, true, 'song must not begin before its video cue');
+  mv.currentTime = 0.75;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  await flush();
+  assert.equal(ma.paused, false);
+  assert(Math.abs(ma.currentTime - 1.25) < 0.02,
+    'preview must seek into the song: 0.75 video - 0.4 cue + 0.9 song');
+  assert.equal(mf.perms.length, 0);
+  wm.MAG.state.you = { role: 'guest' };
+  const musicGuest = wm.MAG.voiceover.player(melodyMessage, clip);
+  assert(!find(musicGuest, 'Musikdatei'), 'guest has no file-upload control');
+  assert.equal(musicGuest.querySelector('.voice-cues'), null,
+    'guest has no editable cue fields mounted');
+  mf.dom.window.close();
+
   // Scene cards have TWO independent live keep nodes: the WebGL stage first,
   // the video/recording second. Both must keep exact DOM identity over SSE.
   const sc = fixture(true), ws = sc.w, ds = sc.d;

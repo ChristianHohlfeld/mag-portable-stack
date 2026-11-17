@@ -438,7 +438,7 @@ class RoomContract(unittest.TestCase):
 
         r.lena.reply, r.noah.reply = respond("lena"), respond("noah")
         self.assertEqual(r.api("PUT", "/api/settings", {
-            "auto_chat": True, "bot_rounds": 2, "pass_enabled": False,
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False,
             "web": False})[0], 200)
         r.wait(lambda: len([m for m in r.messages()
                             if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 2,
@@ -465,7 +465,7 @@ class RoomContract(unittest.TestCase):
             return reply
 
         r.lena.reply, r.noah.reply = make_reply("Lena"), make_reply("Noah")
-        settings = {"auto_chat": True, "bot_rounds": 2,
+        settings = {"auto_chat": True, "bot_rounds": 1,
                     "pass_enabled": False, "auto_chat_visible": True, "web": False}
         self.assertEqual(r.api("PUT", "/api/settings", settings)[0], 200)
         r.wait(lambda: len([m for m in r.messages()
@@ -501,6 +501,78 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(any(m["state"] == "error" and "technisch unterbrochen" in m["text"]
                             for m in r.messages() if m["from"] == "noah"))
         self.assertNotIn("PASS", " ".join(r.texts()))
+
+    def test_autonomous_round_limit_counts_followups_not_the_opener(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        counter = [0]
+
+        def answer(body):
+            counter[0] += 1
+            return "Neuer Satz Nummer %d." % counter[0]
+
+        r.lena.reply = r.noah.reply = answer
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1,
+            "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) == 2,
+               "one starter and one follow-up", 35)
+        r.idle()
+        messages = [m for m in r.messages() if m["from"] in ("lena", "noah")]
+        self.assertEqual(len(messages), 2, "opening is not a follow-up round")
+        self.assertEqual(sorted(m["from"] for m in messages), ["lena", "noah"])
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_tool_call_cannot_end_dialogue_or_run_tool(self):
+        """The first bot's prefatory text and native tool call must be
+        rejected before a chat bubble or tool execution is persisted."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        attempts = [0]
+
+        def lena(body):
+            attempts[0] += 1
+            if attempts[0] == 1:
+                return {"content": "Ich starte jetzt ein Werkzeug.",
+                        "tool_calls": [{"name": "shell",
+                                        "arguments": {"command": "echo should-not-execute"}}]}
+            return "Ein eigener Gedanke ohne Werkzeuge."
+
+        r.lena.reply = lena
+        r.noah.reply = lambda body: "Ich denke darüber anders."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1,
+            "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 2,
+               "both models continue after denied tool", 35)
+        r.idle()
+        self.assertEqual(attempts[0], 2, "forbidden native call triggers one correction")
+        self.assertEqual(r.texts("lena"), ["Ein eigener Gedanke ohne Werkzeuge."])
+        self.assertEqual(r.texts("noah"), ["Ich denke darüber anders."])
+        self.assertFalse(any(p.get("k") == "step"
+                             for m in r.messages()
+                             for p in m.get("parts", [])),
+                         "no unattended tool action can reach room history")
+        self.assertTrue(any("Werkzeuge sind in diesem eigenständigen Bot-Dialog" in
+                            str(msg.get("content", "")) for req in r.lena.chats()
+                            for msg in req["messages"]),
+                        "one corrected request must have a grounded no-tool instruction")
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_chat_restarts_after_cooldown_without_browser(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
+        self.addCleanup(r.close)
+        r.lena.reply = r.noah.reply = lambda body: "PASS"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "pass_enabled": True, "web": False})[0], 200)
+        r.wait(lambda: len(r.lena.chats()) >= 1,
+               "first quiet unattended session", 20)
+        r.wait(lambda: len(r.noah.chats()) >= 1,
+               "second quiet unattended session rotates the starter", 20)
+        self.assertEqual(r.messages(), [], "PASS must stay invisible")
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_autonomous_chat_can_start_without_human_or_browser(self):
         # No SSE socket and no frontend: only the room and its two workers.

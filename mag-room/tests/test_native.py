@@ -371,17 +371,15 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertEqual(sorted(m["from"] for m in r.messages()), ["chris", "lena", "noah"])
         self.assertEqual(r.messages()[0]["from"], "chris")  # answers come below the question
-        # Each bot read the other's answer once and chose PASS: invisible, and the room rests.
+        # Both answer the human once. A finished bot may make ONE optional
+        # follow-up after the other human answer, but no round is queued for a
+        # bot still working on that same human message.
         self.assertNotIn("PASS", " ".join(r.texts()))
-        self.assertEqual(len(r.lena.chats()), 2)
-        self.assertEqual(len(r.noah.chats()), 2)
         self.assertIn("Chris: Hi beide", r.lena.chats()[0]["messages"][-1]["content"])
-        self.assertIn("Noah: Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
+        self.assertIn("Chris: Hi beide", r.noah.chats()[0]["messages"][-1]["content"])
+        self.assertTrue(2 <= len(r.lena.chats()) + len(r.noah.chats()) <= 3)
         time.sleep(1.0)
-        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
-        # Invisible PASS is still invisible; the server audit distinguishes
-        # it from a missed dispatch or an unfinished generation.
-        self.assertIn("chose PASS/empty", (r.tmp / "magroom.log").read_text())
+        self.assertTrue(2 <= len(r.lena.chats()) + len(r.noah.chats()) <= 3)
 
     def test_autonomous_chat_can_start_without_human_or_browser(self):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
@@ -434,6 +432,50 @@ class RoomContract(unittest.TestCase):
         self.assertRegex(prompt, r"\([A-Za-z]{2} [0-9]{2}\.[0-9]{2}\. [0-9]{2}:[0-9]{2}\)\nLena:")
         self.assertIn("Überleg bitte nochmal.", prompt)
         self.assertNotIn("Über Aktivitäten in der Zwischenzeit", prompt)
+
+    def test_plural_imperative_dispatches_to_both(self):
+        r = self.room
+        r.say("Überlegt mal, wie die beiden Angaben zusammenpassen.")
+        r.idle()
+        self.assertEqual(sorted(m["from"] for m in r.messages()), ["chris", "lena", "noah"])
+        self.assertEqual(len([m for m in r.messages() if m.get("reason") == "human" and m["from"] != "chris"]), 2)
+
+    def test_clock_now_available_to_both_bots_without_vm(self):
+        r = self.room
+        def reply(body):
+            if any(m.get("role") == "tool" and m.get("name") == "clock_now"
+                   for m in body["messages"]):
+                return "Uhrzeit geprüft."
+            return {"tool_calls": [{"name": "clock_now", "arguments": {}}]}
+        r.noah.reply = reply  # Noah has no VM
+        r.say("@Noah Wie spät ist es genau jetzt?")
+        r.idle()
+        requests = r.noah.chats()
+        self.assertIn("clock_now", {tool["function"]["name"] for tool in requests[0]["tools"]})
+        observed = "\n".join(str(m.get("content", "")) for m in requests[-1]["messages"]
+                             if m.get("role") == "tool")
+        self.assertRegex(observed, r"Aktuelle Systemzeit des MAG-Servers.*\\d{4}-\\d{2}-\\d{2}")
+        self.assertIn("Uhrzeit geprüft.", r.texts("noah"))
+
+    def test_new_message_preempts_stale_plain_answer(self):
+        r = self.room
+        r.lena.delay = 0.03
+        def reply(body):
+            context = "\n".join(text_of(m.get("content")) for m in body["messages"]
+                                if m.get("role") == "user")
+            return "Neue Antwort." if "zweite Frage" in context else "Alte Antwort. " * 160
+        r.lena.reply = reply
+        r.say("@Lena erste Frage")
+        r.wait(lambda: any(m["from"] == "lena" and m["state"] == "streaming"
+                           for m in r.messages()), "old answer streaming")
+        second = r.say("@Lena zweite Frage")
+        r.lena.delay = 0
+        r.idle()
+        replies = [m for m in r.messages() if m["from"] == "lena"]
+        self.assertTrue(any(m["state"] == "stopped" for m in replies))
+        self.assertTrue(any(m["state"] == "done" and "Neue Antwort." in m["text"]
+                            and m["id"] > second["id"] for m in replies))
+        self.assertLess(len(r.lena.chats()), 4)
 
     def test_named_bot_answers_alone(self):
         r = self.room

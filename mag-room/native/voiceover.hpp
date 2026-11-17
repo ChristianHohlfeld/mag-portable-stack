@@ -3,6 +3,7 @@
 // bake creates an additional MP4 attachment, never overwrites its inputs.
 #pragma once
 #include "room.hpp"
+#include <cmath>
 
 namespace mag::voiceover {
 

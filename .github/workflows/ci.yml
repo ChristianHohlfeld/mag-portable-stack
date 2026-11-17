@@ -50,6 +50,7 @@ jobs:
           node mag-room/tests/test_tts_stall.js
           node mag-room/tests/test_tts_play_duration.js
           node mag-room/tests/test_tts_stream_stop.js
+          node mag-room/tests/test_tts_no_fallback.js
       - name: Live browser (gestures, keyboard only from a tap, HTTPS picture)
         run: |
           npm install --prefix /tmp/mag-live-jsdom jsdom@26.1.0

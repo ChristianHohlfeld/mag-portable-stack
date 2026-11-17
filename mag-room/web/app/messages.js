@@ -3,12 +3,12 @@
 'use strict';
 (function () {
   const { MAG } = window, { el, $, state: S } = MAG;
-  let list, scroller, jump, activity, empty, mediaEmpty, olderBtn;
+  let list, scroller, jump, activity, empty, olderBtn;
   let pinned = true, unread = 0;
   // This is a local presentation preference, never a server-side filter:
   // every message and tool event continues to arrive and remains in S.messages.
   let mediaOnly = false;
-  try { mediaOnly = localStorage.getItem('mag-chat-view') === 'media'; } catch (_) {}
+  try { mediaOnly = localStorage.getItem('mag-media-only') === '1'; } catch (_) {}
   let lastScrollTop = 0, touchY = null;
   let inputDirection = 'none', inputUntil = 0; // only an explicit user gesture may re-pin
   const nodes = new Map(); // message id -> article
@@ -1149,24 +1149,15 @@
       onclick: () => nodes.get(ref.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
       MAG.icon(scene ? 'film' : 'cube'), el('span', { text: scene ? 'zur Szene „' + (m3.title || 'Szene') + '“' : 'zum 3D-Modell ' + (glb?.name || '') }));
   }
-  // A media generation is visible from its *queued* state onward, not only
-  // after an attachment exists. Bot/service messages with generated media
-  // attachments also qualify, but their ordinary text/tool parts stay hidden
-  // in media-only mode. User uploads are not generated media.
-  function isMediaMessage(m) {
-    if (m.role === 'user') return false;
-    if (['image', 'video', '3d', 'scene'].includes(m.model3d?.kind)) return true;
-    return (m.attachments || []).some((a) => !a.voiceover_kind &&
-      ['image', 'video', 'model', 'audio'].includes(a.kind));
-  }
+  // Every queued/running/completed/failed/aborted media job uses model3d.
+  // This is view state only; the room and live players are not changed.
+  function isMediaMessage(m) { return !!m.model3d; }
   function build(m) {
     const user = m.role === 'user';
-    const generated = isMediaMessage(m);
     const node = el('article', { class: 'msg ' +
-      (user ? 'user' : m.role === 'service' ? 'service' : 'bot') +
-      (generated ? ' media-item' : '') +
-      (generated && !m.model3d ? ' media-attachment' : ''),
-      dataset: { id: m.id, from: m.from, state: m.state || '' } });
+      (user ? 'user' : m.role === 'service' ? 'service' : 'bot'),
+      dataset: { id: m.id, from: m.from, state: m.state || '',
+        media: isMediaMessage(m) ? '1' : '' } });
     const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
     const files = (m.model3d && !picture ? [] : m.attachments || []).filter((a) => !a.voiceover_kind);
     const atts = files.length ? el('div', { class: 'atts' }, files.map((a) => buildAttachment(a, m))) : null;
@@ -1328,7 +1319,7 @@
       const m = S.messages.get(node.dataset.id);
       // Hidden bot rows must never eat the day's separator from the first
       // visible generation. This also respects the room's own hidden rows.
-      if (node.hidden || (mediaOnly && !node.classList.contains('media-item'))) {
+      if (node.hidden || (mediaOnly && node.dataset.media !== '1')) {
         delete node.dataset.day;
         continue;
       }
@@ -1339,25 +1330,23 @@
     }
   }
   function paintEmpty() {
-    empty.hidden = mediaOnly || S.messages.size > 0;
-    // Legacy embedded chats and jsdom fixtures do not include this optional
-    // view. Their existing timeline and editor behavior must remain intact.
-    if (mediaEmpty) mediaEmpty.hidden = !mediaOnly ||
-      [...S.messages.values()].some(isMediaMessage);
+    const hasMedia = [...S.messages.values()].some(isMediaMessage);
+    empty.hidden = mediaOnly ? hasMedia : S.messages.size > 0;
+    if (mediaOnly && !hasMedia) empty.textContent = 'Noch kein Bild, Video oder 3D.';
+    else if (empty.dataset.originalHtml) empty.innerHTML = empty.dataset.originalHtml;
   }
-  function setView(mode, resetPosition = true) {
-    mediaOnly = mode === 'media';
-    list.classList.toggle('media-only', mediaOnly);
-    document.querySelectorAll('#viewbar button[data-view]').forEach((button) => {
-      const on = button.dataset.view === (mediaOnly ? 'media' : 'all');
-      button.classList.toggle('on', on);
-      button.setAttribute('aria-pressed', String(on));
-    });
-    try { localStorage.setItem('mag-chat-view', mediaOnly ? 'media' : 'all'); } catch (_) {}
+  function setMediaOnly(value, resetPosition = true) {
+    mediaOnly = !!value;
+    $('#app')?.classList.toggle('media', mediaOnly);
+    const button = $('#media-filter');
+    if (button) {
+      button.setAttribute('aria-pressed', String(mediaOnly));
+      button.classList.toggle('on', mediaOnly);
+      button.title = mediaOnly ? 'Alle Nachrichten anzeigen' : 'Nur Medien anzeigen';
+    }
+    try { localStorage.setItem('mag-media-only', mediaOnly ? '1' : '0'); } catch (_) {}
     paintDays();
     paintEmpty();
-    // Changing views is an explicit navigation gesture. Never try to anchor
-    // to a row that has just become hidden; land on the latest visible job.
     if (resetPosition) toBottom();
   }
 
@@ -1501,15 +1490,13 @@
   // ---- wiring -------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity');
-    empty = $('#empty'); mediaEmpty = $('#media-empty'); olderBtn = $('#older');
-    const viewbar = $('#viewbar');
-    if (viewbar && mediaEmpty) {
-      viewbar.addEventListener('click', (event) => {
-        const button = event.target.closest('button[data-view]');
-        if (button) setView(button.dataset.view);
-      });
-      setView(mediaOnly ? 'media' : 'all', false);
-    } else mediaOnly = false; // Existing embedded/test timelines have no filter UI.
+    empty = $('#empty'); olderBtn = $('#older');
+    if (empty) empty.dataset.originalHtml = empty.innerHTML;
+    const button = $('#media-filter');
+    if (button && $('#app')) {
+      button.addEventListener('click', () => setMediaOnly(!mediaOnly));
+      setMediaOnly(mediaOnly, false);
+    } else mediaOnly = false; // Old embedded jsdom fixtures work without the optional toggle.
     // Scroll position alone is not intent: native anchoring or a group
     // redraw can produce small downward scroll events. Only a fresh USER
     // gesture toward the true bottom is allowed to re-enable follow mode.

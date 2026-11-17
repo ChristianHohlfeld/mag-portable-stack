@@ -3086,8 +3086,8 @@ private:
         if (auto_burst_) {
           bool pending = false;
           for (const auto &peer : bots_)
-            if (peer->running == "autonomous" || peer->running == "bot" ||
-                (peer->want && (peer->reason == "autonomous" || peer->reason == "bot"))) {
+            if (peer->running == "autonomous" || peer->running == "bot" || peer->running == "self" ||
+                (peer->want && (peer->reason == "autonomous" || peer->reason == "bot" || peer->reason == "self"))) {
               pending = true;
               break;
             }

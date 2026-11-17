@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 #include <regex>
 #include <set>
 
@@ -158,6 +159,7 @@ inline Val schemas(bool has_vm, bool phone = false) {
     list.push(fn("goal_step", "Mark one planned step as done or blocked. Done requires an exact visible quote and its seen page URL.",
                   R"MAG({"type":"object","properties":{"id":{"type":"string"},"state":{"type":"string","enum":["done","blocked","pending"]},"note":{"type":"string"},"url":{"type":"string"},"quote":{"type":"string"}},"required":["id","state"]})MAG"));
   }
+  list.push(fn("clock_now", "Read the current MAG server clock: precise date, time, timezone and UTC offset. Use this when asked what time it is now; message timestamps are historical.", R"({"type":"object","properties":{}})"));
   list.push(fn("web_search", "Search the web (Brave) for current facts; returns sources with excerpts.",
                R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})"));
   list.push(fn("read_image", "Read the text in an image from the chat (OCR). You cannot see images otherwise.",
@@ -307,6 +309,7 @@ inline std::string title(const std::string &name, const Val &args) {
     for (auto &c : s) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
     return clip(trim(s), max, "…");
   };
+  if (name == "clock_now") return "Liest die aktuelle Serverzeit";
   if (name == "shell") return "$ " + one(jstr(args, "command"), 140);
   if (name == "write_file") return "Schreibt " + one(jstr(args, "path"), 100);
   if (name == "browser_open") return "Öffnet " + one(jstr(args, "url"), 120);
@@ -652,6 +655,16 @@ inline Result phone(const std::string &name, const Val &args, Ctx &ctx) {
 }
 
 inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
+  if (name == "clock_now") {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (!localtime_r(&now, &local)) return fail("Serveruhr ist nicht verfügbar.");
+    char stamp[96]{};
+    if (!std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S %Z (UTC%z)", &local))
+      return fail("Serverzeit konnte nicht formatiert werden.");
+    return {"Aktuelle Systemzeit des MAG-Servers zum Zeitpunkt des Aufrufs: " + std::string(stamp) +
+            ". Dies ist keine Aussage darueber, was jemand seit seiner letzten Nachricht getan hat.", true};
+  }
   if (starts_with(name, "s23_")) return phone(name, args, ctx);
   const std::string vm = jstr(ctx.bot, "vm");
   const bool has_vm = vm::valid_name(vm);

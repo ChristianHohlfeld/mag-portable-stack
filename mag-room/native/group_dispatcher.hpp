@@ -15,6 +15,7 @@
 //  - a new human message or Stop pre-empts every pending follow-up.
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,6 +25,20 @@ namespace group_chat {
 struct Bot {
   std::string id, name;
 };
+
+// Grounded time between two room messages, independent of local timezone or
+// daylight-saving transitions (timestamps are Unix milliseconds). Empty for
+// small gaps: never tell the model an elapsed interval that did not happen.
+inline std::string elapsed_gap(int64_t delta_ms) {
+  if (delta_ms < 5 * 60000LL) return "";
+  const int64_t minutes = delta_ms / 60000;
+  const int64_t days = minutes / (24 * 60);
+  const int64_t hours = (minutes / 60) % 24;
+  const int64_t mins = minutes % 60;
+  if (days) return std::to_string(days) + " d " + std::to_string(hours) +
+                    " h " + std::to_string(mins) + " min";
+  return std::to_string(hours) + " h " + std::to_string(mins) + " min";
+}
 
 inline std::string lower(std::string s) {
   for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -44,10 +59,31 @@ inline bool has_word(const std::string &hay, const std::string &needle) {
   return false;
 }
 
+// A German plural imperative normally ends in -t. Only treat it as a group
+// invitation when followed by a conversational particle; a naked -t ending
+// is too ambiguous ("Er arbeitet", "Es stimmt"). No verb or task dictionary.
+inline bool plural_invitation(const std::string &text) {
+  const std::string t = lower(text);
+  const size_t b = t.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) return false;
+  size_t e = b;
+  while (e < t.size() && word_char((unsigned char)t[e])) ++e;
+  if (e - b < 4 || t[e - 1] != 't') return false;
+  const size_t next = t.find_first_not_of(" \t", e);
+  if (next == std::string::npos) return false;
+  const auto particle = [&](const char *p) {
+    const size_t n = std::string(p).size();
+    return t.compare(next, n, p) == 0 &&
+           (next + n == t.size() || !word_char((unsigned char)t[next + n]));
+  };
+  return particle("mal") || particle("bitte");
+}
+
 // "beide", "ihr", "euch" and "@alle" address everybody anywhere; a bare
 // "alle"/"allen" only at the start or after a greeting ("Hi alle"), so
 // "lösch alle Dateien" stays an ordinary sentence.
 inline bool addresses_all(const std::string &text) {
+  if (plural_invitation(text)) return true;
   const std::string t = lower(text);
   for (const char *w : {"beide", "beiden", "ihr", "euch", "@alle", "@all", "@beide"})
     if (has_word(t, w)) return true;

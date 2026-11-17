@@ -33,15 +33,14 @@
         // localStorage or live iframe while model output is still growing.
         // Keep the code block cheap to rebuild as more tokens arrive.
         const lines = source.replace(/\n$/, '').split('\n');
-        const block = el('div', { class: 'codeblock codeblock-live', dataset: { codeKey: key } },
-          el('div', { class: 'head' },
-            el('span', { class: 'code-lang', text: rawLang || 'Code' }),
-            el('button', { class: 'copy', type: 'button', text: 'Kopieren',
-              onclick: (e) => { e.preventDefault(); copy(source, e.currentTarget); } })), pre);
+        const block = el('div', { class: 'codeblock codeblock-live', dataset: { codeKey: key } });
+        const head = el('div', { class: 'head' },
+          el('span', { class: 'code-lang', text: rawLang || 'Code' }),
+          el('button', { class: 'copy', type: 'button', text: 'Kopieren',
+            onclick: (e) => { e.preventDefault(); copy(source, e.currentTarget); } }));
         block._sourceOriginal = source;
         pre.replaceWith(block);
-        // pre was detached when replacing it: attach its static content once.
-        block.append(pre);
+        block.append(head, pre);
         return;
       }
       const lang = MAG.codeEditor.language(rawLang, source);
@@ -1298,7 +1297,10 @@
     next.querySelectorAll(selector).forEach((n) => {
       if (n.closest('.page') && !n.classList.contains('page')) return;
       const former = prior.get(identity(n));
-      if (former && former._sourceOriginal === n._sourceOriginal) n.replaceWith(former);
+      if (former && former._sourceOriginal === n._sourceOriginal &&
+          // A completed code block must upgrade from display to editor.
+          !(former.classList.contains('codeblock-live') &&
+            !n.classList.contains('codeblock-live'))) n.replaceWith(former);
     });
   }
   function upsert(m, fresh) {

@@ -1321,12 +1321,13 @@
   }
   function upsert(m, fresh) {
     const old = nodes.get(m.id);
-    if (old && m.state === 'streaming' && old.dataset.state === 'streaming' &&
+    if (old && !m.model3d && m.state === 'streaming' && old.dataset.state === 'streaming' &&
         (m.parts || []).every((p) => p.k === 'text') &&
         !(m.pages || []).length && !(m.attachments || []).length) {
       // Some backends send complete text snapshots even while streaming.
       // Never rebuild the entire message or a live editor for each token.
-      // Tool steps, attachments and published pages still use the full path.
+      // Job cards (including empty parts arrays), tool steps, attachments
+      // and published pages still use the full path for live status updates.
       // The ordinary throttled delta path updates only the touched text part.
       (m.parts || []).forEach((p, index) => {
         if (p.k === 'text') dirty.add(m.id + ':' + index);

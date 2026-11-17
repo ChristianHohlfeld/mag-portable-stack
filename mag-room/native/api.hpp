@@ -4,6 +4,7 @@
 #include "auth.hpp"
 #include "engine.hpp"
 #include "idol.hpp"
+#include "voiceover.hpp"
 #include "push.hpp"
 #include "vault.hpp"
 
@@ -174,6 +175,14 @@ public:
     if (r.method == "POST" && p == "/api/message") return post_message(fd, r, who);
     if (r.method == "POST" && p == "/api/stop") return post_stop(fd, r);
     if (r.method == "POST" && p == "/api/upload") return upload(fd, r);
+    if (r.method == "POST" && p == "/api/video/voiceover") {
+      if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      return voiceover_upload(fd, r);
+    }
+    if (r.method == "POST" && p == "/api/video/bake") {
+      if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      return voiceover_bake(fd, r);
+    }
     if (r.method == "POST" && p == "/api/stt") return stt(fd, r);
     if ((r.method == "POST" || r.method == "DELETE") && p == "/api/stt/live") return stt_live(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/cancel")) {
@@ -423,6 +432,8 @@ private:
   Assist &assist_;
   Vault &vault_;
   std::string version_, web_;
+  // Serializes bake reads against removal of superseded lane files.
+  std::mutex voiceover_render_mu_;
 
   static constexpr const char *kNoAccess =
       "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -930,6 +941,146 @@ private:
           return head;
         }
     return "";
+  }
+
+  // ---- voiceovers ---------------------------------------------------------
+  // New takes are *attachments* of their source message: SSE, backups, room
+  // deletion and the Files gallery use the existing infrastructure. Each
+  // new lane recording supersedes that lane's earlier take only. Baking
+  // never changes the original video or any active source take.
+  void voiceover_upload(int fd, const http::Request &r) {
+    const std::string id = r.param("message"), video = r.param("video"), lane = r.param("lane");
+    if (!is_id(id)) return http::send_error(fd, 400, "Ungültige Nachricht");
+    if (!voiceover::lane(lane)) return http::send_error(fd, 400, "Spur muss voice, melody oder effects sein");
+    Val m;
+    if (!room_.get(id, m) || !voiceover::original(m, video))
+      return http::send_error(fd, 404, "Originalvideo in dieser Nachricht nicht gefunden");
+    if (r.body.size() < 128 || r.body.size() > (12u << 20))
+      return http::send_error(fd, 413, "Audioaufnahme muss zwischen 128 Byte und 12 MB liegen");
+    const std::string mime = lower(r.header("content-type"));
+    const std::string ext = starts_with(mime, "audio/webm") ? "weba"
+                            : starts_with(mime, "audio/mp4") ? "m4a"
+                            : starts_with(mime, "audio/ogg") ? "ogg" : "";
+    if (ext.empty()) return http::send_error(fd, 415, "Audioformat nicht unterstützt (WebM, MP4 oder Ogg)");
+    Val a = room_.store_file("nachvertonung-" + lane + "-" + std::to_string(now_ms()) + "." + ext, r.body, "chris");
+    if (!a.isObj()) return http::send_error(fd, 500, "Audio konnte nicht gespeichert werden");
+    const std::string path = room_.file_path(jstr(a, "file"));
+    const double duration = voiceover::seconds(path);
+    if (!voiceover::audio_ok(path) || !duration) {
+      unlink(path.c_str());
+      return http::send_error(fd, 422, "Keine lesbare Audioaufnahme oder länger als zehn Minuten");
+    }
+    a["voiceover_kind"] = "take";
+    a["voiceover_for"] = video;
+    a["voiceover_lane"] = lane;
+    a["duration"] = duration;
+    a["created"] = (double)now_s();
+    // Only one current take per (original video, lane). Replace atomically in
+    // the room snapshot so SSE, backups and the file gallery agree immediately.
+    // A concurrent bake may still be reading an earlier take. Never unlink
+    // that file until ffmpeg finishes; room startup GC removes any leftovers.
+    std::unique_lock<std::mutex> deletion_guard(voiceover_render_mu_, std::try_to_lock);
+    std::vector<std::string> superseded;
+    if (!room_.update(id, [&](Val &message) {
+      Val next = Val::array();
+      if (const Val *old = message.find("attachments"); old && old->isArr()) {
+        for (const Val &item : old->asArr()) {
+          const bool same_lane = jstr(item, "voiceover_kind") == "take" &&
+              jstr(item, "voiceover_for") == video &&
+              jstr(item, "voiceover_lane", "voice") == lane;
+          if (same_lane) {
+            const std::string old_file = jstr(item, "file");
+            if (!old_file.empty()) superseded.push_back(old_file);
+          } else next.push(item);
+        }
+      }
+      next.push(a);
+      message["attachments"] = next;
+    })) {
+      unlink(path.c_str());
+      return http::send_error(fd, 404, "Nachricht wurde entfernt");
+    }
+    if (deletion_guard.owns_lock())
+      for (const std::string &old_file : superseded) {
+        const std::string prior = room_.file_path(old_file);
+        if (!prior.empty() && old_file != jstr(a, "file")) unlink(prior.c_str());
+      }
+    http::send_json(fd, 201, a);
+  }
+
+  void voiceover_bake(int fd, const http::Request &r) {
+    const Val arg = jparse(r.body);
+    const std::string id = jstr(arg, "message"), video = jstr(arg, "video"),
+                      mode = jstr(arg, "mode", "mix");
+    if (!is_id(id) || (mode != "mix" && mode != "replace"))
+      return http::send_error(fd, 400, "Ungültige Nachvertonung");
+    // Hold before reading attachment IDs: a new take must not remove a file
+    // between the snapshot validation and ffmpeg opening that input.
+    std::unique_lock<std::mutex> render_guard(voiceover_render_mu_, std::try_to_lock);
+    if (!render_guard.owns_lock()) return http::send_error(fd, 409, "Ein Video wird bereits vertont");
+    Val m;
+    if (!room_.get(id, m) || !voiceover::original(m, video))
+      return http::send_error(fd, 404, "Originalvideo nicht in dieser Nachricht");
+    const Val *chosen = arg.find("lanes");
+    if (!chosen || !chosen->isObj()) return http::send_error(fd, 400, "Spuren fehlen");
+    std::vector<std::pair<std::string, std::string>> lanes;
+    Val saved = Val::object();
+    for (const char *lane : {"voice", "melody", "effects"}) {
+      const std::string file = jstr(*chosen, lane);
+      if (file.empty()) continue;
+      if (!voiceover::take(m, video, file, lane))
+        return http::send_error(fd, 404, std::string("Die ausgewählte ") + lane + "-Tonspur gehört nicht zu diesem Video");
+      const std::string path = room_.file_path(file);
+      if (path.empty() || !exists(path)) return http::send_error(fd, 404, "Tonspur fehlt");
+      lanes.emplace_back(lane, path);
+      saved[lane] = file;
+    }
+    if (lanes.empty()) return http::send_error(fd, 400, "Mindestens eine Tonspur aufnehmen");
+    const std::string source = room_.file_path(video);
+    if (source.empty() || !exists(source)) return http::send_error(fd, 404, "Originalvideo fehlt");
+    const std::string base = room_.cfg.state_dir + "/voiceover-" + random_hex(12);
+    const std::string mp4 = base + ".mp4", m4a = base + ".m4a";
+    std::string error;
+    if (!voiceover::bake(source, lanes, mp4, mode, error)) {
+      unlink(mp4.c_str());
+      return http::send_error(fd, 422, error);
+    }
+    if (!voiceover::extract_mix(mp4, m4a)) {
+      unlink(mp4.c_str());
+      unlink(m4a.c_str());
+      return http::send_error(fd, 422, "Gemischte Tonspur konnte nicht erstellt werden");
+    }
+    Val mixed = room_.adopt_file(m4a, "tonmix-" + random_hex(4) + ".m4a", "chris");
+    Val baked = room_.adopt_file(mp4, "video-nachvertonung-" + random_hex(4) + ".mp4", "chris");
+    if (!mixed.isObj() || !baked.isObj()) {
+      if (mixed.isObj()) unlink(room_.file_path(jstr(mixed, "file")).c_str());
+      if (baked.isObj()) unlink(room_.file_path(jstr(baked, "file")).c_str());
+      unlink(mp4.c_str());
+      unlink(m4a.c_str());
+      return http::send_error(fd, 500, "Nachvertonung konnte nicht gespeichert werden");
+    }
+    mixed["voiceover_kind"] = "mix";
+    mixed["voiceover_for"] = video;
+    mixed["voiceover_lanes"] = saved;
+    baked["voiceover_kind"] = "baked";
+    baked["voiceover_for"] = video;
+    baked["voiceover_mix"] = jstr(mixed, "file");
+    baked["voiceover_lanes"] = saved;
+    baked["voiceover_mode"] = mode;
+    if (!room_.update(id, [&](Val &message) {
+      Val &atts = message["attachments"];
+      if (!atts.isArr()) atts = Val::array();
+      atts.push(mixed);
+      atts.push(baked);
+    })) {
+      unlink(room_.file_path(jstr(mixed, "file")).c_str());
+      unlink(room_.file_path(jstr(baked, "file")).c_str());
+      return http::send_error(fd, 404, "Nachricht wurde entfernt");
+    }
+    Val response = Val::object();
+    response["mix"] = mixed;
+    response["video"] = baked;
+    return http::send_json(fd, 201, response);
   }
 
   // ---- files --------------------------------------------------------------

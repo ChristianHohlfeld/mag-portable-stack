@@ -19,7 +19,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache jq libssl-dev libcurl4-openssl-dev libarchive-dev libicu-dev python3-numpy python3-scipy python3-pil
+          sudo apt-get install -y ninja-build ccache jq libssl-dev libcurl4-openssl-dev libarchive-dev libicu-dev python3-numpy python3-scipy python3-pil ffmpeg
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -56,6 +56,7 @@ jobs:
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_web_ui.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_code_editor.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_code_streaming.js
+          NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_video_voiceover.js
           node mag-room/tests/test_browser_body_null.js
           node mag-room/tests/test_screen_awake.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_goal_group.js
@@ -67,8 +68,13 @@ jobs:
           python3 ops/scene/tests/test_worker.py
       - name: Phone control daemon (not part of a release; the room's phone tools are tested against it)
         run: python3 devices/s23/tests/test_s23ctl.py
+      - name: Room regression (VM reset + unattended tool retry)
+        run: |
+          python3 mag-room/tests/test_native.py RoomContract.test_a_bot_is_reset_to_its_first_day_whatever_state_it_is_in RoomContract.test_autonomous_tool_call_cannot_end_dialogue_or_run_tool
       - name: Room contract (fake models, fake guest)
         run: |
+          command -v ffmpeg
+          command -v ffprobe
           ./build/test-group-dispatcher
           ./build/test-model-text
           python3 mag-room/tests/test_native.py

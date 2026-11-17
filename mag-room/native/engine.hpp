@@ -531,6 +531,10 @@ public:
   std::string reset_vm(const std::string &bot) {
     if (const Val me = room_.bot(bot); me.find("restore") && jstr(*me.find("restore"), "state") == "running")
       return "Die VM wird gerade wiederhergestellt.";
+    // Save the room boundary BEFORE starting the reset. A human message
+    // written while the VM is being rebuilt must survive the later KV wipe.
+    // Persist this boundary with the reset so a room restart cannot lose it.
+    const std::string cursor_at_reset = room_.last_id();
     {
       std::lock_guard<std::mutex> lk(mu_);
       Bot *b = find(bot);
@@ -562,6 +566,7 @@ public:
       reset["state"] = "running";
       reset["step"] = "stop";
       reset["vm"] = vm;
+      reset["cursor"] = cursor_at_reset;
       reset["since"] = (double)now_s();
       b["reset"] = reset;
     });
@@ -2266,8 +2271,18 @@ private:
   // again behind the last message, and its slot holds the prefix only.
   void wipe(Bot &b) {
     const Val me = room_.bot(b.id);
+    // A VM reset forgets *past* conversation, never the human requests
+    // queued during that reset. ensure_wire(fresh=true) normally advances
+    // to room.last_id(), which silently skips those queued requests.
+    const Val *reset = me.find("reset");
+    const bool preserve_queue = reset && reset->find("cursor");
+    const std::string cursor_at_reset = preserve_queue ? jstr(*reset, "cursor") : "";
     b.wire = Val();
     ensure_wire(b, me, true);
+    if (preserve_queue) {
+      b.wire["cursor"] = cursor_at_reset;
+      save_wire(b);
+    }
     b.last_tool_sig.clear();
     goal::end(b.goal, "ended");
     unlink(goal_pending_file(b).c_str());

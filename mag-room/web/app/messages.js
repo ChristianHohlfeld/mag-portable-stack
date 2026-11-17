@@ -482,7 +482,9 @@
       frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
     frame.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; accelerometer; gyroscope; gamepad; xr-spatial-tracking');
     frame.setAttribute('referrerpolicy', 'no-referrer');
-    frame.setAttribute('credentialless', '');   // no MAG credentials in either preview
+    if (!edited) frame.setAttribute('credentialless', '');
+    // Edited frames GET a same-origin shell under the normal viewer's
+    // authentication, but run with an opaque origin (no allow-same-origin).
     card._frame = frame;
     card._stage.replaceChildren(frame);
     framed.push(card);

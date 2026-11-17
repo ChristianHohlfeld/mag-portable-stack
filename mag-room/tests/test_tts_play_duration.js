@@ -105,9 +105,9 @@ const advance = async (time) => {
   assert.equal(playing.readingFrom(), true);
   first.onended();
   await tick();
-  assert.equal(playing.busy(), false, 'actual onended finishes the reading');
-  assert.equal(playing.readingFrom(), false);
-  assert.equal(intervals.size, 0, 'monitor stops after completion');
+  assert.equal(playing.busy(), true, 'the chain stays open for a later message');
+  assert.equal(playing.readingFrom(), true);
+  assert.equal(intervals.size, 0, 'nothing is watched while the chain waits');
   assert.deepEqual(errors, []);
 
   // Stop while a source is outstanding: no leaked pending completion

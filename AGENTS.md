@@ -372,9 +372,11 @@ text picks how it reads. The browser fetches the model straight from
 Hugging Face and the runtime from jsDelivr, pinned by commit, version and
 SHA256, once into Cache Storage; the room serves nothing for it, installs
 nothing and makes no speech. One voice and tempo per speaker, kept on the
-device; the page loads the model in the background, so the first tap speaks
-at once without pauses, and says quietly whether the voice is there; until
-then the device's own voice reads. Nothing plays by itself. Piper sounded
+device; the page loads the model and its voices in the background, so the
+first tap speaks at once. It never falls back to the device voice. Vorlesen
+and „Ab hier vorlesen“ keep going through later and still-arriving messages
+until Stop, on one audio chain, also while the screen is dark. Nothing plays
+by itself. Piper sounded
 robotic and is no option (Chris, 2026-11-13); replace the model only with a
 better one. Never bring a server path for speech back. The retired files
 stay on disk (`/opt/mag-tts`, the owner's cache).

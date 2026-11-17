@@ -99,11 +99,13 @@
       preview.hidden = !have();
       bake.hidden = !have() || !owner;
       bake.disabled = busy || recorder?.state === 'recording';
-      mic.disabled = busy;
+      mic.disabled = busy || stopping || !compatible;
       if (recorder?.state === 'recording') mic.textContent = '■ Stoppen';
       else if (stream) mic.textContent = '● Start ' + LANES.find(([key]) => key === lane)[1];
       else mic.textContent = '● Aufnehmen';
-      discardButton.hidden = recorder?.state !== 'recording';
+      discardButton.hidden = !stream && recorder?.state !== 'recording';
+      discardButton.textContent = recorder?.state === 'recording' ? 'Verwerfen' : '✕';
+      discardButton.title = recorder?.state === 'recording' ? 'Aufnahme verwerfen' : 'Mikrofon schließen';
       downloads.replaceChildren();
       if (tracks.mix) downloads.append(el('a', {
         class: 'pill', href: url(tracks.mix, '?download=1'), download: tracks.mix.name,
@@ -154,8 +156,8 @@
     }
     function stopRecording(reject = false) {
       if (!recorder || recorder.state !== 'recording' || stopping) return;
-      stopping = true; discard = reject;
-      try { recorder.stop(); } catch (_) { discard = true; }
+      stopping = true; discard = reject; busy = true;
+      try { recorder.stop(); } catch (_) { discard = true; busy = false; }
       video.pause();
       paint();
     }
@@ -254,13 +256,15 @@
         paint();
       }
     });
-    discardButton.addEventListener('click', () => stopRecording(true));
+    discardButton.addEventListener('click', () => {
+      if (recorder?.state === 'recording') stopRecording(true);
+      else { stopMic(); paint(); status('Mikrofon geschlossen.'); }
+    });
     video.addEventListener('ended', () => stopRecording());
     video.addEventListener('pause', () => {
       if (recorder?.state === 'recording') stopRecording();
     });
-    video.addEventListener('playing', () => { rewinding = false; });
-    const desync = () => {
+     const desync = () => {
       if (rewinding && video.currentTime < 0.02) { rewinding = false; return; }
       if (recorder?.state === 'recording') {
         stopRecording(true);

@@ -1872,11 +1872,10 @@ private:
         const int64_t ts = (int64_t)jnum(m, "ts", 0);
         if (role == "user") {
           std::string cue;
-          if (prior_ts > 0 && ts > prior_ts && ts - prior_ts >= 5 * 60000LL) {
-            const int64_t minutes = (ts - prior_ts) / 60000;
-            cue += "(Zeitabstand zur letzten Chatnachricht: " +
-                   std::to_string(minutes / 60) + " h " + std::to_string(minutes % 60) +
-                   " min. Über Aktivitäten in der Zwischenzeit ist nichts bekannt.)";
+          if (prior_ts > 0 && ts > prior_ts) {
+            if (const std::string elapsed = group_chat::elapsed_gap(ts - prior_ts); !elapsed.empty())
+              cue += "(Zeitabstand zur letzten Chatnachricht: " + elapsed +
+                     ". Über Aktivitäten in der Zwischenzeit ist nichts bekannt.)";
           }
           const std::string asked = trim(jstr(m, "text"));
           // No keywords, websites, named tasks or rules about what a person

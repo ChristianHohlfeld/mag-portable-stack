@@ -457,10 +457,15 @@ class RoomContract(unittest.TestCase):
         r.say("Überlegt mal ...")
         r.idle()
         for model in (r.lena, r.noah):
-            prompt = str(model.chats()[-1]["messages"][-1]["content"])
-            self.assertIn("Überlegt mal", prompt)
-            self.assertIn("Jüngster Gesprächskontext", prompt)
-            self.assertIn("Das Ergebnis ist 7 und 9.", prompt)
+            # The dispatcher may append a later PASS round. Inspect the full
+            # model request so a separate internal note cannot hide the user
+            # turn or its contextual excerpt.
+            prompts = ["\n".join(str(m.get("content", "")) for m in chat["messages"])
+                       for chat in model.chats()]
+            self.assertTrue(any("Überlegt mal" in prompt and
+                                "Jüngster Gesprächskontext" in prompt and
+                                "Das Ergebnis ist 7 und 9." in prompt
+                                for prompt in prompts))
 
     def test_clock_now_available_to_both_bots_without_vm(self):
         r = self.room

@@ -212,6 +212,20 @@
     // listener that would immediately stop the recording just started.
     cancel.addEventListener('click', () => stopRecording(true));
     video.addEventListener('ended', () => { if (recorder?.state === 'recording') stopRecording(); });
+    // A microphone take is aligned to the video's time from second zero.
+    // Pausing ends the take; seeking or changing speed would desynchronize it,
+    // so those edits discard the unfinished take instead of saving bad audio.
+    video.addEventListener('pause', () => {
+      if (recorder?.state === 'recording') stopRecording();
+    });
+    const stopUnsynced = () => {
+      if (recorder?.state === 'recording') {
+        stopRecording(true);
+        status('Aufnahme verworfen: Zeitposition oder Geschwindigkeit geändert.', true);
+      }
+    };
+    video.addEventListener('seeking', stopUnsynced);
+    video.addEventListener('ratechange', stopUnsynced);
     const acts = el('div', { class: 'voice-controls' }, permit, record, cancel, hear);
     const bakeMode = el('select', { 'aria-label': 'Tonmischung beim Einbrennen' }, options([
       ['mix', 'Original und Nachvertonung mischen'], ['replace', 'Nur Nachvertonung als Standard']

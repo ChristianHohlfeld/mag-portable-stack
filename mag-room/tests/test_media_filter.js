@@ -41,6 +41,11 @@ const fixture = async (messages, mode = null, legacy = false) => {
   w.EventSource = EventStream;
   w.eval(read('app/core.js'));
   w.MAG.api = async (method, url) => {
+    if (url.startsWith('/api/media')) return {
+      messages: messages.filter(m => !!m.model3d || (m.attachments || []).some(a =>
+        !a.voiceover_kind && (a.kind === 'video' || a.kind === 'audio'))),
+      more: false
+    };
     if (url.startsWith('/api/state')) return {
       messages, bots: [{ id: 'lena', name: 'Lena' }, { id: 'noah', name: 'Noah' }],
       you: { role: 'owner', name: 'Chris' }, settings: {}, features: {}, more: false, seq: 1
@@ -121,7 +126,7 @@ const visible = (w,node) => !!node && !node.hidden && w.getComputedStyle(node).d
   const g = await fixture([human,lena], '1'); await wait();
   assert(g.d.querySelector('#app').classList.contains('media'),
     'filter restored after reload');
-  assert.equal(g.d.querySelector('#empty').textContent,'Noch kein Bild, Video oder 3D.');
+  assert.equal(g.d.querySelector('#empty').textContent,'Noch keine Medien vorhanden.');
   assert.equal(g.d.querySelector('#empty').hidden,false);
   g.push({t:'message',seq:2,m:image('000020','queued')});
   assert.equal(g.d.querySelector('#empty').hidden,true,'empty message clears when generation arrives');

@@ -426,10 +426,12 @@ class RoomContract(unittest.TestCase):
         prompt = "\n".join(str(m.get("content", "")) for m in sent[-1]["messages"])
         self.assertIn("Jüngster Gesprächskontext", prompt)
         self.assertIn("Chris:", prompt)
-        self.assertIn("Lena: Die erste Aussage.", prompt)
-        # Bot messages get the same day/time source metadata as Chris'
-        # messages, rather than appearing untimed in the prompt.
-        self.assertRegex(prompt, r"\([A-Za-z]{2} [0-9]{2}\.[0-9]{2}\. [0-9]{2}:[0-9]{2}\)\nLena:")
+        # Own assistant turns in the model wire are not transcript strings:
+        # they have role=assistant. The contextual excerpt, however, must
+        # resolve the stored bot ID to the visible room name and timestamp.
+        self.assertRegex(prompt, r"- [A-Za-z]{2} [0-9]{2}\.[0-9]{2}\. [0-9]{2}:[0-9]{2} Lena: Die erste Aussage\.")
+        self.assertNotIn("lena: Die erste Aussage.", prompt)
+        self.assertIn("Die erste Aussage.", prompt)
         self.assertIn("Überleg bitte nochmal.", prompt)
         self.assertNotIn("Über Aktivitäten in der Zwischenzeit", prompt)
 
@@ -439,6 +441,26 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertEqual(sorted(m["from"] for m in r.messages()), ["chris", "lena", "noah"])
         self.assertEqual(len([m for m in r.messages() if m.get("reason") == "human" and m["from"] != "chris"]), 2)
+        # Dispatch alone is insufficient: both prompts must make the plural
+        # request an instruction to reason about the previous context.
+        for model in (r.lena, r.noah):
+            request = model.chats()[0]
+            system = str(request["messages"][0]["content"])
+            self.assertIn("denke selbst darueber nach", system)
+            self.assertIn("unmittelbar vorangehenden Dialog", system)
+            self.assertIn("Überlegt mal", str(request["messages"][-1]["content"]))
+
+    def test_short_plural_followup_uses_prior_dialogue_as_subject(self):
+        r = self.room
+        r.say("@Lena Das Ergebnis ist 7 und 9. Stimmt das zusammen?")
+        r.idle()
+        r.say("Überlegt mal ...")
+        r.idle()
+        for model in (r.lena, r.noah):
+            prompt = str(model.chats()[-1]["messages"][-1]["content"])
+            self.assertIn("Überlegt mal", prompt)
+            self.assertIn("Jüngster Gesprächskontext", prompt)
+            self.assertIn("Das Ergebnis ist 7 und 9.", prompt)
 
     def test_clock_now_available_to_both_bots_without_vm(self):
         r = self.room

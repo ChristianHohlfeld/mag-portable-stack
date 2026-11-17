@@ -53,8 +53,9 @@ const ptr=(node,type,pointerType='touch')=>{
   assert.equal(calls.some(c=>c.url.includes('/noah')),false);
 
   // Mismatched click target cannot turn the initial Lena press into a Noah Stop.
-  ptr(lena.querySelector('.tog'),'pointerdown');
-  noah.querySelector('.chip-stop').click();
+  const currentLena=chip('lena'), currentNoah=chip('noah');
+  ptr(currentLena.querySelector('.tog'),'pointerdown');
+  currentNoah.querySelector('.chip-stop').click();
   assert.equal(calls.length,1,'switched target must not run an action');
   ptr(top,'pointerleave','mouse');
 

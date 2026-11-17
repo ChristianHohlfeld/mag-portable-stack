@@ -858,6 +858,10 @@ article.flash { animation: flash 1.6s ease-out; }
 .voiceover .voice-controls .pill { padding: 4px 7px; font-size: 12px; min-height: 32px; border-radius: 8px; }
 .voiceover .voice-controls .pill:disabled { opacity: .5; }
 .voiceover .voice-controls .pill.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.voiceover .voice-cues { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.voiceover .voice-cues[hidden] { display: none; }
+.voiceover .voice-cues label { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.voiceover .voice-cue-input { box-sizing: border-box; width: 60px; min-height: 30px; padding: 3px 4px; font: inherit; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: inherit; font-variant-numeric: tabular-nums; }
 .voiceover .voice-exports { display: inline-flex; gap: 3px; }
 .voiceover .voice-status { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .voiceover .voice-status:empty { display: none; }

@@ -124,12 +124,14 @@ inline bool bake(const std::string &video,
     const std::string label = "lane" + std::to_string(i + 1);
     const std::string channel = "[" + std::to_string(i + 1) + ":a:0]";
     if (input.name == "melody") {
-      // Trim SOURCE first, reset timestamps, then delay on the VIDEO timeline.
-      // The source may outlast the video; pad and trim exactly to video length.
+      // Trim SOURCE, reset its clock, then insert silence on the VIDEO timeline.
+      // adelay's leading silence may carry NOPTS: without restamping *after*
+      // the delay, the muxer can discard it and start music at video 0.
+      // Sample-count PTS also keeps A/V in sync for AAC, MP3 and WAV.
       const long long delay_ms = std::llround(input.at * 1000);
       filters += channel + "atrim=start=" + std::to_string(input.from) +
                  ",asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0,adelay=" +
-                 std::to_string(delay_ms) + ":all=1,apad,atrim=0:" +
+                 std::to_string(delay_ms) + ":all=1,asetpts=N/SR/TB,apad,atrim=0:" +
                  std::to_string(length) + "[" + label + "];";
     } else {
       filters += channel + "aresample=async=1:first_pts=0,apad,atrim=0:" +

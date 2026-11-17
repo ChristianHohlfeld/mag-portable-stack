@@ -372,7 +372,37 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .page .code { border-top: 1px solid var(--line); max-height: clamp(300px, 64vh, 640px); overflow: auto; background: var(--code); }
 .page .addr { display: block; padding: 6px 11px; border-top: 1px solid var(--line); font-size: 12.5px; letter-spacing: 0; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .page .addr:hover { color: var(--text); }
-@media (max-width: 380px) { .page .tool svg { display: none; } }
+ /* Local in-browser source editor. Scripts in its preview run only inside
+    the two-level, unique-origin sandbox; editing NEVER writes bot VM files. */
+.codeblock .head { height: auto; min-height: 36px; flex-wrap: wrap; gap: 5px; padding: 5px 8px; }
+.codeblock .code-lang { flex: 1; min-width: 45px; font-size: 12px; color: var(--muted); }
+.codeblock .code-tabs { display: inline-flex; align-items: center; gap: 2px; }
+.codeblock .code-tabs button { font-size: 12px; padding: 5px 8px; white-space: nowrap; }
+.codeblock .edit-state { flex-basis: 100%; order: 6; font-size: 11px; }
+.codeblock .copy, .page .code-reset { flex: none; white-space: nowrap; }
+.source-editor { display: block; width: 100%; box-sizing: border-box; min-height: 144px; max-height: 640px;
+  padding: 12px 13px; border: 0; border-radius: 0; margin: 0; resize: vertical; outline-offset: -2px;
+  background: var(--code); color: var(--text); font: 13px/1.55 var(--mono);
+  white-space: pre; tab-size: 2; overflow: auto; }
+.source-editor:focus-visible { outline: 2px solid var(--accent); }
+.edit-state { color: var(--muted); font-size: 12px; }
+.edit-state:not(:empty) { padding: 1px 2px; }
+.codeblock .code-preview { height: clamp(260px, 55vh, 580px); background: #fff; border-top: 1px solid var(--line); }
+.codeblock .code-preview iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.page .code .source-editor { min-height: clamp(300px, 60vh, 580px); }
+.page .code-edit-note { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  flex-wrap: wrap; padding: 6px 11px; border-top: 1px solid var(--line); }
+.page.code-edited .addr { font-style: italic; }
+.page.code-fullscreen { position: fixed; inset: 0; width: 100%; height: 100dvh; z-index: 5000;
+  display: flex; flex-direction: column; border-radius: 0; margin: 0; }
+.page.code-fullscreen .stage { flex: 1 1 auto; height: auto; min-height: 0; }
+.page.code-fullscreen .addr { display: none; }
+.page.code-fullscreen .code { flex: 1 1 auto; max-height: none; }
+@media (max-width: 380px) {
+  .page .tool svg { display: none; }
+  .codeblock .code-tabs button { padding: 4px 6px; }
+  .codeblock .head { gap: 3px; }
+}
 
 /* attachments */
 .atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

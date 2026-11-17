@@ -3240,11 +3240,11 @@ private:
             "stelle ggf. eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. " +
             std::string(pass_enabled
                 ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
-                : "PASS ist deaktiviert: Antworte selbst mit einem eigenen Gedanken oder einer konkreten Anschlussfrage, statt auszusetzen.") +
+                : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
             ")"
           : pass_enabled
               ? "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)"
-              : "(Du wurdest nicht direkt angesprochen. PASS ist deaktiviert: Antworte selbst mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage, statt auszusetzen. Wiederhole nichts bloß, um zu antworten.)";
+              : "(Du wurdest nicht direkt angesprochen. PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre das Bot-Gespräch mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage fort. Brich es nicht aus eigenem Entschluss ab; wiederhole nichts bloß, um zu antworten.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
     if (reason == "autonomous") {
@@ -3258,7 +3258,7 @@ private:
           "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
           std::string(pass_enabled
               ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
-              : "PASS ist deaktiviert: Antworte selbst mit etwas Neuem, statt auszusetzen.") +
+              : "PASS und eine eigene Beendigungsentscheidung sind deaktiviert: Beginne und fuehre das Gespräch aktiv mit neuen Gedanken fort; entscheide nicht selbst, es zu beenden.") +
           ")";
       b.wire["messages"].push(invite);
       b.wire["fresh"] = true;
@@ -3619,26 +3619,39 @@ private:
              std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
         continue;
       }
-      // PASS is always stripped server-side, even when disabled; a model
-      // ignoring the toggle gets one bounded opportunity to give real content.
-      // Keep the correction append-only, without changing the cached system
-      // and tool prefix, and do not retry interrupted/tool-using turns.
-      if (!pass_enabled && !pass_retried && !res.cancelled && !failed &&
+      // PASS/empty end-markers remain invisible regardless of the setting.
+      // When voluntary ending is OFF, give a bot-to-bot turn one bounded
+      // second attempt rather than silently obeying its attempt to end.
+      // If a model twice refuses to contribute, pause with a visible technical
+      // failure instead of a costly invisible CPU loop.
+      const bool bot_dialogue = reason == "bot" || reason == "autonomous";
+      const bool voluntary_end = group_chat::is_pass(res.content) ||
+          group_chat::leading_pass(res.content) ||
+          (!trim(res.content).empty() && trim(strip_markers(res.content)).empty());
+      if (!pass_enabled && bot_dialogue && !res.cancelled && !failed &&
           !driving && !closing && t.steps == 0 && t.id.empty() &&
-          res.calls.empty() && group_chat::is_pass(res.content)) {
-        pass_retried = true;
+          res.calls.empty() && voluntary_end) {
         t.held.clear();
         t.tail.clear();
         t.reasoning = mj::utf8_cut(t.reasoning, thought0);
+        if (pass_retried) {
+          failed = true;
+          error = "Modell lieferte trotz deaktiviertem Gesprächsende erneut nur ein Steuersignal.";
+          logf("engine: " + b.id + " refused a substantive bot reply twice; suspending this turn");
+          emit_text(b, t, "Automatisches Gespräch technisch unterbrochen: Das Modell hat zweimal keinen Gesprächsbeitrag geliefert.", name, reason, true);
+          break;
+        }
+        pass_retried = true;
         Val correction = Val::object();
         correction["role"] = "user";
-        correction["content"] = "(Notiz des Raums, nicht von Chris: PASS ist in den Einstellungen deaktiviert. "
-                                "Deine letzte Ausgabe wurde nicht angezeigt. Antworte jetzt mit einem kurzen, "
-                                "eigenständigen Beitrag zur laufenden Unterhaltung, ohne PASS oder bloße Wiederholung.)";
+        correction["content"] = "(Notiz des Raums, nicht von Chris: PASS und eigene Beendigungsentscheidungen "
+                                "sind ausgeschaltet. Deine letzte Ausgabe wurde verworfen. Fahre jetzt mit "
+                                "einem kurzen, eigenständigen Beitrag oder einer Anschlussfrage fort; "
+                                "kein PASS, keine Abschlussmarkierung und keine bloße Wiederholung.)";
         correction["_turn"] = t.token;
         b.wire["messages"].push(correction);
         save_wire(b);
-        logf("engine: " + b.id + " PASS despite disabled setting; retrying once");
+        logf("engine: " + b.id + " tried to end with PASS/marker while disabled; retrying once");
         continue;
       }
       // Publish completed reasoning only after the token-cap retry decision.

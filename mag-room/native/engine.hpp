@@ -1639,7 +1639,7 @@ private:
     }
     std::string head;
     if (jstr(m, "role") == "user") head = "(" + clock_label((int64_t)jnum(m, "ts")) + ")\n";
-    head += who + ": ";
+    head += "[Sprecher " + who + "] ";
     std::string body = trim(jstr(m, "text"));
     const Val *atts = m.find("attachments");
     if (Scenes::is_scene(m)) {
@@ -3148,18 +3148,30 @@ private:
     return text;
   }
 
-  static std::string strip_self(std::string text, const std::string &name) {
-    std::string t = text;
-    const size_t a = t.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos) return text;
-    t = t.substr(a);
-    for (const std::string &p : {"[" + name + "]:", "[" + name + "]", "**" + name + ":**", "**" + name + "**:", name + ":"})
-      if (starts_with(t, p)) {
-        t = t.substr(p.size());
-        const size_t s = t.find_first_not_of(" \t");
-        return s == std::string::npos ? "" : t.substr(s);
+  static std::string strip_self(std::string text, const std::string &name,
+                                const std::vector<std::string> &peers) {
+    // Models often repeat *several* labels before their real answer, including
+    // a peer's name. Strip all leading speaker captions, not just one.
+    std::vector<std::string> candidates = peers;
+    candidates.push_back(name);
+    std::string t = trim(text);
+    while (!t.empty()) {
+      bool changed = false;
+      for (const auto &speaker : candidates) {
+        if (speaker.empty()) continue;
+        for (const std::string &p : {"[" + speaker + "]:", "[" + speaker + "]",
+                                    "**" + speaker + ":**", "**" + speaker + "**:",
+                                    speaker + ":", speaker + "：", speaker + ","}) {
+          if (!starts_with(t, p)) continue;
+          t = trim(t.substr(p.size())); // trim handles real tabs, CR and LF.
+          changed = true;
+          break;
+        }
+        if (changed) break;
       }
-    return text;
+      if (!changed) break;
+    }
+    return t;
   }
 
   bool cleared(const TurnState &t) {
@@ -3230,7 +3242,7 @@ private:
           (trim(t.held).size() < 2 || group_chat::maybe_pass(t.held) || group_chat::maybe_name_only(t.held, names()) ||
            trim(t.held).size() < name.size() + 4))
         return;
-      text = strip_self(t.held, name);
+      text = strip_self(t.held, name, names());
       t.held.clear();
       if (trim(text).empty()) return;
       t.visible = true;
@@ -3668,7 +3680,7 @@ private:
         if (res.guard == "repeat") {
           t.tail.clear();
           std::string once = plain_names(res.content, names());
-          if (!shown0) once = strip_self(once, name);
+          if (!shown0) once = strip_self(once, name, names());
           if (t.id.empty()) t.held = once;
           else room_.retake_text(t.id, text0, once);
         } else if (res.guard == "thinking") {
@@ -3761,7 +3773,7 @@ private:
       const bool forbidden_tool = !res.calls.empty() &&
           (autonomous_round || (!pass_enabled && bot_dialogue &&
                                 !t.errand && !goal_live(b)));
-      const std::string candidate = trim(strip_self(strip_markers(res.content), name));
+      const std::string candidate = trim(strip_self(strip_markers(res.content), name, names()));
       const std::string norm_candidate = group_chat::norm_reply(candidate);
       bool duplicated = false;
       if (!norm_candidate.empty() && !pass_enabled && bot_dialogue) {
@@ -3844,7 +3856,7 @@ private:
           logf("engine: " + b.id + " wrote a call of " + meant + " into its text; the room takes it out");
           t.tail.clear();
           std::string once = plain_names(bare, names());
-          if (!shown0) once = strip_self(once, name);
+          if (!shown0) once = strip_self(once, name, names());
           if (t.id.empty()) t.held = once;
           else room_.retake_text(t.id, text0, once);
         }

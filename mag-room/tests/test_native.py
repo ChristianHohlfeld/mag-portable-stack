@@ -873,7 +873,7 @@ class RoomContract(unittest.TestCase):
         r.say("und was gibt es Neues?")
         r.idle()
         noah = json.dumps(r.noah.chats()[0]["messages"], ensure_ascii=False)
-        self.assertIn("Chris an Lena: @Lena wie geht es dir?", noah)
+        self.assertIn("[Sprecher Chris an Lena] @Lena wie geht es dir?", noah)
         self.assertNotIn("Chris an Lena", json.dumps(r.lena.chats()[-1]["messages"], ensure_ascii=False))
         self.assertIn("lena", [m["from"] for m in r.messages()[2:]])
         self.assertIn("noah", [m["from"] for m in r.messages()[2:]])
@@ -2134,7 +2134,7 @@ class RoomContract(unittest.TestCase):
         before = len(r.lena.chats())
         r.api("POST", "/api/message", {"text": "@Lena lass ihn tanzen", "about": out["model3d"]})
         r.idle()
-        self.assertIn("Chris: @Lena lass ihn tanzen\n[Chris schreibt das zum 3D-Modell %s: Er möchte es animiert sehen. Sieh mit models_3d nach, welche Figuren es zeigt, "
+        self.assertIn("[Sprecher Chris] @Lena lass ihn tanzen\n[Chris schreibt das zum 3D-Modell %s: Er möchte es animiert sehen. Sieh mit models_3d nach, welche Figuren es zeigt, "
                       "und baue die Szene mit scene_3d.]" % model["name"], text_of(r.lena.chats()[before]["messages"][-1]["content"]))
         self.assertNotIn("about", r.api("POST", "/api/message", {"text": "@Lena danke", "about": sent["message"]["id"]})[1]["message"])
         r.idle()
@@ -2804,7 +2804,7 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: image(second["id"]).get("description"), "second picture described")
         bundle = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)
                   and "Was seht ihr da" in text_of(c["messages"][-1]["content"])][0]
-        self.assertIn("Chris an Noah: @Noah wann kommt die Lieferung?", bundle[0]["text"])     # other people's words first ...
+        self.assertIn("[Sprecher Chris an Noah] @Noah wann kommt die Lieferung?", bundle[0]["text"])     # other people's words first ...
         self.assertTrue(bundle[0]["text"].endswith("[Sprecher Chris] Was seht ihr da\n"))                 # ... then the question, the picture,
         self.assertEqual(bundle[1]["type"], "image_url")                                        # and its own line
         self.assertTrue(bundle[2]["text"].startswith("[Bild Screenshot.png ("))

@@ -3281,13 +3281,16 @@ private:
     const bool pass_enabled = jbool(settings, "pass_enabled", true);
     ensure_wire(b, me, false);
 
-    // Optional observer cue is appended only to autonomous turns, never to
-    // the stable system/tool prefix. Visibility describes the persistent room,
-    // not a claim that Chris is online or actively watching right now.
+    // Every bot-to-bot turn reads the CURRENT room settings. Keep the
+    // audience cue at the end of the append-only conversation, not in the
+    // stable system/tool prefix (the warmed CPU KV cache stays reusable).
+    // Explicitly revoke an older cue when switched off: old dialogue entries
+    // are intentionally retained in both bots' histories.
     const std::string observer = jbool(settings, "auto_chat_visible", true)
         ? "Chris kann alle eure Nachrichten im Raum-Chat lesen, auch später und ohne geöffneten Browser. "
           "Das bedeutet nicht, dass Chris gerade zusieht oder euch angesprochen hat. "
-        : "";
+        : "Der frühere Hinweis, dass Chris später mitlesen kann, ist für diesen Gesprächszug deaktiviert. "
+          "Nimm keine anwesenden Zuhörer an; sprich nur mit dem anderen Bot. ";
     std::string note;
     if (reason == "bot")
       note = autonomous_round
@@ -3301,8 +3304,10 @@ private:
                 : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
             ")"
           : pass_enabled
-              ? "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)"
-              : "(Du wurdest nicht direkt angesprochen. PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre das Bot-Gespräch mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage fort. Brich es nicht aus eigenem Entschluss ab; wiederhole nichts bloß, um zu antworten.)";
+              ? "(Du wurdest nicht direkt angesprochen. " + observer +
+                "Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)"
+              : "(Du wurdest nicht direkt angesprochen. " + observer +
+                "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre das Bot-Gespräch mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage fort. Brich es nicht aus eigenem Entschluss ab; wiederhole nichts bloß, um zu antworten.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
     if (reason == "autonomous") {

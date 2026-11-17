@@ -1,260 +1,292 @@
-// Microphone overdubs for an existing video card. No codec, mixer or
-// recording runs on the server until the owner explicitly saves or bakes.
-// Microphone access comes only from an owner click (iOS/Android/Desktop).
+// Three compact, independent microphone lanes on an existing video card.
+// Recordings and mixdowns stay ordinary room attachments; no additional UI
+// player or job queue. Never acquire a microphone outside a direct owner tap.
 'use strict';
 (function () {
   const { MAG } = window, { el } = MAG;
   const url = (a, suffix = '') => '/api/file/' + encodeURIComponent(a.file) + suffix;
-  const modes = [['original', 'Originalton'], ['dub', 'Nur Nachvertonung'], ['mix', 'Beide Tonspuren']];
-  const types = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
-  const supportedMime = () => {
-    if (typeof MediaRecorder === 'undefined') return '';
-    return types.find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
-  };
-  const formatOf = (type) => {
-    if (/^audio\/mp4/i.test(type)) return 'mp4';
-    if (/^audio\/webm/i.test(type)) return 'webm';
-    if (/^audio\/ogg/i.test(type)) return 'ogg';
-    return '';
-  };
-  const micError = (e) => e?.name === 'NotAllowedError' || e?.name === 'PermissionDeniedError'
-    ? 'Mikrofon verweigert. Erlaube es in den Einstellungen des Browsers für diese HTTPS-Seite.'
-    : e?.name === 'NotFoundError' ? 'Kein Mikrofon verfügbar.'
-    : e?.name === 'NotReadableError' ? 'Mikrofon wird bereits verwendet oder kann nicht geöffnet werden.'
-    : e?.message || 'Mikrofon konnte nicht geöffnet werden.';
+  const LANES = [['voice', 'Stimme'], ['melody', 'Melodie'], ['effects', 'Geräusche']];
+  const TYPES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
+  const supportedMime = () => typeof MediaRecorder === 'undefined' ? ''
+    : TYPES.find((t) => MediaRecorder.isTypeSupported?.(t)) || '';
+  const formatOf = (t) => /^audio\/(mp4|webm|ogg)/i.exec(t || '')?.[1]?.toLowerCase() || '';
+  const micError = (e) => ['NotAllowedError', 'PermissionDeniedError'].includes(e?.name)
+    ? 'Mikrofon verweigert. Bitte die Berechtigung für diese HTTPS-Seite erlauben.'
+    : e?.name === 'NotFoundError' ? 'Kein Mikrofon vorhanden.'
+    : e?.name === 'NotReadableError' ? 'Das Mikrofon ist belegt.'
+    : e?.message || 'Das Mikrofon konnte nicht geöffnet werden.';
 
-  // The user keeps the source, every raw take and every baked export. This
-  // player only references files that belong to this video in this message.
+  const laneOf = (a) => a.voiceover_lane || 'voice';  // backwards-compatible old takes
+  function latest(message, video) {
+    const out = { voice: null, melody: null, effects: null, mix: null, baked: null };
+    for (const a of message.attachments || []) {
+      if (a.voiceover_for !== video) continue;
+      if (a.voiceover_kind === 'take' && laneOf(a) in out) out[laneOf(a)] = a;
+      if (a.voiceover_kind === 'mix') out.mix = a;
+      if (a.voiceover_kind === 'baked') out.baked = a;
+    }
+    return out;
+  }
+
   function player(message, source, klass = '') {
-    const sourceFile = source.file;
-    const takes = (message.attachments || []).filter((a) =>
-      a.voiceover_kind === 'take' && a.voiceover_for === sourceFile && a.kind === 'audio');
+    const original = source.file, owner = MAG.state?.you?.role === 'owner';
+    let tracks = latest(message, original), lane = 'voice', stream = null, recorder = null;
+    let busy = false, stopping = false, discard = false, rewinding = false;
+    let savedMute = false, observer = null;
     const video = el('video', { class: klass, controls: true, preload: 'metadata',
       playsInline: true, src: url(source) });
-    const box = el('div', { class: 'voiceover', dataset: {
-      keep: sourceFile + ':' + takes.map((a) => a.file).join(',')
-    } }, video);
-    const owner = MAG.state?.you?.role === 'owner';
-    if (!owner && !takes.length) return box;
-
-    const audio = el('audio', { preload: 'metadata' });
-    audio.hidden = true;
-    let selected = takes[takes.length - 1] || null;
-    let mode = 'original', forcedMute = false;
-    const announce = el('small', { class: 'voice-status', role: 'status', 'aria-live': 'polite', text: '' });
-    const status = (msg, bad = false) => { announce.textContent = msg; announce.classList.toggle('err', bad); };
-
-    // Keep the selected microphone take alongside the video on play, seek,
-    // pause, speed changes and scrubbing. No WebAudio context required.
-    const active = () => selected && mode !== 'original';
+    const box = el('div', { class: 'voiceover', dataset: { keep: 'video:' + original } }, video);
+    const announce = el('small', { class: 'voice-status', role: 'status', 'aria-live': 'polite' });
+    const status = (msg, error = false) => {
+      announce.textContent = msg;
+      announce.classList.toggle('err', error);
+    };
+    const buttons = new Map();
+    const laneBar = el('div', { class: 'voice-lanes', role: 'group', 'aria-label': 'Nachvertonung' });
+    const options = LANES.map(([key, title]) => {
+      const b = el('button', { type: 'button', class: 'pill',
+        'aria-label': title, title: title + ' aufnehmen',
+        onclick: () => { if (recorder?.state === 'recording') return; lane = key; paint(); } });
+      buttons.set(key, b);
+      laneBar.append(b);
+      return b;
+    });
+    const mic = el('button', { type: 'button', class: 'pill', text: '● Aufnehmen', title: 'Mikrofonaufnahme' });
+    const discardButton = el('button', { type: 'button', class: 'pill', title: 'Aufnahme verwerfen',
+      text: 'Verwerfen', hidden: true });
+    const preview = el('button', { type: 'button', class: 'pill', text: '▶ Anhören',
+      title: 'Original mit allen drei Spuren wiedergeben', hidden: true });
+    const bake = el('button', { type: 'button', class: 'pill', text: 'Mix & MP4',
+      title: 'Alle drei Spuren zu einem Mix zusammenführen und in ein neues MP4 einbrennen', hidden: true });
+    const downloads = el('span', { class: 'voice-exports' });
+    const toolbar = el('div', { class: 'voice-controls' }, laneBar,
+      owner ? mic : null, owner ? discardButton : null, preview, owner ? bake : null, downloads);
+    const audios = Object.fromEntries(LANES.map(([id]) =>
+      [id, el('audio', { preload: 'metadata', hidden: true })]));
+    const audiosBox = el('div', { hidden: true }, ...Object.values(audios));
+    box.append(audiosBox, toolbar, announce);
+    // One stable audio element per lane, shared with the original video
+    // timeline. The video controls remain native and work on iOS/Android.
     function sync() {
-      // During microphone capture, do not mix in a previously selected take
-      // or override the user's explicit monitor/mute choice.
       if (recorder?.state === 'recording') return;
-      if (!active()) {
-        audio.pause();
-        if (forcedMute) { video.muted = false; forcedMute = false; }
-        return;
+      for (const [key] of LANES) {
+        const audio = audios[key], take = tracks[key];
+        if (!take) { audio.pause(); continue; }
+        if (audio.dataset.file !== take.file) {
+          audio.dataset.file = take.file;
+          audio.src = url(take);
+        }
+        try {
+          if (Math.abs((audio.currentTime || 0) - video.currentTime) > 0.2)
+            audio.currentTime = video.currentTime;
+        } catch (_) {}
+        audio.playbackRate = video.playbackRate;
+        audio.volume = video.volume;
+        if (video.paused || video.ended) audio.pause();
+        else if (audio.paused) audio.play().catch(() => {
+          status('Für die Spuren bitte ▶ Anhören antippen.');
+        });
       }
-      if (mode === 'dub') { video.muted = true; forcedMute = true; }
-      else if (forcedMute) { video.muted = false; forcedMute = false; }
-      if (audio.src !== location.origin + url(selected)) audio.src = url(selected);
-      if (Number.isFinite(video.currentTime) && Math.abs((audio.currentTime || 0) - video.currentTime) > 0.18)
-        try { audio.currentTime = video.currentTime; } catch (_) {}
-      audio.playbackRate = video.playbackRate;
-      audio.volume = video.volume;
-      if (video.paused || video.ended) audio.pause();
-      else if (audio.paused) audio.play().catch(() => status('Für die Nachvertonung bitte „Mit Tonspur abspielen“ antippen.'));
     }
-    for (const event of ['play', 'pause', 'seeking', 'seeked', 'timeupdate', 'ratechange', 'volumechange', 'ended'])
-      video.addEventListener(event, sync);
-    const options = (values) => values.map(([value, text]) => el('option', { value, text }));
-    const modePicker = el('select', { 'aria-label': 'Tonspuren', onchange: () => {
-      mode = modePicker.value;
-      sync();
-    } }, options(modes));
-    const takePicker = el('select', { 'aria-label': 'Mikrofonaufnahme', onchange: () => {
-      selected = takes.find((a) => a.file === takePicker.value) || null;
-      audio.pause(); audio.removeAttribute('src'); audio.load(); sync();
-    } }, options(takes.map((a, i) => [a.file, 'Aufnahme ' + (i + 1)])));
-    if (selected) takePicker.value = selected.file;
-    const playDub = el('button', { class: 'pill', type: 'button', text: 'Mit Tonspur abspielen', onclick: () => {
-      if (!active()) mode = modePicker.value = 'dub';
-      video.currentTime = Math.min(video.currentTime, video.duration || 0);
-      sync();
-      // Called synchronously from the click: required on iOS Safari for audio.
-      audio.play().catch(() => status('Audio konnte nicht gestartet werden.', true));
-      video.play().catch(() => status('Video: Tippe auf Play im Player.', true));
-    } });
-    const tracks = el('div', { class: 'voice-controls' }, el('b', { text: 'Tonspuren' }),
-      ...(takes.length ? [takePicker, modePicker, playDub] : []));
-    box.append(audio, tracks);
-    if (!takes.length) tracks.append(el('small', { text: 'Originalton · noch keine Nachvertonung' }));
-    if (!owner) return box;
+    const have = () => LANES.some(([key]) => !!tracks[key]);
+    function paint() {
+      for (const [key, title] of LANES) {
+        const b = buttons.get(key);
+        b.classList.toggle('on', lane === key && owner);
+        b.setAttribute('aria-pressed', String(lane === key && owner));
+        b.textContent = (tracks[key] ? '✓ ' : '') + title;
+      }
+      preview.hidden = !have();
+      bake.hidden = !have() || !owner;
+      bake.disabled = busy || recorder?.state === 'recording';
+      mic.disabled = busy;
+      if (recorder?.state === 'recording') mic.textContent = '■ Stoppen';
+      else if (stream) mic.textContent = '● Start ' + LANES.find(([key]) => key === lane)[1];
+      else mic.textContent = '● Aufnehmen';
+      discardButton.hidden = recorder?.state !== 'recording';
+      downloads.replaceChildren();
+      if (tracks.mix) downloads.append(el('a', {
+        class: 'pill', href: url(tracks.mix, '?download=1'), download: tracks.mix.name,
+        title: 'Gemischte Audiospur herunterladen', text: 'Mix'
+      }));
+      if (tracks.baked) downloads.append(el('a', {
+        class: 'pill', href: url(tracks.baked, '?download=1'), download: tracks.baked.name,
+        title: 'MP4 mit eingebrannter Nachvertonung herunterladen', text: 'MP4'
+      }));
+    }
+    // Called by the chat's generic preservation path after an SSE update.
+    // Never recreate or unmount the player during an active recording.
+    box._voiceoverRefresh = (m) => {
+      tracks = latest(m, original);
+      paint();
+      if (recorder?.state !== 'recording') sync();
+    };
+    for (const event of ['play', 'pause', 'seeking', 'seeked', 'timeupdate',
+      'ratechange', 'volumechange', 'ended']) video.addEventListener(event, sync);
+    preview.addEventListener('click', () => {
+      video.pause();
+      video.currentTime = 0;
+      for (const [key] of LANES) {
+        const take = tracks[key], audio = audios[key];
+        if (!take) continue;
+        if (audio.dataset.file !== take.file) { audio.dataset.file = take.file; audio.src = url(take); }
+        audio.currentTime = 0;
+        audio.play().catch(() => status('Tonspur konnte nicht abgespielt werden.', true));
+      }
+      // Synchronous inside click: explicit user activation on mobile Safari.
+      video.play().catch(() => status('Video: bitte im Player auf Play drücken.', true));
+    });
+    if (!owner) { paint(); return box; }
 
-    let stream = null, recorder = null, discarded = false, initialSeek = false;
-    const permit = el('button', { class: 'pill', type: 'button', text: 'Mikrofon freigeben' });
-    const record = el('button', { class: 'pill', type: 'button', text: 'Aufnahme starten', disabled: true });
-    const cancel = el('button', { class: 'pill', type: 'button', text: 'Verwerfen', hidden: true });
-    const hear = el('label', { class: 'voice-monitor' },
-      el('input', { type: 'checkbox' }), ' Originalton mithören (Kopfhörer empfohlen)');
-    const monitor = hear.querySelector('input');
-    let observer = null;
-    function stopTracks() {
+    const compatible = !!navigator.mediaDevices?.getUserMedia &&
+      typeof MediaRecorder !== 'undefined' && window.isSecureContext;
+    if (!compatible) {
+      mic.disabled = true;
+      status('Mikrofon benötigt HTTPS und MediaRecorder.', true);
+    }
+
+    function stopMic() {
       stream?.getTracks().forEach((t) => t.stop());
       stream = null;
       observer?.disconnect(); observer = null;
-      window.removeEventListener('pagehide', onLeave);
-      document.removeEventListener('visibilitychange', onHidden);
+      window.removeEventListener('pagehide', leave);
+      document.removeEventListener('visibilitychange', hidden);
     }
-    function onLeave() {
+    function stopRecording(reject = false) {
+      if (!recorder || recorder.state !== 'recording' || stopping) return;
+      stopping = true; discard = reject;
+      try { recorder.stop(); } catch (_) { discard = true; }
+      video.pause();
+      paint();
+    }
+    function leave() {
       if (recorder?.state === 'recording') stopRecording(true);
-      stopTracks();
+      stopMic();
     }
-    function onHidden() {
-      if (!document.hidden) return;
-      if (recorder?.state === 'recording') stopRecording();
-      else if (stream) {
-        stopTracks();
-        permit.textContent = 'Mikrofon freigeben';
-        record.disabled = true;
-        status('Mikrofon beim Verlassen geschlossen.');
+    function hidden() {
+      if (document.hidden) {
+        if (recorder?.state === 'recording') stopRecording(true);
+        else stopMic();
+        paint();
       }
     }
-    function watchMicrophone() {
-      window.addEventListener('pagehide', onLeave);
-      document.addEventListener('visibilitychange', onHidden);
+    function watchMic() {
+      window.addEventListener('pagehide', leave);
+      document.addEventListener('visibilitychange', hidden);
       if (window.MutationObserver && document.body) {
-        observer = new MutationObserver(() => { if (!box.isConnected) onLeave(); });
+        observer = new MutationObserver(() => { if (!box.isConnected) leave(); });
         observer.observe(document.body, { childList: true, subtree: true });
       }
-      if (!box.isConnected) onLeave();
     }
-    const stopRecording = (discard = false) => {
-      if (!recorder || recorder.state === 'inactive') return;
-      discarded = discard;
-      recorder.stop();
-      video.pause();
-      record.disabled = true;
-      cancel.hidden = true;
-    };
-    const allow = !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined' &&
-      window.isSecureContext;
-    if (!allow) {
-      permit.disabled = true;
-      status('Mikrofonaufnahme benötigt HTTPS und einen Browser mit MediaRecorder.', true);
-    }
-    permit.addEventListener('click', async () => {
-      // Never ask automatically: this click is the browser permission gesture.
-      if (stream) {
-        stopTracks();
-        record.disabled = true;
-        permit.textContent = 'Mikrofon freigeben';
-        return status('Mikrofon geschlossen.');
-      }
-      permit.disabled = true;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false
-        });
-        if (!stream.getAudioTracks().length) throw new Error('Keine Mikrofonspur erhalten.');
-        if (!supportedMime()) throw new Error('Dieser Browser kann keine unterstützte Audiodatei aufnehmen.');
-        watchMicrophone();
-        if (!stream) return; // view disappeared while permission prompt was open
-        record.disabled = false;
-        permit.disabled = false;
-        permit.textContent = 'Mikrofon schließen';
-        status('Mikrofon erlaubt. Aufnahme startet mit dem Video ab Sekunde 0.');
-      } catch (err) {
-        stopTracks();
-        permit.disabled = false;
-        status(micError(err), true);
-      }
-    });
-    record.addEventListener('click', () => {
+
+    mic.addEventListener('click', async () => {
       if (recorder?.state === 'recording') return stopRecording();
-      if (!stream || !supportedMime()) return;
-      if (!video.readyState) { status('Video lädt noch. Bitte kurz im Player öffnen.', true); return; }
-      discarded = false;
-      let chunks = [], bad = false;
+      if (busy) return;
+      if (!stream) {
+        busy = true; paint();
+        try {
+          // iOS and Android must ask permission as part of a user gesture.
+          const granted = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false
+          });
+          stream = granted;
+          if (!granted.getAudioTracks().length || !supportedMime())
+            throw new Error('Dieser Browser unterstützt keine Mikrofonaufnahme.');
+          watchMic();
+          if (!box.isConnected) return leave();
+          status('Mikrofon bereit – erneut tippen zum Starten.');
+        } catch (e) {
+          stopMic();
+          status(micError(e), true);
+        } finally { busy = false; paint(); }
+        return;
+      }
+      if (!video.readyState) return status('Video erst laden und dann aufnehmen.', true);
+      const activeLane = lane, chunks = [];
+      discard = false; stopping = false;
       try {
-        recorder = new MediaRecorder(stream, { mimeType: supportedMime(), audioBitsPerSecond: 96000 });
+        recorder = new MediaRecorder(stream, {
+          mimeType: supportedMime(), audioBitsPerSecond: 96000
+        });
         recorder.addEventListener('dataavailable', (e) => { if (e.data?.size) chunks.push(e.data); });
-        recorder.addEventListener('error', () => { bad = true; stopRecording(true); status('Aufnahmefehler.', true); });
+        recorder.addEventListener('error', () => {
+          stopRecording(true);
+          status('Mikrofonaufnahme fehlgeschlagen.', true);
+        });
         recorder.addEventListener('stop', async () => {
-          const type = recorder.mimeType || chunks[0]?.type || '', fmt = formatOf(type);
-          const blob = new Blob(chunks, { type });
-          chunks = [];
-          stopTracks();
-          record.disabled = true;
-          permit.disabled = false;
-          permit.textContent = 'Mikrofon freigeben';
-          record.textContent = 'Aufnahme starten';
-          video.muted = false;
-          if (discarded) return status('Aufnahme verworfen.');
-          if (bad || !fmt || blob.size < 128 || blob.size > 12 * 1024 * 1024)
-            return status('Aufnahme leer, zu groß oder Format nicht unterstützt.', true);
-          status('Nachvertonung wird gespeichert …');
+          const blob = new Blob(chunks, { type: recorder?.mimeType || '' });
+          const aborted = discard;
+          video.muted = savedMute;
+          stopMic();
+          recorder = null; stopping = false;
+          busy = !aborted;
+          paint();
+          if (aborted) return status('Aufnahme verworfen.');
+          if (!formatOf(blob.type) || blob.size < 128 || blob.size > 12 * 1024 * 1024) {
+            busy = false; paint();
+            return status('Audioaufnahme ist leer oder zu groß.', true);
+          }
+          status('Tonspur wird gespeichert …');
           try {
             await MAG.api('POST', '/api/video/voiceover?message=' + encodeURIComponent(message.id) +
-              '&video=' + encodeURIComponent(sourceFile), blob);
-            status('Nachvertonung gespeichert. Original bleibt erhalten.');
-          } catch (err) { status('Speichern fehlgeschlagen: ' + err.message, true); }
+              '&video=' + encodeURIComponent(original) + '&lane=' + activeLane, blob);
+            status('Tonspur gespeichert.');
+          } catch (e) { status('Speichern fehlgeschlagen: ' + e.message, true); }
+          finally { busy = false; paint(); }
         }, { once: true });
+        // Record video and audio at the same 0-second reference position.
         video.pause();
-        audio.pause();
-        // Seeking back to zero may dispatch 'seeking' *after* MediaRecorder
-        // starts. Distinguish that deliberate rewind from a user scrub.
-        initialSeek = video.currentTime > 0.02;
-        if (initialSeek) video.currentTime = 0;
-        video.muted = !monitor.checked;
+        for (const audio of Object.values(audios)) audio.pause();
+        savedMute = video.muted;
+        video.muted = true; // avoid echo/feedback during the microphone take
+        rewinding = video.currentTime > 0.02;
+        if (rewinding) video.currentTime = 0;
         recorder.start(250);
-        permit.disabled = true;
-        video.play().catch((err) => { stopRecording(true); status('Video startet nicht: ' + err.message, true); });
-        record.textContent = 'Aufnahme stoppen';
-        cancel.hidden = false;
-        status('● Aufnahme läuft · Video und Mikrofon ab Sekunde 0');
-      } catch (err) { stopTracks(); record.disabled = true; status(micError(err), true); }
+        paint();
+        // User-activated play: do not await any permission prompt here.
+        video.play().catch((e) => { stopRecording(true); status('Video startet nicht: ' + e.message, true); });
+        status('● ' + LANES.find(([key]) => key === activeLane)[1] + ' wird aufgenommen');
+      } catch (e) {
+        stopMic();
+        recorder = null;
+        video.muted = savedMute;
+        status(micError(e), true);
+        paint();
+      }
     });
-    // The same button starts and stops; never register a second click
-    // listener that would immediately stop the recording just started.
-    cancel.addEventListener('click', () => stopRecording(true));
-    video.addEventListener('ended', () => { if (recorder?.state === 'recording') stopRecording(); });
-    // A microphone take is aligned to the video's time from second zero.
-    // Pausing ends the take; seeking or changing speed would desynchronize it,
-    // so those edits discard the unfinished take instead of saving bad audio.
+    discardButton.addEventListener('click', () => stopRecording(true));
+    video.addEventListener('ended', () => stopRecording());
     video.addEventListener('pause', () => {
       if (recorder?.state === 'recording') stopRecording();
     });
-    video.addEventListener('playing', () => { initialSeek = false; });
-    const stopUnsynced = () => {
-      if (initialSeek && video.currentTime < 0.02) { initialSeek = false; return; }
+    video.addEventListener('playing', () => { rewinding = false; });
+    const desync = () => {
+      if (rewinding && video.currentTime < 0.02) { rewinding = false; return; }
       if (recorder?.state === 'recording') {
         stopRecording(true);
-        status('Aufnahme verworfen: Zeitposition oder Geschwindigkeit geändert.', true);
+        status('Aufnahme verworfen: Videozeit geändert.', true);
       }
     };
-    video.addEventListener('seeking', stopUnsynced);
-    video.addEventListener('ratechange', stopUnsynced);
-    const acts = el('div', { class: 'voice-controls' }, permit, record, cancel, hear);
-    const bakeMode = el('select', { 'aria-label': 'Tonmischung beim Einbrennen' }, options([
-      ['mix', 'Original und Nachvertonung mischen'], ['replace', 'Nur Nachvertonung als Standard']
-    ]));
-    const bake = el('button', { class: 'pill', type: 'button', text: 'Als neues MP4 einbrennen', disabled: !selected,
-      onclick: async () => {
-        if (!selected) return;
-        bake.disabled = true;
-        status('Erzeuge neues MP4. Original und Aufnahmen bleiben erhalten …');
-        try {
-          await MAG.api('POST', '/api/video/bake', { message: message.id, video: sourceFile,
-            audio: selected.file, mode: bakeMode.value });
-          status('Neues MP4 gespeichert. Original und Mikrofonaufnahme bleiben erhalten.');
-        } catch (err) { status('Einbrennen fehlgeschlagen: ' + err.message, true); }
-        finally { bake.disabled = false; }
-      } });
-    if (takes.length) acts.append(bakeMode, bake);
-    box.append(acts, announce);
+    video.addEventListener('seeking', desync);
+    video.addEventListener('ratechange', desync);
+    bake.addEventListener('click', async () => {
+      if (busy || recorder?.state === 'recording') return;
+      const lanes = Object.fromEntries(LANES.filter(([key]) => tracks[key])
+        .map(([key]) => [key, tracks[key].file]));
+      if (!Object.keys(lanes).length) return;
+      busy = true; paint();
+      status('Drei Spuren werden zu einem Mix und einem neuen MP4 gebacken …');
+      try {
+        await MAG.api('POST', '/api/video/bake', {
+          message: message.id, video: original, lanes, mode: 'mix'
+        });
+        status('Mix und MP4 gespeichert. Original und Rohspuren bleiben erhalten.');
+      } catch (e) { status('Baken fehlgeschlagen: ' + e.message, true); }
+      finally { busy = false; paint(); }
+    });
+    paint();
     return box;
   }
-  MAG.voiceover = { player, supportedMime, formatOf, micError };
+
+  MAG.voiceover = { player, supportedMime, formatOf, micError, latest, LANES };
 })();

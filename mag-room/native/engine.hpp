@@ -64,7 +64,9 @@ public:
       // How much conversation a bot keeps. Reuse makes a turn cheap, but
       // after a model restart the whole log is evaluated once (CPU: roughly
       // a minute per 4000 tokens), so the budget stays moderate.
-      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", index == 0 ? 16000 : 12000));
+      // Identical default memory for both agents, independent of roster order.
+      // Explicit per-bot overrides still support models with smaller contexts.
+      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", 12000));
       bots_.push_back(std::move(rt));
       ++index;
     }
@@ -89,6 +91,10 @@ public:
     // restarting the web UI/server must not trigger another expensive CPU chat.
     const std::string last = trim(slurp(room_.cfg.state_dir + "/auto-chat-last"));
     try { auto_last_ms_ = std::stoll(last); } catch (...) { auto_last_ms_ = now_ms(); }
+    // Keep the next starter across room restarts; otherwise every deploy
+    // silently puts the first roster entry (usually Lena) in the lead.
+    const std::string next = trim(slurp(room_.cfg.state_dir + "/auto-chat-next"));
+    try { auto_next_ = (size_t)std::stoull(next); } catch (...) { auto_next_ = 0; }
     for (auto &b : bots_) b->worker = std::thread([this, bot = b.get()] { work(*bot); });
     for (auto &b : bots_)
       if (restoring.count(b->id)) std::thread([this, bot = b->id] { run_restore(bot); }).detach();
@@ -998,7 +1004,10 @@ private:
       available.push_back(b.get());
     }
     if (available.size() < 2 || configured.asArr().size() < 2) return;
-    Bot *starter = available[auto_next_++ % available.size()];
+    const size_t starter_index = auto_next_ % available.size();
+    Bot *starter = available[starter_index];
+    auto_next_ = (starter_index + 1) % available.size();
+    write_atomic(room_.cfg.state_dir + "/auto-chat-next", std::to_string(auto_next_) + "\n", 0600);
     auto_burst_ = true;
     bot_turns_ = 1; // the opening assistant counts toward explicit positive limits
     passes_ = 0;

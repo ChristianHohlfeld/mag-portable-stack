@@ -432,6 +432,8 @@ private:
   Assist &assist_;
   Vault &vault_;
   std::string version_, web_;
+  // Serializes bake reads against removal of superseded lane files.
+  std::mutex voiceover_render_mu_;
 
   static constexpr const char *kNoAccess =
       "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -943,8 +945,9 @@ private:
 
   // ---- voiceovers ---------------------------------------------------------
   // New takes are *attachments* of their source message: SSE, backups, room
-  // deletion and the Files gallery use the existing infrastructure. Neither
-  // upload nor bake replaces the original video or an earlier take.
+  // deletion and the Files gallery use the existing infrastructure. Each
+  // new lane recording supersedes that lane's earlier take only. Baking
+  // never changes the original video or any active source take.
   void voiceover_upload(int fd, const http::Request &r) {
     const std::string id = r.param("message"), video = r.param("video"), lane = r.param("lane");
     if (!is_id(id)) return http::send_error(fd, 400, "Ungültige Nachricht");
@@ -972,14 +975,36 @@ private:
     a["voiceover_lane"] = lane;
     a["duration"] = duration;
     a["created"] = (double)now_s();
+    // Only one current take per (original video, lane). Replace atomically in
+    // the room snapshot so SSE, backups and the file gallery agree immediately.
+    // A concurrent bake may still be reading an earlier take. Never unlink
+    // that file until ffmpeg finishes; room startup GC removes any leftovers.
+    std::unique_lock<std::mutex> deletion_guard(voiceover_render_mu_, std::try_to_lock);
+    std::vector<std::string> superseded;
     if (!room_.update(id, [&](Val &message) {
-      Val &atts = message["attachments"];
-      if (!atts.isArr()) atts = Val::array();
-      atts.push(a);
+      Val next = Val::array();
+      if (const Val *old = message.find("attachments"); old && old->isArr()) {
+        for (const Val &item : old->asArr()) {
+          const bool same_lane = jstr(item, "voiceover_kind") == "take" &&
+              jstr(item, "voiceover_for") == video &&
+              jstr(item, "voiceover_lane", "voice") == lane;
+          if (same_lane) {
+            const std::string old_file = jstr(item, "file");
+            if (!old_file.empty()) superseded.push_back(old_file);
+          } else next.push(item);
+        }
+      }
+      next.push(a);
+      message["attachments"] = next;
     })) {
       unlink(path.c_str());
       return http::send_error(fd, 404, "Nachricht wurde entfernt");
     }
+    if (deletion_guard.owns_lock())
+      for (const std::string &old_file : superseded) {
+        const std::string prior = room_.file_path(old_file);
+        if (!prior.empty() && old_file != jstr(a, "file")) unlink(prior.c_str());
+      }
     http::send_json(fd, 201, a);
   }
 
@@ -989,6 +1014,10 @@ private:
                       mode = jstr(arg, "mode", "mix");
     if (!is_id(id) || (mode != "mix" && mode != "replace"))
       return http::send_error(fd, 400, "Ungültige Nachvertonung");
+    // Hold before reading attachment IDs: a new take must not remove a file
+    // between the snapshot validation and ffmpeg opening that input.
+    std::unique_lock<std::mutex> render_guard(voiceover_render_mu_, std::try_to_lock);
+    if (!render_guard.owns_lock()) return http::send_error(fd, 409, "Ein Video wird bereits vertont");
     Val m;
     if (!room_.get(id, m) || !voiceover::original(m, video))
       return http::send_error(fd, 404, "Originalvideo nicht in dieser Nachricht");
@@ -1000,7 +1029,7 @@ private:
       const std::string file = jstr(*chosen, lane);
       if (file.empty()) continue;
       if (!voiceover::take(m, video, file, lane))
-        return http::send_error(fd, 404, "Die ausgewählte " + lane + "-Tonspur gehört nicht zu diesem Video");
+        return http::send_error(fd, 404, std::string("Die ausgewählte ") + lane + "-Tonspur gehört nicht zu diesem Video");
       const std::string path = room_.file_path(file);
       if (path.empty() || !exists(path)) return http::send_error(fd, 404, "Tonspur fehlt");
       lanes.emplace_back(lane, path);
@@ -1009,9 +1038,6 @@ private:
     if (lanes.empty()) return http::send_error(fd, 400, "Mindestens eine Tonspur aufnehmen");
     const std::string source = room_.file_path(video);
     if (source.empty() || !exists(source)) return http::send_error(fd, 404, "Originalvideo fehlt");
-    static std::mutex render_mu;
-    std::unique_lock<std::mutex> lock(render_mu, std::try_to_lock);
-    if (!lock.owns_lock()) return http::send_error(fd, 409, "Ein Video wird bereits vertont");
     const std::string base = room_.cfg.state_dir + "/voiceover-" + random_hex(12);
     const std::string mp4 = base + ".mp4", m4a = base + ".m4a";
     std::string error;

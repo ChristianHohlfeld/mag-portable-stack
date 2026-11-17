@@ -17,6 +17,9 @@
   const synth = window.speechSynthesis;
   const systemOk = !!synth && typeof window.SpeechSynthesisUtterance === 'function';
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  // Android may suspend WebAudio when the PWA screen goes dark. A normal
+  // HTMLAudioElement keeps the OS media session active during playback.
+  const nativeOutput = /Android/i.test(navigator.userAgent || '') && typeof window.Audio === 'function';
   const modelPossible = typeof Worker === 'function' && !!AudioCtx && typeof fetch === 'function';
   const GOOD_VOICE = /natural|premium|siri|enhanced|neural|online/i;
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
@@ -211,7 +214,7 @@
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
   // ---- the model (worker) -----------------------------------------------------
-  const tts = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
+  const tts = { nativeAudio:null, config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
                 };
   // The voices of Supertonic 3: ten styles of one model; each speaks German and English.
   const CONFIG = { models: 's3o', voices: [
@@ -475,6 +478,58 @@
     clearAudioMonitor(pb);
     pb.audioMonitor = setInterval(() => monitorAudio(pb), AUDIO_MONITOR_MS);
   }
+  function wavBlob(res) {
+    const count=res.audio.length, data=new ArrayBuffer(44+count*2), v=new DataView(data);
+    const ascii=(offset,str)=>{for(let i=0;i<str.length;i++)v.setUint8(offset+i,str.charCodeAt(i))};
+    ascii(0,'RIFF');v.setUint32(4,36+count*2,true);ascii(8,'WAVE');ascii(12,'fmt ');
+    v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+    v.setUint32(24,res.rate,true);v.setUint32(28,res.rate*2,true);
+    v.setUint16(32,2,true);v.setUint16(34,16,true);
+    ascii(36,'data');v.setUint32(40,count*2,true);
+    for(let i=0;i<count;i++){
+      const n=Math.max(-1,Math.min(1,res.audio[i]));
+      v.setInt16(44+i*2,Math.round(n<0?n*32768:n*32767),true);
+    }
+    return new Blob([data],{type:'audio/wav'});
+  }
+  function nativeSink() {
+    if(!tts.nativeAudio){
+      const element=tts.nativeAudio=new Audio();
+      element.dataset.magTts='1';
+      element.preload='auto';
+      element.hidden=true;
+      document.body?.append(element);
+    }
+    return tts.nativeAudio;
+  }
+  async function nativeChunk(pb,res) {
+    const element=nativeSink();
+    const blob=wavBlob(res), src=URL.createObjectURL(blob);
+    let settle;
+    const finished=new Promise(resolve=>{
+      let done=false;
+      settle=success=>{
+        if(done)return;
+        done=true;
+        element.removeEventListener('ended',ended);
+        element.removeEventListener('error',failed);
+        pb.nativeSettle=null;
+        URL.revokeObjectURL(src);
+        resolve(success);
+      };
+      const ended=()=>settle(true),failed=()=>settle(false);
+      element.addEventListener('ended',ended,{once:true});
+      element.addEventListener('error',failed,{once:true});
+    });
+    pb.nativeSettle=settle;
+    element.src=src;
+    try {
+      await element.play();
+      if(current===pb)pb.spoken=true;
+    } catch(e) { settle(false); }
+    const ok=await finished;
+    return ok&&current===pb;
+  }
   // The parts of a reading are laid end to end on the audio clock: a part
   // that is ready while the one before it still plays starts on the very
   // sample where that one ends, without a gap of the page's own timers.
@@ -588,6 +643,10 @@
       const res = await cur.p;
       if (current !== pb) return;
       if (!res?.audio?.length) continue;
+      if (pb.native) {
+        if (!(await nativeChunk(pb,res))) return;
+        continue;
+      }
       // Nothing plays (the start, or the device fell behind): the reading
       // starts when what is made covers what is still to make, so it runs
       // on to its end without a pause between sentences.
@@ -681,6 +740,7 @@
     // WebAudio, a pending worker, native media or the browser's own voice.
     MAG.audio?.release('tts');
     if (systemOk) { try { synth.cancel(); } catch (_) {} }
+    if (pb?.nativeSettle) pb.nativeSettle(false);
     if (tts.nativeAudio) {
       try { tts.nativeAudio.pause(); tts.nativeAudio.removeAttribute('src'); tts.nativeAudio.load(); } catch (_) {}
     }
@@ -724,6 +784,7 @@
     const prof = profile(who);
     const de = modelPossible && prof.voiceId !== 'system';   // the model reads German and English alike
     const pb = { key, who, speaker: prof.key, lang, de,
+      native: de && nativeOutput,
       // A read-from-here speed overrides playback only, never a speaker's
       // saved settings. Switching between Lena, Noah and Chris stays natural.
       rate: READ_FROM_SPEEDS.includes(options.rate) ? options.rate : null,
@@ -741,8 +802,8 @@
     MAG.audio?.activate('tts',{
       name:'tts',title:'MAG · Vorlesen',artist:who,
       stop:()=>stop(),
-      pause:()=>{try{synth?.pause?.()}catch(_){};try{tts.ctx?.suspend?.()}catch(_){}},
-      resume:()=>{try{synth?.resume?.()}catch(_){};if(tts.ctx)resume(tts.ctx)}
+      pause:()=>{try{synth?.pause?.()}catch(_){};try{tts.nativeAudio?.pause()}catch(_){};try{tts.ctx?.suspend?.()}catch(_){}},
+      resume:()=>{try{synth?.resume?.()}catch(_){};if(tts.nativeAudio?.paused)try{Promise.resolve(tts.nativeAudio.play()).catch(()=>{});}catch(_){};if(tts.ctx)resume(tts.ctx)}
     });
     setButtons();
     if (!de) {

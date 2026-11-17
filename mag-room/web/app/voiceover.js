@@ -92,7 +92,7 @@
     if (!takes.length) tracks.append(el('small', { text: 'Originalton · noch keine Nachvertonung' }));
     if (!owner) return box;
 
-    let stream = null, recorder = null, discarded = false;
+    let stream = null, recorder = null, discarded = false, initialSeek = false;
     const permit = el('button', { class: 'pill', type: 'button', text: 'Mikrofon freigeben' });
     const record = el('button', { class: 'pill', type: 'button', text: 'Aufnahme starten', disabled: true });
     const cancel = el('button', { class: 'pill', type: 'button', text: 'Verwerfen', hidden: true });
@@ -203,7 +203,10 @@
         }, { once: true });
         video.pause();
         audio.pause();
-        video.currentTime = 0;
+        // Seeking back to zero may dispatch 'seeking' *after* MediaRecorder
+        // starts. Distinguish that deliberate rewind from a user scrub.
+        initialSeek = video.currentTime > 0.02;
+        if (initialSeek) video.currentTime = 0;
         video.muted = !monitor.checked;
         recorder.start(250);
         permit.disabled = true;
@@ -223,7 +226,9 @@
     video.addEventListener('pause', () => {
       if (recorder?.state === 'recording') stopRecording();
     });
+    video.addEventListener('playing', () => { initialSeek = false; });
     const stopUnsynced = () => {
+      if (initialSeek && video.currentTime < 0.02) { initialSeek = false; return; }
       if (recorder?.state === 'recording') {
         stopRecording(true);
         status('Aufnahme verworfen: Zeitposition oder Geschwindigkeit geändert.', true);

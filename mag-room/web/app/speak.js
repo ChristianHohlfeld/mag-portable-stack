@@ -657,6 +657,7 @@
     if (current !== pb) return;
     clearAudioMonitor(pb);
     current = null;
+    MAG.audio?.release?.('tts');
     if (pb.sequence && readingFrom === pb.sequence) {
       // Keep the same speech engine, voices and rate across speakers.
       // Advancing in the utterance onend callback also works on mobile.

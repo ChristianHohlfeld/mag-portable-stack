@@ -850,6 +850,28 @@ class RoomContract(unittest.TestCase):
         self.assertEqual("".join(e["text"] for e in deltas if e["part"] == 0), "Ich merke mir das.")
         self.assertEqual([e["seq"] for e in r.events], sorted(e["seq"] for e in r.events))
 
+    def test_owner_manages_persistent_memories_per_bot(self):
+        r = self.room
+        lena = "/api/bot/lena/memory"
+        noah = "/api/bot/noah/memory"
+        self.assertEqual(r.api("POST", lena, {"text": "Wichtiger Kontext für Lena."})[0], 200)
+        self.assertEqual(r.api("POST", noah, {"text": "Nur Noah merkt sich das."})[0], 200)
+        self.assertEqual([x["text"] for x in r.api("GET", lena)[1]["memory"]],
+                         ["Wichtiger Kontext für Lena."])
+        self.assertEqual([x["text"] for x in r.api("GET", noah)[1]["memory"]],
+                         ["Nur Noah merkt sich das."])
+        self.assertEqual(r.api("POST", lena, {"text": "Wichtiger Kontext für Lena."})[0], 409)
+        for text in ["", " ", "x" * 501]:
+            self.assertEqual(r.api("POST", lena, {"text": text})[0], 400)
+        self.assertEqual(r.api("POST", "/api/bot/unbekannt/memory", {"text": "test"})[0], 404)
+        saved = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "bots.json").read_text())
+        self.assertEqual(next(b for b in saved if b["id"] == "noah")["memory"][0]["text"],
+                         "Nur Noah merkt sich das.")
+        self.assertEqual(r.api("DELETE", lena + "/0")[0], 200)
+        self.assertEqual(r.api("DELETE", lena + "/0")[0], 404)
+        self.assertEqual(r.api("GET", lena)[1]["memory"], [])
+        self.assertEqual(r.api("GET", noah)[1]["memory"][0]["text"], "Nur Noah merkt sich das.")
+
     def test_an_announcement_without_a_step_is_sent_on(self):
         r = self.room
         script = iter(["Ich öffne jetzt die Seite für dich.",

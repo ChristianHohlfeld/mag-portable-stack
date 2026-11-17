@@ -359,13 +359,33 @@
         loadPlugins();
 
         const mem = el('div', { class: 'card' }, el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Lädt …' }))));
-        content.append(el('h3', { text: 'Erinnerungen' }), mem);
+        const note = owner() ? el('textarea', { rows: 2, maxLength: 500,
+          placeholder: 'Was sich dieser Bot dauerhaft merken soll …',
+          'aria-label': 'Neue Erinnerung für ' + (b.name || id) }) : null;
+        const add = owner() ? el('button', { class: 'btn', type: 'submit', text: 'Erinnerung hinzufügen' }) : null;
+        const form = owner() ? el('form', { class: 'mem-add form', onsubmit: (e) => {
+          e.preventDefault();
+          const text = note.value.trim();
+          if (!text || add.disabled) return;
+          add.disabled = true;
+          call('POST', '/api/bot/' + id + '/memory', { text }).then(() => {
+            note.value = '';
+            MAG.toast('Für ' + (b.name || id) + ' gespeichert');
+            return loadMemory();
+          }).catch(() => {}).finally(() => { add.disabled = false; });
+        } }, note, add) : null;
+        content.append(el('h3', { text: 'Erinnerungen' }), mem, form);
         const loadMemory = () => MAG.api('GET', '/api/bot/' + id + '/memory').then((out) => {
           mem.replaceChildren();
           if (!out.memory.length) mem.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch nichts gemerkt.' }))));
-          out.memory.forEach((entry, i) => mem.append(el('div', { class: 'mem' }, el('span', { text: entry.text }),
-            el('button', { class: 'icon-btn', 'aria-label': 'Vergessen', html: MAG.icons.x, onclick: () => call('DELETE', '/api/bot/' + id + '/memory/' + i).then(loadMemory) }))));
-        }).catch(() => mem.replaceChildren());
+          out.memory.forEach((entry, i) => mem.append(el('div', { class: 'mem' },
+            el('span', { text: entry.text }),
+            owner() ? el('button', { class: 'icon-btn', type: 'button',
+              'aria-label': 'Erinnerung ' + (i + 1) + ' vergessen', html: MAG.icons.x,
+              onclick: () => call('DELETE', '/api/bot/' + id + '/memory/' + i)
+                .then(loadMemory).catch(() => {}) }) : null)));
+        }).catch(() => mem.replaceChildren(el('div', { class: 'set' },
+          el('div', { class: 'txt' }, el('small', { text: 'Erinnerungen nicht lesbar.' })))));
         loadMemory();
       }
 

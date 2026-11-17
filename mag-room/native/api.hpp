@@ -280,6 +280,7 @@ public:
       if (!engine_.create_vm(bot_of(p))) return http::send_error(fd, 409, "Die VM wird schon erstellt");
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_add(fd, r);
     if (r.method == "DELETE" && starts_with(p, "/api/bot/") && p.find("/memory/") != std::string::npos) return memory_delete(fd, r);
     if (starts_with(p, "/api/plugins")) return plugins(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/approval/")) {
@@ -1365,6 +1366,39 @@ private:
     Val v = Val::object();
     v["memory"] = bot.find("memory") ? *bot.find("memory") : Val::array();
     http::send_json(fd, 200, v);
+  }
+
+  // Memories are owned and persisted per bot. The same input rules apply
+  // whether it was written by the owner here or remembered by a bot.
+  void memory_add(int fd, const http::Request &r) {
+    const std::string id = bot_of(r.path);
+    if (!room_.bot(id).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+    const Val input = jparse(r.body);
+    if (!input.isObj() || !input.find("text") || input.find("text")->type != Val::STR)
+      return http::send_error(fd, 400, "Text der Erinnerung fehlt");
+    std::string text = trim(jstr(input, "text"));
+    for (char &c : text) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    text = trim(text);
+    if (text.empty() || text.size() > 500)
+      return http::send_error(fd, 400, "Erinnerung muss 1 bis 500 Zeichen lang sein");
+    bool full = false, duplicate = false, added = false;
+    room_.update_bot(id, [&](Val &b) {
+      Val &mem = b["memory"];
+      if (!mem.isArr()) mem = Val::array();
+      for (const auto &m : mem.asArr()) if (jstr(m, "text") == text) { duplicate = true; return; }
+      if (mem.asArr().size() >= 64) { full = true; return; }
+      Val entry = Val::object();
+      entry["text"] = text;
+      mem.push(entry);
+      added = true;
+    });
+    if (duplicate) return http::send_error(fd, 409, "Diese Erinnerung existiert bereits");
+    if (full) return http::send_error(fd, 409, "Maximal 64 Erinnerungen je Bot");
+    if (!added) return http::send_error(fd, 500, "Erinnerung konnte nicht gespeichert werden");
+    // On the next model turn sync_memory appends the new bot-specific note
+    // without mutating its stable system prefix or the other bot's context.
+    engine_.settings_changed();
+    http::send_ok(fd);
   }
 
   void memory_delete(int fd, const http::Request &r) {

@@ -36,5 +36,6 @@ assert(chat.includes("spokenText(m).trim()"),'streaming action appears on first 
 assert(chat.includes("MAG.audio?.activate(audio, {"), 'detached scene voices join global audio controller');
 assert(chat.includes("m.state !== 'streaming') row.append(button('dots'"),'delete not offered while streaming');
 assert(tts.includes('HTMLAudioElement')||tts.includes('new Audio()'),'Android screen-off native sink');
+assert(tts.includes('if (pb.native) unlockNativeSink()'),'unlock Android audio during the user gesture');
 w.close();
 console.log('global audio + live TTS: one source, stop, stream text, Android sink, idle cleanup OK');

@@ -1151,6 +1151,75 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(step[-1]["state"], "error")
         self.assertIn("Löschen fehlgeschlagen", step[-1]["output"])
 
+    def test_video_microphone_takes_and_bake_are_non_destructive(self):
+        """Raw takes and baked MP4 live on the source message; no original is replaced."""
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg/ffprobe not installed")
+        r = self.room
+        raw_video = r.tmp / "original.mp4"
+        raw_audio = r.tmp / "voice.m4a"
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10",
+                        "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=44100",
+                        "-t", "1.2", "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(raw_video)],
+                       check=True, timeout=25)
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=700:sample_rate=44100",
+                        "-t", "1.0", "-c:a", "aac", str(raw_audio)], check=True, timeout=25)
+        video_bytes = raw_video.read_bytes()
+        audio_bytes = raw_audio.read_bytes()
+        code, staged = r.api("POST", "/api/upload?name=original.mp4", raw=video_bytes)
+        self.assertEqual(code, 201, staged)
+        stored = staged["file"]
+        message = r.say("Testvideo", attachments=[stored], to=["absent"])["id"]
+        # Upload the microphone track with a raw audio/mp4 request (as Safari
+        # MediaRecorder does); no client filename or free-form storage path.
+        code, take = r.api("POST", "/api/video/voiceover?message=" + message +
+                           "&video=" + stored, raw=audio_bytes,
+                           headers={"Content-Type": "audio/mp4"})
+        self.assertEqual(code, 201, take)
+        self.assertEqual((take["kind"], take["voiceover_kind"], take["voiceover_for"]),
+                         ("audio", "take", stored))
+        self.assertEqual(r.api("POST", "/api/video/voiceover?message=" + message +
+                               "&video=" + stored, raw=b"not an audio stream" * 50,
+                               headers={"Content-Type": "audio/mp4"})[0], 422)
+        self.assertEqual(r.api("POST", "/api/video/voiceover?message=" + message +
+                               "&video=does-not-belong", raw=audio_bytes,
+                               headers={"Content-Type": "audio/mp4"})[0], 404)
+        self.assertEqual(r.api("POST", "/api/video/voiceover?message=" + message +
+                               "&video=" + stored, raw=audio_bytes,
+                               headers={"Content-Type": "application/octet-stream"})[0], 415)
+        self.assertEqual(r.api("POST", "/api/video/bake", {
+            "message": message, "video": stored, "audio": "fake", "mode": "mix"})[0], 404)
+        self.assertEqual(r.api("POST", "/api/video/bake", {
+            "message": message, "video": stored, "audio": take["file"], "mode": "unknown"})[0], 400)
+
+        for mix in ("mix", "replace"):
+            code, baked = r.api("POST", "/api/video/bake", {
+                "message": message, "video": stored, "audio": take["file"], "mode": mix})
+            self.assertEqual(code, 201, baked)
+            self.assertEqual((baked["kind"], baked["voiceover_kind"], baked["voiceover_mode"]),
+                             ("video", "baked", mix))
+            output = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files" / baked["file"]
+            self.assertTrue(output.exists())
+            tracks = subprocess.check_output(["ffprobe", "-v", "error",
+                "-select_streams", "a", "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0", str(output)], timeout=10).decode().splitlines()
+            self.assertEqual(tracks, ["audio", "audio"], "baked MP4 keeps original selectable too")
+        fresh = r.api("GET", "/api/state")[1]
+        m = next(x for x in fresh["messages"] if x["id"] == message)
+        self.assertEqual(len(m["attachments"]), 4)
+        self.assertEqual(m["attachments"][0]["file"], stored)
+        self.assertEqual((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files" / stored).read_bytes(),
+                         video_bytes, "original is byte-identical after bake")
+        self.assertEqual((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files" / take["file"]).read_bytes(),
+                         audio_bytes, "microphone source is byte-identical after bake")
+        for a in m["attachments"]:
+            self.assertEqual(r.api("GET", "/api/file/" + a["file"])[0], 200)
+        self.assertEqual(r.api("DELETE", "/api/message/" + message)[0], 200)
+        for a in m["attachments"]:
+            self.assertFalse((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files" / a["file"]).exists())
+
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room
         calls = iter([{"content": "Schritt eins.", "tool_calls": [{"name": "remember", "arguments": {"fact": "eins"}}]},

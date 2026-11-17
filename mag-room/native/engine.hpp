@@ -3192,6 +3192,17 @@ private:
     if (!t.id.empty()) room_.append_text(t.id, text);
   }
 
+  // Plain acknowledgements are not substantive bot contributions. This
+  // detector is shared by the final duplicate guard and PASS-off recovery,
+  // so neither bot can end the dialogue with a disguised PASS.
+  static bool bot_filler_reply(const std::string &norm) {
+    static const std::set<std::string> filler = {
+        "ok", "okay", "alles klar", "verstanden", "danke", "gerne", "gern geschehen",
+        "genau", "stimmt", "einverstanden", "bin bereit", "kein auftrag", "bleibe still",
+        "dem ist nichts hinzuzufügen", "nichts hinzuzufügen"};
+    return filler.count(norm) != 0;
+  }
+
   static std::string strip_markers(std::string text, bool *wants_more = nullptr) {
     if (wants_more) *wants_more = text.find(kContinue) != std::string::npos;
     replace_all(text, kContinue, "");
@@ -3458,7 +3469,11 @@ private:
       };
       cb.on_content = [&](const std::string &d) {
         set_phase(b, "writing");
-        emit_text(b, t, d, name, reason, false);
+        // In PASS-off bot-to-bot turns, validate the completed reply before
+        // exposing it: even "OK", duplicate text, and partial markers can be
+        // voluntary endings. Human answers still stream normally.
+        if (pass_enabled || (reason != "bot" && reason != "autonomous"))
+          emit_text(b, t, d, name, reason, false);
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
       set_phase(b, "reading");
@@ -3634,9 +3649,17 @@ private:
       // If a model twice refuses to contribute, pause with a visible technical
       // failure instead of a costly invisible CPU loop.
       const bool bot_dialogue = reason == "bot" || reason == "autonomous";
-      const bool voluntary_end = group_chat::is_pass(res.content) ||
-          group_chat::leading_pass(res.content) ||
-          (!trim(res.content).empty() && trim(strip_markers(res.content)).empty());
+      const std::string candidate = trim(strip_self(strip_markers(res.content), name));
+      const std::string norm_candidate = group_chat::norm_reply(candidate);
+      bool duplicated = false;
+      if (!norm_candidate.empty() && !pass_enabled && bot_dialogue) {
+        std::lock_guard<std::mutex> lk(mu_);
+        duplicated = std::find(b.said.begin(), b.said.end(), norm_candidate) != b.said.end();
+      }
+      const bool voluntary_end = candidate.empty() ||
+          group_chat::is_pass(res.content) || group_chat::leading_pass(res.content) ||
+          group_chat::name_only(candidate, names()) ||
+          bot_filler_reply(norm_candidate) || duplicated;
       if (!pass_enabled && bot_dialogue && !res.cancelled && !failed &&
           !driving && !closing && t.steps == 0 && t.id.empty() &&
           res.calls.empty() && voluntary_end) {
@@ -3663,6 +3686,11 @@ private:
         logf("engine: " + b.id + " tried to end with PASS/marker while disabled; retrying once");
         continue;
       }
+      // Flush only validated conversational content. Keeping it buffered in
+      // PASS-off mode prevents invisible termination attempts from briefly
+      // appearing in the chat before being withdrawn.
+      if (!pass_enabled && bot_dialogue && !res.cancelled && !failed && res.calls.empty())
+        emit_text(b, t, res.content, name, reason, false);
       // Publish completed reasoning only after the token-cap retry decision.
       // Raw streamed partial thoughts are replaced/cleared in the retry path.
       if (!t.id.empty() && t.reasoning.size() != thought0) show_thoughts(t);
@@ -4520,10 +4548,7 @@ private:
       std::lock_guard<std::mutex> lk(mu_);
       repeat = std::find(b.said.begin(), b.said.end(), norm) != b.said.end();
       if (!repeat) b.said.push_back(norm);
-      static const std::set<std::string> filler = {"ok", "okay", "alles klar", "verstanden", "danke", "gerne", "gern geschehen",
-                                                   "genau", "stimmt", "einverstanden", "bin bereit", "kein auftrag", "bleibe still",
-                                                   "dem ist nichts hinzuzufügen", "nichts hinzuzufügen"};
-      if (reason == "bot" && filler.count(norm)) repeat = true;
+      if (reason == "bot" && bot_filler_reply(norm)) repeat = true;
     }
     if (repeat) {
       room_.remove(t.id);

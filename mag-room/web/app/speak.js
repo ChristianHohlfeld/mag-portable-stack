@@ -35,6 +35,10 @@
   const gpuOk = () => !!navigator.gpu && localStorage.getItem('mag-tts-gpu') !== 'no';
   function noGpu() { try { localStorage.setItem('mag-tts-gpu', 'no'); } catch {} }
   let current = null;
+  // One explicit user tap can read the currently loaded conversation from
+  // any bubble to the end. This is a finite snapshot, never autoplay.
+  let readingFrom = null;
+  const READ_FROM_SPEEDS = [1, 1.25, 1.5, 1.75, 2];
 
   function normalize(text) {
     return String(text || '')
@@ -163,7 +167,7 @@
   }
 
   // ---- who speaks with which voice, how fast --------------------------------
-  const RATES = [0.75, 0.85, 1, 1.15, 1.3, 1.5, 1.75, 2];
+  const RATES = [0.75, 0.85, 1, 1.15, 1.25, 1.3, 1.5, 1.75, 2];
   const DEFAULT_VOICE = { user: 'm1', lena: 'f1', noah: 'm2' };
   const FALLBACK_VOICES = [
     { id: 'f1', label: 'Frau 1', model: 'F1.json' }, { id: 'm1', label: 'Mann 1', model: 'M1.json' }, { id: 'm2', label: 'Mann 2', model: 'M2.json' }];
@@ -412,7 +416,7 @@
     }
   }
   function request(pb, text) {
-    const rate = rateFor(pb.speaker);
+    const rate = pb.rate ?? rateFor(pb.speaker);
     const part = {text, rate, res: null};
     part.p = synthPart(pb, text, rate);
     part.p.then((res) => { part.res = res; }, () => {}); // awaited later; avoid an unhandled rejection
@@ -486,7 +490,7 @@
       let cur = ahead.shift();
       pb.room?.();
       // Tempo changed while this part was prepared: synthesise it again.
-      if (cur.rate !== rateFor(pb.speaker)) cur = request(pb, cur.text);
+      if (cur.rate !== (pb.rate ?? rateFor(pb.speaker))) cur = request(pb, cur.text);
       const res = await cur.p;
       if (current !== pb) return;
       // Nothing plays (the start, or the device fell behind): the reading
@@ -552,9 +556,18 @@
       if (!grew && pb.live) feed(pb, pb.text, false); // stalled: read the rest
     }
   }
-  function finish(pb) { if (current === pb) { current = null; setButtons(); } }
+  function finish(pb) {
+    if (current !== pb) return;
+    current = null;
+    if (pb.sequence && readingFrom === pb.sequence) {
+      // Keep the same speech engine, voices and rate across speakers.
+      // Advancing in the utterance onend callback also works on mobile.
+      advanceReadFrom(pb.sequence);
+    } else setButtons();
+  }
 
   function stop() {
+    readingFrom = null;
     const pb = current;
     current = null; // make pending callbacks and loops harmless
     if (pb) { const w = pb.wake; pb.wake = null; w?.(); }
@@ -577,7 +590,7 @@
   function utter(pb, text) {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = pb.lang;
-    utterance.rate = rateFor(pb.speaker);
+    utterance.rate = pb.rate ?? rateFor(pb.speaker);
     const match = bestVoice(pb.lang);
     if (match) utterance.voice = match;
     utterance.onend = () => { if (current === pb) systemNext(pb); };
@@ -585,17 +598,26 @@
     try { synth.speak(utterance); } catch (_) { finish(pb); }
   }
 
-  function toggle(key, text, who) {
+  function toggle(key, text, who, options = {}) {
     if (!systemOk && !modelPossible) return false;
-    const wasPlaying = !!current && current.key === key;
-    stop();
-    if (wasPlaying) return false;
+    const chained = !!options.sequence && readingFrom === options.sequence && !current;
+    if (!chained) {
+      const wasPlaying = !!current && current.key === key;
+      stop();
+      if (wasPlaying) return false;
+    }
     const normalized = normalize(text);
     if (!normalized) return false;
     const lang = textLocale(normalized);
     const prof = profile(who);
     const de = modelPossible && prof.voiceId !== 'system';   // the model reads German and English alike
-    const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
+    const pb = { key, who, speaker: prof.key, lang, de,
+      // A read-from-here speed overrides playback only, never a speaker's
+      // saved settings. Switching between Lena, Noah and Chris stays natural.
+      rate: READ_FROM_SPEEDS.includes(options.rate) ? options.rate : null,
+      sequence: chained ? options.sequence : null,
+      parts: [], at: 0, queued: 0, text, live: false, wake: null,
+      spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
     // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
@@ -618,7 +640,7 @@
     // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
     if (tts.config && pb.voice && tts.ready.size) { start(); return true; }
     // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
-    const tongue = (pb.lang || 'de').slice(0, 2), tempo = rateFor(pb.speaker);
+    const tongue = (pb.lang || 'de').slice(0, 2), tempo = pb.rate ?? rateFor(pb.speaker);
     if (tts.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
     // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
     // wait: the device's own voice reads this one, and the model goes on
@@ -650,8 +672,8 @@
     if (current !== pb) return false;
     pb.loading = false;
     if (!systemOk || pb.spoken) {
-      current = null;
-      setButtons();
+      // Never strand a multi-message reading on one failed voice.
+      finish(pb);
       MAG.toast('Vorlesen: Die Stimme konnte nicht geladen werden.', true);
       return false;
     }
@@ -669,6 +691,35 @@
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
     toggle(m.id, m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text, m.role === 'user' ? 'chris' : m.from);
   };
+  function advanceReadFrom(seq) {
+    if (readingFrom !== seq) return false;
+    while (seq.at < seq.items.length && readingFrom === seq) {
+      const m = seq.items[seq.at++];
+      if (toggle(m.id, m.text, m.who, { sequence: seq, rate: seq.rate })) return true;
+    }
+    if (readingFrom === seq) { readingFrom = null; setButtons(); }
+    return false;
+  }
+  function startReadFrom(id, rate = 1) {
+    if (!READ_FROM_SPEEDS.includes(rate) || (!systemOk && !modelPossible)) return false;
+    // Message IDs are chronological. Snapshot prevents a never-ending
+    // background reader when more bots talk or a room updates.
+    const items = [...S.messages.values()]
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+      .filter((m) => m.id >= id &&
+        (m.role === 'bot' || m.role === 'user') &&
+        !m.model3d && !m.yielded && m.state !== 'streaming')
+      .map((m) => ({
+        id: m.id, who: m.role === 'user' ? 'chris' : m.from,
+        text: m.role === 'bot' && MAG.tidy ? MAG.tidy(m.text || '') : m.text || ''
+      }))
+      .filter((m) => normalize(m.text));
+    if (!items.length) return false;
+    stop(); // any earlier single-message or multi-message playback
+    const seq = { items, at: 0, rate };
+    readingFrom = seq;
+    return advanceReadFrom(seq);
+  }
   // The newest answers are made ready before anybody asks for them, whole,
   // while they come in and nothing else is read: the tap that most often
   // comes finds its sound there, from the first word to the last, and plays
@@ -826,7 +877,11 @@
   }
   // Scrolling (in the list of messages or anywhere) brings other answers into view.
   document.addEventListener('scroll', later, { capture: true, passive: true });
-  MAG.speaking = { paint, stop, busy: () => !!current };
+  MAG.speaking = {
+    paint, stop, busy: () => !!current,
+    startFrom: startReadFrom,
+    readingFrom: () => !!readingFrom
+  };
   // Voices and tempo for the settings: [{ who, name, voice, rate }], the choices, and a setter.
   MAG.voices = {
     possible: () => modelPossible,

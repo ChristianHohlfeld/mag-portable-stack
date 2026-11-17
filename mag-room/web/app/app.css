@@ -601,6 +601,9 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .menu {
   position: fixed; z-index: 70; min-width: 210px; background: var(--surface); border: 1px solid var(--line);
   border-radius: 14px; padding: 5px; box-shadow: var(--shadow);
+  /* Speech speeds make the existing menu taller. Keep Share/Delete and
+     Stop accessible on small phones or with the keyboard visible. */
+  max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 .menu button, .menu label { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border-radius: 10px; text-align: left; font-size: 15px; cursor: pointer; }
 .menu button:hover, .menu label:hover { background: var(--surface-2); }

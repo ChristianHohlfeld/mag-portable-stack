@@ -153,6 +153,16 @@
       headerPress = null;
       if (!headerHover && headerDirty) paintTop();
     }, true);
+    // Pointer release without a click (drag away, lost touch) must not
+    // freeze status forever. Normal click clears the guard immediately.
+    bar.addEventListener('pointerup', () => {
+      const pressed = headerPress;
+      if (pressed) setTimeout(() => {
+        if (headerPress !== pressed) return;
+        headerPress = null;
+        if (!headerHover && headerDirty) paintTop();
+      }, 700);
+    });
     bar.addEventListener('pointercancel', () => {
       headerPress = null;
       if (!headerHover && headerDirty) paintTop();

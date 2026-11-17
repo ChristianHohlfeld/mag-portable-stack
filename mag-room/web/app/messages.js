@@ -1157,7 +1157,10 @@
     // Teilen: the message's files (a 3D result's model, scene and film too), or its words.
     const files = (m.attachments || []).filter((a) => a.file);
     const shareable = files.length || (words && !m.model3d);
-    if (S.you.role === 'owner' && !streaming) row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
+    // Ab hier stays available while the answer is still being written. The
+    // reading follows the growing text and whatever arrives after it.
+    // Deleting that answer waits until it is finished.
+    if (S.you.role === 'owner' && (MAG.speaking?.startFrom || !streaming)) row.append(button('dots', 'Mehr', (e) => { MAG.shareReady(files); MAG.menu(e.currentTarget, [
       // One tap reads this and every subsequent loaded text message in
       // chronological order. Speeds apply only to that playback session.
       MAG.speaking?.startFrom ? { icon: 'play', label: 'Play from here',
@@ -1168,10 +1171,10 @@
       } : null),
       MAG.speaking?.readingFrom?.() ? { icon: 'stop', label: 'Vorlesen stoppen',
         run: () => MAG.speaking.stop() } : null,
-      shareable ? { icon: 'share', label: 'Teilen', run: () => MAG.share(files, files.length ? '' : m.text) } : null,
+      !streaming && shareable ? { icon: 'share', label: 'Teilen', run: () => MAG.share(files, files.length ? '' : m.text) } : null,
       // A video goes back to a 3D scene whose figures do what the video shows.
-      files.find((a) => a.kind === 'video') && MAG.sceneFromVideo ? { icon: 'cube', label: '3D-Szene aus diesem Video', run: () => MAG.sceneFromVideo(files.find((a) => a.kind === 'video')) } : null,
-      { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
+      !streaming && files.find((a) => a.kind === 'video') && MAG.sceneFromVideo ? { icon: 'cube', label: '3D-Szene aus diesem Video', run: () => MAG.sceneFromVideo(files.find((a) => a.kind === 'video')) } : null,
+      !streaming ? { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) } : null,
     ]); }));
     return row.children.length ? row : null;
   }

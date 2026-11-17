@@ -10,6 +10,7 @@ const vm = require('node:vm');
 const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app', 'speak.js'), 'utf8');
 let now = 1, serial = 1;
 const timers = new Map(), intervals = new Map(), calls = [], errors = [];
+const hooks = {};
 const later = (fn) => { const id = serial++; timers.set(id, fn); return id; };
 const every = (fn) => { const id = serial++; intervals.set(id, fn); return id; };
 class FakeWorker {
@@ -41,7 +42,7 @@ const state = { messages: new Map([['0001', {
 const window = {
   AudioContext, MAG: {
     state, icons: { stop: '■', speak: '▶' },
-    on() {}, tidy: (s) => s, toast: (t) => errors.push(t)
+    on(type, fn) { (hooks[type] ||= []).push(fn); }, tidy: (s) => s, toast: (t) => errors.push(t)
   }, addEventListener() {}
 };
 const document = {
@@ -98,5 +99,28 @@ const ctx = {
   speaking.stop();
   assert.equal(intervals.size, 0);
   assert.equal(speaking.readingFrom(), false);
+  // A streamed bot message is readable from the first complete sentence.
+  // Its stop icon is active even when ONNX has not yet returned audio.
+  const live = {id:'0002',role:'bot',from:'lena',state:'streaming',text:'',
+    parts:[{k:'text',text:'Eine erste Aussage. '}]};
+  state.messages.set(live.id,live);
+  button.dataset.speak=live.id;
+  window.MAG.speak(live,button);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(speaking.busy(),true,'streaming speech started');
+  assert.equal(button.html,'■','loading shows instant Stop square');
+  live.parts[0].text+='Eine weitere Aussage. ';
+  for(const fn of hooks.delta||[])fn(live,0);
+  live.state='done';
+  for(const fn of hooks.message||[])fn(live);
+  const beforeStop=calls.filter(x=>x.type==='speak').length;
+  speaking.stop();
+  assert.equal(speaking.busy(),false,'single Stop clears streamed TTS immediately');
+  assert.equal(intervals.size,0,'no lingering monitor after Stop');
+  live.parts[0].text+='Späte Ausgabe.';
+  for(const fn of hooks.delta||[])fn(live,0);
+  for(let i=0;i<20;i++)await Promise.resolve();
+  assert.equal(calls.filter(x=>x.type==='speak').length,beforeStop,
+    'late streamed delta cannot resurrect stopped worker');
   console.log('TTS stall: serial lookahead bounded, waiting announced, watchdog releases false-active UI');
 })().catch((e) => { console.error(e); process.exitCode = 1; });

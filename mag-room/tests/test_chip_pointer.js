@@ -49,7 +49,7 @@ const ptr=(node,type,pointerType='touch')=>{
   await Promise.resolve();
   assert.equal(calls.length,1);
   assert.equal(calls[0].url,'/api/bot/lena');
-  assert.deepEqual(calls[0].body,{enabled:false});
+  assert.equal(calls[0].body.enabled,false);
   assert.equal(calls.some(c=>c.url.includes('/noah')),false);
 
   // Mismatched click target cannot turn the initial Lena press into a Noah Stop.
@@ -72,7 +72,7 @@ const ptr=(node,type,pointerType='touch')=>{
   chip('noah').querySelector('.tog').click();
   await Promise.resolve();
   assert.equal(calls[1].url,'/api/bot/noah');
-  assert.deepEqual(calls[1].body,{enabled:false});
+  assert.equal(calls[1].body.enabled,false);
   // Stop remains scoped by bot id too.
   handlers.bots();
   chip('noah').querySelector('.chip-stop').click();

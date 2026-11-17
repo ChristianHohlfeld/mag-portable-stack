@@ -8,6 +8,7 @@
   // This is a local presentation preference, never a server-side filter:
   // every message and tool event continues to arrive and remains in S.messages.
   let mediaOnly = false, mediaLoading = false, mediaMore = false, mediaCursor = '', mediaRequest = null;
+  let mediaGeneration = 0; // reset invalidates all earlier async page responses
   try { mediaOnly = localStorage.getItem('mag-media-only') === '1'; } catch (_) {}
   let lastScrollTop = 0, touchY = null;
   let inputDirection = 'none', inputUntil = 0; // only an explicit user gesture may re-pin
@@ -1379,29 +1380,44 @@
     else if (empty.dataset.originalHtml) empty.innerHTML = empty.dataset.originalHtml;
   }
   async function loadMedia(reset = false) {
+    if (reset) {
+      // A new view must fetch its own first page, even when an older-page
+      // request is still in flight. Do not let the stale response change
+      // the cursor or the live message DOM after this reset.
+      mediaGeneration++;
+      mediaCursor = '';
+      mediaMore = true;
+      mediaRequest = null;
+    }
     if (mediaRequest) return mediaRequest;
-    if (!reset && !mediaMore) return;
+    if (!mediaMore) return;
+    const generation = mediaGeneration;
+    const cursor = mediaCursor;
     mediaLoading = true;
     paintEmpty();
-    const cursor = reset ? '' : mediaCursor;
-    mediaRequest = (async () => {
+    const request = (async () => {
       try {
         const page = await MAG.api('GET', '/api/media?limit=200' +
           (cursor ? '&before=' + encodeURIComponent(cursor) : ''));
-        // Keep all chat messages and live SSE state; only add older media.
+        if (generation !== mediaGeneration) return; // stale page or reset
+        // Preserve existing chat/SSE objects; only add historical media.
         for (const m of page.messages || []) if (!S.messages.has(m.id)) S.messages.set(m.id, m);
         mediaCursor = page.messages?.[0]?.id || cursor;
         mediaMore = !!page.more;
         if (mediaOnly) MAG.onMediaPage?.();
       } catch (err) {
-        MAG.toast?.('Medien konnten nicht geladen werden: ' + err.message, true);
+        if (generation === mediaGeneration)
+          MAG.toast?.('Medien konnten nicht geladen werden: ' + err.message, true);
       } finally {
-        mediaLoading = false;
-        mediaRequest = null;
-        if (mediaOnly) { paintEmpty(); olderBtn.hidden = !mediaMore; }
+        if (generation === mediaGeneration) {
+          mediaLoading = false;
+          mediaRequest = null;
+          if (mediaOnly) { paintEmpty(); olderBtn.hidden = !mediaMore; }
+        }
       }
     })();
-    return mediaRequest;
+    mediaRequest = request;
+    return request;
   }
   function setMediaOnly(value, resetPosition = true) {
     mediaOnly = !!value;

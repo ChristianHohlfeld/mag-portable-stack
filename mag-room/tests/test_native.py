@@ -379,6 +379,9 @@ class RoomContract(unittest.TestCase):
         self.assertIn("Noah: Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
+        # Invisible PASS is still invisible; the server audit distinguishes
+        # it from a missed dispatch or an unfinished generation.
+        self.assertIn("chose PASS/empty", (r.tmp / "magroom.log").read_text())
 
     def test_autonomous_chat_can_start_without_human_or_browser(self):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")

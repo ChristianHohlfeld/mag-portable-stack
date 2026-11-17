@@ -229,18 +229,34 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
   assert.equal(Number(at.value), 0.4, 'SSE preserves stored video cue');
   assert.equal(Number(from.value), 0.9, 'SSE preserves song in-point');
   const mv = musicUI.querySelector('video');
-  const ma = musicUI.querySelector('audio');
+  // Each lane has its own audio element. The first one is "voice", so
+  // testing querySelector('audio') would silently inspect the wrong lane.
+  const ma = musicUI.querySelector('audio[data-lane="melody"]');
+  assert(ma, 'melody audio element has a stable lane identity');
   find(musicUI, 'Mit Tonspuren anhören').click();
   await flush();
+  assert.equal(ma.paused, false,
+    'delayed melody is armed directly by the preview tap, not a later autoplay');
   mv.currentTime = 0.25;
   mv.dispatchEvent(new wm.Event('timeupdate'));
-  assert.equal(ma.paused, true, 'song must not begin before its video cue');
+  assert.equal(ma.muted, true, 'song must be inaudible before its video cue');
+  assert.equal(ma.paused, false, 'keep muted audio active before the cue to avoid autoplay blocks');
   mv.currentTime = 0.75;
   mv.dispatchEvent(new wm.Event('timeupdate'));
   await flush();
-  assert.equal(ma.paused, false);
+  assert.equal(ma.paused, false, 'the correct melody lane plays after the cue');
+  assert.equal(ma.muted, false, 'melody becomes audible after the cue');
   assert(Math.abs(ma.currentTime - 1.25) < 0.02,
     'preview must seek into the song: 0.75 video - 0.4 cue + 0.9 song');
+  mv.pause();
+  assert.equal(ma.paused, true, 'pausing video also pauses melody');
+  mv.play();
+  mv.currentTime = 0.1;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  assert.equal(ma.muted, true, 'scrubbing backwards before cue silences melody');
+  mv.currentTime = 0.9;
+  mv.dispatchEvent(new wm.Event('timeupdate'));
+  assert.equal(ma.muted, false, 'returning after cue resumes audible melody');
   assert.equal(mf.perms.length, 0);
   wm.MAG.state.you = { role: 'guest' };
   const musicGuest = wm.MAG.voiceover.player(melodyMessage, clip);

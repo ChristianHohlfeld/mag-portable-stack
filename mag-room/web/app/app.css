@@ -476,7 +476,7 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .m3 .stage { position: relative; background: radial-gradient(120% 90% at 50% 35%, #2a2c33, #121317); }
 :root[data-theme="light"] .m3 .stage { background: radial-gradient(120% 90% at 50% 35%, #ffffff, #dfe1e7); }
 @media (prefers-color-scheme: light) { :root:not([data-theme]) .m3 .stage { background: radial-gradient(120% 90% at 50% 35%, #ffffff, #dfe1e7); } }
-.m3 canvas { display: block; width: 100%; height: min(78vw, 440px); touch-action: pan-y; cursor: grab; outline: none; }
+.m3 canvas { display: block; width: 100%; height: min(78vw, 440px); touch-action: none; cursor: grab; outline: none; }
 .m3 canvas:active { cursor: grabbing; }
 .m3 .stage .wait { position: absolute; inset: 0; display: grid; place-items: center; font-size: 14px; color: var(--muted); pointer-events: none; }
 .m3 .stage.ready .wait { display: none; }

@@ -409,7 +409,7 @@
     };
 
     const pointers = new Map();
-    let previous = null, lastTap = 0, lastPos = null, moved = 0;
+    let previous = null, lastTap = 0, lastPos = null, moved = 0, scrollGesture = false;
     const gesture = () => {
       const v = [...pointers.values()];
       if (v.length === 1) return { n: 1, x: v[0].x, y: v[0].y, t: performance.now() };
@@ -423,6 +423,7 @@
       previous = gesture();
       spin = velYaw = velPitch = 0;
       moved = 0;
+      if (pointers.size === 1) scrollGesture = false;
       stage()?.classList.add('touched');
       wake();
     };
@@ -433,13 +434,25 @@
       const now = gesture();
       if (before?.n === 1 && now?.n === 1) {
         const dt = Math.max(0.004, (now.t - before.t) / 1000), dx = (now.x - before.x) * 0.0085, dy = (now.y - before.y) * 0.0085;
-        // In the timeline a touch turns sideways only: up and down belongs to the page.
-        const tilt = free() || e.pointerType === 'mouse';
-        cam.yaw += dx;
-        velYaw = dx / dt;
-        if (tilt) { cam.pitch = clamp(cam.pitch + dy, -1.45, 1.45); velPitch = dy / dt; }
+        // touch-action:none is scoped only to this canvas. A vertical
+        // single-finger gesture scrolls the containing chat/file sheet; a
+        // horizontal gesture or mouse drag orbits, two fingers pinch/zoom.
+        const deltaX = now.x - before.x, deltaY = now.y - before.y;
+        if (e.pointerType === 'touch' && !free() &&
+            (scrollGesture || Math.abs(deltaY) > Math.abs(deltaX) * 1.3)) {
+          scrollGesture = true;
+          const scrolling = canvas.closest('.sheet .content') ||
+            canvas.closest('#scroll') || document.scrollingElement;
+          if (scrolling) scrolling.scrollTop -= deltaY;
+          velYaw = velPitch = 0;
+        } else {
+          cam.yaw += dx;
+          velYaw = dx / dt;
+          const tilt = free() || e.pointerType === 'mouse';
+          if (tilt) { cam.pitch = clamp(cam.pitch + dy, -1.45, 1.45); velPitch = dy / dt; }
+        }
         moved += Math.abs(now.x - before.x) + Math.abs(now.y - before.y);
-      } else if (before?.n === 2 && now?.n === 2 && free()) {
+      } else if (before?.n === 2 && now?.n === 2) {
         cam.zoom = clamp((cam.zoom * before.d) / now.d, 0.25, 4);
         const rect = canvas.getBoundingClientRect();
         cam.panX = clamp(cam.panX + (3 * cam.zoom * (now.x - before.x)) / Math.max(1, rect.height), -3, 3);
@@ -454,6 +467,7 @@
       const single = pointers.size === 1;
       pointers.delete(e.pointerId);
       previous = gesture();
+      if (!pointers.size) scrollGesture = false;
       if (single && e.type === 'pointerup' && moved < 8) {
         velYaw = velPitch = 0;
         const now = Date.now();

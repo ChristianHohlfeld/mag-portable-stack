@@ -399,10 +399,12 @@
       content.append(el('h3', { text: 'Gespräch' }), el('div', { class: 'card' },
         row('Selbstständig unterhalten', 'Lena und Noah können auch ohne deine Nachricht und bei geschlossenem Browser auf dem Server miteinander reden. Nach einer Gesprächspause starten sie frühestens nach dem nächsten Intervall erneut.',
           toggle(s.auto_chat === true, (v) => call('PUT', '/api/settings', { auto_chat: v }), !owner())),
+        row('Unbegrenzt unterhalten', 'Ohne festes Rundenlimit – die Bots entscheiden mit PASS selbst, wann ein Gespräch endet. Aus: vier Runden als Standard oder das gewählte Limit.',
+          toggle((s.bot_rounds ?? 0) === 0, (v) => call('PUT', '/api/settings', { bot_rounds: v ? 0 : 4 }), !owner())),
+        ...((s.bot_rounds ?? 0) > 0 ? [row('Bots untereinander', 'Maximale Anschlussantworten, wenn „Unbegrenzt unterhalten“ ausgeschaltet ist.',
+          select(s.bot_rounds, [[1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [4, '4 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner()))] : []),
         row('Mitlesen kenntlich machen', 'Die Bots wissen bei eigenständigen Gesprächen, dass du ihre Nachrichten im Chat sehen kannst – auch später. Sie nehmen nicht an, dass du gerade online bist.',
           toggle(s.auto_chat_visible !== false, (v) => call('PUT', '/api/settings', { auto_chat_visible: v }), !owner())),
-        row('Bots untereinander', 'Maximale Anschlussantworten pro Gespräch; 0 bedeutet wirklich unbegrenzt. Die Bots dürfen selbst mit PASS aufhören. Neue Gespräche beginnen mit zeitlichem Abstand.',
-          select(s.bot_rounds ?? 0, [[0, 'Unbegrenzt'], [1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner())),
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';

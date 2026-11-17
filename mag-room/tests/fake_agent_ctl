@@ -9,6 +9,8 @@ case $1 in
   reset)
     echo "$2" >> "$ctl/resets"
     exec 9> "$ctl/lock"; flock 9            # one lifecycle action at a time, like magbot
+    # Real magbot admission checks disk reserve BEFORE destroying the VM.
+    if [[ -e $ctl/fail_disk ]]; then echo "ERROR: Host disk reserve" >&2; exit 1; fi
     rm -rf "$home"
     while [[ -e $ctl/hold ]]; do sleep 0.05; done
     if [[ -e $ctl/fail ]]; then echo "magbot: Host load too high" >&2; exit 1; fi

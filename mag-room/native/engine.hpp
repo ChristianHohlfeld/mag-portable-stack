@@ -2163,7 +2163,16 @@ private:
       });
       {
         std::lock_guard<std::mutex> lk(mu_);
-        if (Bot *b = find(bot)) b->resetting = false;
+        if (Bot *b = find(bot)) {
+          b->resetting = false;
+          // A cancelled turn may have left a stale "liest" phase although
+          // no worker is active. Never override a genuinely running turn.
+          if (b->running.empty()) {
+            b->phase = "idle";
+            b->phase_since = now_ms();
+            b->detail.clear();
+          }
+        }
         vm_notes_[bot].clear();
       }
       cv_.notify_all(); // what Chris wrote meanwhile is answered now
@@ -2182,31 +2191,37 @@ private:
       cv_.wait_for(lk, std::chrono::seconds(20), [&] { return stop_ || b->running.empty(); });
       if (stop_) return; // the room is going down: the next one goes on
     }
-    // 2. What the bot remembers: its memories, its prompt log, its slot.
+    // 2. Reset the VM FIRST. Admission protects the host's disk/RAM
+    // reserves and may reject this operation before touching the VM. Never
+    // delete the bot's persistent memories/KV context for a rejected reset.
+    step("vm");
+    const RunResult r = guests_.reset(vm);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (stop_) return; // the persisted reset is safely resumed on restart
+    }
+    if (r.code != 0) {
+      logf("engine: reset of " + vm + " for " + bot + " failed: " + clip(trim(r.out), 600));
+      std::string why = trim(r.out);
+      if (const size_t line = why.find_last_of('\n'); line != std::string::npos) why = why.substr(line + 1);
+      return end("Die VM ließ sich nicht neu erstellen" + (why.empty() ? std::string(".") : ": " + clip(why, 240)) +
+                 ". Das Bot-Gedächtnis wurde nicht gelöscht.");
+    }
+    // 3. Only after a confirmed new VM, forget this bot's old memories,
+    // model conversation and slot. Interrupted resets resume from the
+    // persisted state; the other bot is never modified.
     step("memory");
     room_.update_bot(bot, [&](Val &b) { b["memory"] = Val::array(); });
     {
       std::unique_lock<std::mutex> lk(mu_);
       Bot *b = find(bot);
+      if (!b) return;
       const uint64_t before = b->wipes;
       b->wipe_pending = true;
       if (b->cancel) b->cancel->stop();
       cv_.notify_all();
       cv_.wait_for(lk, std::chrono::seconds(90), [&] { return stop_ || b->wipes > before; });
       if (stop_) return;
-    }
-    // 3. The VM: thrown away and made anew from the golden image.
-    step("vm");
-    const RunResult r = guests_.reset(vm);
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      if (stop_) return; // cut off with the room: done again from the start
-    }
-    if (r.code != 0) {
-      logf("engine: reset of " + vm + " for " + bot + " failed: " + clip(trim(r.out), 600));
-      std::string why = trim(r.out);
-      if (const size_t line = why.find_last_of('\n'); line != std::string::npos) why = why.substr(line + 1);
-      return end("Die VM ließ sich nicht neu erstellen" + (why.empty() ? std::string(".") : ": " + clip(why, 240)));
     }
     end("");
   }

@@ -1923,8 +1923,9 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)      # asked twice: one reset
         r.wait(lambda: bot("lena").get("reset", {}).get("step") == "vm" and resets() == ["agent1"], "the VM is being made anew")
         go.set()
-        self.assertEqual((bot("lena")["busy"], bot("lena")["vm"], len(log("lena")), (guests / "agent1").exists()), (False, "agent1", 1, False))
-        self.assertIn("erase", [a for a, _ in r.lena.slot_actions])
+        self.assertEqual((bot("lena")["busy"], bot("lena")["vm"], (guests / "agent1").exists()), (False, "agent1", False))
+        self.assertIn("Erzähl", json.dumps(log("lena"), ensure_ascii=False),
+                      "old model context survives until VM replacement succeeds")
         self.assertEqual(r.api("POST", "/api/bot/lena/vm")[0], 409)        # no second VM beside it
         # The host's clean-up of unreferenced VMs is told that this one is spoken for.
         self.assertEqual([a.get("pending_vm") for a in json.loads((state / "agents.json").read_text())], ["agent1", None])
@@ -1934,6 +1935,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((len(r.lena.chats()), resets()), (before, ["agent1"]))
         (ctl / "hold").unlink()
         r.wait(lambda: "reset" not in bot("lena"), "reset done")
+        self.assertIn("erase", [a for a, _ in r.lena.slot_actions])
         r.idle()
         self.assertEqual([m["text"] for m in r.messages() if m["id"] > asked["id"]], ["Frisch."])
         self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
@@ -1952,7 +1954,8 @@ class RoomContract(unittest.TestCase):
         (ctl / "fail").touch()
         (ctl / "hold").unlink()
         r.wait(lambda: bot("lena").get("reset", {}).get("state") == "failed", "failure shown")
-        self.assertEqual((bot("lena")["reset"]["error"], bot("lena")["vm"]), ("Die VM ließ sich nicht neu erstellen: magbot: Host load too high", "agent1"))
+        self.assertEqual((bot("lena")["reset"]["error"], bot("lena")["vm"]),
+                         ("Die VM ließ sich nicht neu erstellen: magbot: Host load too high. Das Bot-Gedächtnis wurde nicht gelöscht.", "agent1"))
         (ctl / "fail").unlink()
         # Again, now with Lena paused and Noah (who never had a VM) at the same time.
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"enabled": False})[0], 200)
@@ -1960,6 +1963,44 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: "reset" not in bot("lena") and "reset" not in bot("noah"), "both reset")
         self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], bot("noah")["vm"], bot("noah")["enabled"]), ("agent1", False, "agent2", True))
         self.assertEqual((sorted(resets()[3:]), (guests / "agent1").is_dir(), (guests / "agent2").is_dir()), (["agent1", "agent2"], True, True))
+
+    def test_disk_reserve_rejects_reset_without_erasing_bot_memory(self):
+        ctl = pathlib.Path(tempfile.mkdtemp(prefix="mag-reset-reserve-"))
+        self.addCleanup(shutil.rmtree, ctl, True)
+        r = Room(MAG_ROOM_AGENT_CTL=str(HERE / "fake_agent_ctl"), FAKE_CTL=str(ctl))
+        self.addCleanup(r.close)
+        script = iter([
+            {"content": "", "tool_calls": [{"name": "remember", "arguments": {"fact": "Lena merkt: grünes Buch."}}]},
+            "Gemerkt."
+        ])
+        r.lena.reply = lambda body: next(script, "Verstanden.")
+        r.noah.reply = lambda body: "PASS"
+        r.say("@Lena merk dir das grüne Buch")
+        r.idle()
+        mem = lambda who: r.api("GET", "/api/bot/" + who + "/memory")[1]["memory"]
+        self.assertEqual([x["text"] for x in mem("lena")], ["Lena merkt: grünes Buch."])
+        guests = pathlib.Path(r.env["FAKE_GUEST_HOME"])
+        vm_dir = guests / "agent1"
+        vm_dir.mkdir(parents=True, exist_ok=True)
+        (vm_dir / "original.txt").write_text("nicht gelöscht")
+        before_wire = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        before_noah = mem("noah")
+        erase_before = [a for a, _ in r.lena.slot_actions].count("erase")
+        (ctl / "fail_disk").touch()
+        self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)
+        r.wait(lambda: any(b["id"] == "lena" and b.get("reset", {}).get("state") == "failed"
+                           for b in r.state()["bots"]), "disk reserve reset declined")
+        self.assertTrue((vm_dir / "original.txt").exists(), "preflight must keep the existing VM")
+        self.assertEqual([x["text"] for x in mem("lena")], ["Lena merkt: grünes Buch."])
+        self.assertEqual(mem("noah"), before_noah, "other bot never affected")
+        after_wire = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire" / "lena.json").read_text())
+        self.assertEqual(after_wire["messages"], before_wire["messages"],
+                         "refused reset must not erase the prompt conversation")
+        self.assertEqual([a for a, _ in r.lena.slot_actions].count("erase"), erase_before)
+        lena = next(b for b in r.state()["bots"] if b["id"] == "lena")
+        self.assertEqual(lena["phase"], "idle", "failed reset must not stick on 'liest'")
+        self.assertIn("Host disk reserve", lena["reset"]["error"])
+        self.assertIn("Gedächtnis wurde nicht gelöscht", lena["reset"]["error"])
 
     def test_an_answer_a_restart_cut_off_unseen_is_given_after_it(self):
         r = self.room

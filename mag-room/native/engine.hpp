@@ -1042,6 +1042,7 @@ private:
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt. Jeden Satz schreibst du nur einmal und nur auf Deutsch, auch zwischen Werkzeugschritten; nie eine englische Fassung daneben und nie einen Werkzeugaufruf als JSON in den Text.\n"
         "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
         "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar. Auf eine neue, an dich gerichtete Nachricht antworte selbst; PASS ist kein Ersatz fuer die Antwort auf eine ausdrueckliche Bitte.\n"
+        "- Aufforderungen sind Arbeitsauftraege, keine Gespraechseroeffnung: Wenn Chris dich oder euch auffordert, etwas zu ueberlegen, zu pruefen oder zu beurteilen, denke selbst darueber nach und gib deine begruendete Einschaetzung. Beziehe knappe oder unvollstaendige Aufforderungen auf den unmittelbar vorangehenden Dialog, einschliesslich dessen offener Fragen und moeglicher Fehler. Sage nicht nur, dass du bereit bist, und frage nicht erneut nach einem bereits erkennbaren Gegenstand. Ist auch mit dem Verlauf kein Gegenstand erkennbar, frage gezielt nach.\n"
         "- Nachrichten-Zeitstempel zeigen, wann etwas gesendet wurde, nicht die aktuelle Uhrzeit. Fuer die genaue Uhrzeit JETZT rufe clock_now auf. Aus zeitlichen Luecken folgt keine Aktivitaet, insbesondere kein Schlaf.\n"
         "- Erfinde nichts. Was du nicht weißt oder nicht prüfen konntest, sagst du offen.\n"
         "- Ältere Teile des Gesprächs können aus deinem Kontext entfernt worden sein.\n";
@@ -1574,6 +1575,20 @@ private:
 
   static std::string kb(const Val &a) { return std::to_string((long)(jnum(a, "size") / 1024) + 1) + " KB"; }
 
+  // The ID belongs to persistent room storage, but models must see the same
+  // display name in ordinary messages and contextual excerpts. Resolve from
+  // the current roster so a renamed bot is still identified consistently.
+  std::string speaker_label(const std::string &from) {
+    if (from == "chris") return "Chris";
+    if (from == "idol") return "Foto zu 3D";
+    if (from == "system") return "System";
+    if (from == "routine") return "Routine (von Chris eingerichtet)";
+    const Val all = room_.bots();
+    for (const auto &entry : all.asArr())
+      if (jstr(entry, "id") == from) return jstr(entry, "name", from);
+    return from;
+  }
+
   // One room message as the bot reads it: who said what, with everything that
   // belongs to it. Images go along as images for a bot that sees (`images`
   // lists their files); the others read what a seeing bot wrote down.
@@ -1581,16 +1596,7 @@ private:
   // their answer the way a bracketed tag was copied ("Hallo [Chris]").
   std::string render(const Bot &b, const Val &m, const std::vector<std::string> &pushed_paths, Val &images) {
     const std::string from = jstr(m, "from");
-    std::string who = from;
-    if (from == "chris") who = "Chris";
-    else if (from == "idol") who = "Foto zu 3D";
-    else if (from == "system") who = "System";
-    else if (from == "routine") who = "Routine (von Chris eingerichtet)";
-    else {
-      const Val all = room_.bots();
-      for (auto &o : all.asArr())
-        if (jstr(o, "id") == from) who = jstr(o, "name");
-    }
+    std::string who = speaker_label(from);
     // A message Chris sent to the other bot by @mention says so: it is context
     // for this one, not a task.
     if (const Val *to = m.find("mentions"); from == "chris" && to && to->isArr() && !to->asArr().empty()) {
@@ -1909,8 +1915,7 @@ private:
             std::reverse(selected.begin(), selected.end());
             for (const size_t i : selected) {
               const Val &old = recent[i];
-              const std::string who = jstr(old, "from") == "chris" ? "Chris" :
-                                       jstr(old, "from", "Bot");
+              const std::string who = speaker_label(jstr(old, "from"));
               std::string words = trim(jstr(old, "text"));
               for (auto &c : words) if (c == '\n' || c == '\r') c = ' ';
               if (words.empty() || jnum(old, "ts") <= 0) continue;

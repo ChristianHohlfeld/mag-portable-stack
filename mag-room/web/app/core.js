@@ -286,6 +286,11 @@
         phase='paused';publish();
       }
     },true);
+    document.addEventListener('ended',e=>{
+      if (!focus || focus.owner==='tts' || group(e.target)!==focus.owner) return;
+      if (media().filter(n=>group(n)===focus.owner).every(n=>n.paused || n.ended))
+        release(focus.owner);
+    },true);
     const resumeFocus = () => {
       if (!focus) return;
       phase='playing';

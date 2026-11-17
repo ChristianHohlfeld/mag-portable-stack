@@ -82,7 +82,9 @@
     MAG.sheet('Dateien', (content, sheet, close) => {
       const search = el('input', { type: 'search', placeholder: 'Suchen …', 'aria-label': 'Dateien suchen', value: query });
       const seg = el('div', { class: 'seg files-seg' }), grid = el('div', { class: 'files-grid' }), foot = el('p', { class: 'fine' });
-      const zip = el('a', { class: 'pill', download: '' }, MAG.icon('down'), 'Als ZIP');
+      const zip = el('a', { class: 'pill', download:'MAG_Dateien.zip',
+        'aria-label':'Ausgewählte Dateien als ZIP herunterladen' },
+        MAG.icon('down'), 'Als ZIP');
       sheet.classList.add('wide');
       content.append(el('div', { class: 'files-bar' }, search, zip), seg, grid, foot);
       const shown = () => all.filter((f) => (!group || f.group === group) &&

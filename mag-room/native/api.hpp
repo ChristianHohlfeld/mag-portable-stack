@@ -1272,6 +1272,17 @@ private:
     http::send_json(fd, 201, att);
   }
 
+  static std::string download_disposition(const std::string &name, bool attachment) {
+    std::string ascii;
+    for (unsigned char c : name)
+      ascii += ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') ? (char)c : '_';
+    if (ascii.empty()) ascii = "download";
+    ascii.resize(std::min<size_t>(ascii.size(), 128));
+    return std::string(attachment ? "attachment" : "inline") +
+           "; filename=\"" + ascii + "\"; filename*=UTF-8''" + url_encode(name);
+  }
+
   void file(int fd, const http::Request &r) {
     const std::string stored = url_decode(r.path.substr(10));
     const std::string path = room_.file_path(stored);
@@ -1285,8 +1296,8 @@ private:
     http::Headers h = {{"Content-Security-Policy", r.param("view") == "1" && starts_with(mime, "text/html") ? "sandbox allow-scripts" : "sandbox"},
                        {"Cross-Origin-Resource-Policy", "same-origin"},
                        {"Cache-Control", "private, max-age=31536000, immutable"},
-                       {"Content-Disposition", std::string(r.param("download") == "1" || (active && r.param("view") != "1") ? "attachment" : "inline") +
-                                                   "; filename*=UTF-8''" + url_encode(name)}};
+                       {"Content-Disposition", download_disposition(name,
+                         r.param("download") == "1" || (active && r.param("view") != "1"))}};
     http::send_file(fd, r, path, mime, h);
   }
 
@@ -1466,10 +1477,22 @@ private:
     char stamp[32];
     const time_t now = time(nullptr);
     std::strftime(stamp, sizeof stamp, "%Y-%m-%d", std::localtime(&now));
-    const http::Headers h = {{"Content-Disposition", std::string("attachment; filename*=UTF-8''") + url_encode(std::string("MAG Dateien ") + stamp + ".zip")}};
-    timeval tv{60, 0};
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    if (!http::write_all(fd, http::head(200, "application/zip", (long long)total, h))) return;
+    // A temporary regular file supports byte-range retries from Android's
+    // download manager, unlike a live HTTP stream. Never expose partial ZIPs.
+    const std::string temp = room_.cfg.state_dir + "/mag-zip-" + random_hex(16) + ".zip";
+    const int zipfd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (zipfd < 0) return http::send_error(fd, 500, "ZIP-Datei konnte nicht erstellt werden");
+    const auto zipwrite = [&](const void *data, size_t left) {
+      const char *p = static_cast<const char *>(data);
+      while (left) {
+        ssize_t n = ::write(zipfd, p, left);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        left -= (size_t)n; p += n;
+      }
+      return true;
+    };
+    bool zipok = true;
     uint64_t at = 0;
     std::vector<char> buf(1 << 20);
     for (auto &e : entries) {
@@ -1479,7 +1502,7 @@ private:
       le(local, e.when, 4); le(local, 0, 4); le(local, 0, 4); le(local, 0, 4);
       le(local, e.name.size(), 2); le(local, 0, 2);
       local += e.name;
-      if (!http::write_all(fd, local)) return;
+      if (!zipwrite(local.data(), local.size())) { zipok = false; break; }
       at += local.size();
       const int file = open(e.path.c_str(), O_RDONLY | O_CLOEXEC);
       uint64_t left = e.size;
@@ -1488,17 +1511,18 @@ private:
         const ssize_t got = ::read(file, buf.data(), std::min<uint64_t>(buf.size(), left));
         if (got <= 0) break;
         for (ssize_t i = 0; i < got; ++i) c = table[(c ^ (unsigned char)buf[i]) & 0xff] ^ (c >> 8);
-        if (!http::write_all(fd, buf.data(), (size_t)got)) { close(file); return; }
+        if (!zipwrite(buf.data(), (size_t)got)) { zipok = false; break; }
         left -= (uint64_t)got;
       }
       if (file >= 0) close(file);
-      if (left > 0) return; // the file shrank under us: cut the answer off rather than send a broken ZIP
+      if (left > 0 || !zipok) { zipok = false; break; } // reject a short input
       e.crc = c ^ 0xffffffffu;
       std::string desc;
       le(desc, 0x08074b50, 4); le(desc, e.crc, 4); le(desc, e.size, 4); le(desc, e.size, 4);
-      if (!http::write_all(fd, desc)) return;
+      if (!zipwrite(desc.data(), desc.size())) { zipok = false; break; }
       at += e.size + desc.size();
     }
+    if (!zipok) { ::close(zipfd); unlink(temp.c_str()); return http::send_error(fd, 500, "ZIP konnte nicht vollständig erstellt werden"); }
     std::string dir;
     for (auto &e : entries) {
       le(dir, 0x02014b50, 4); le(dir, 20, 2); le(dir, 20, 2); le(dir, 0x0808, 2); le(dir, 0, 2);
@@ -1509,7 +1533,19 @@ private:
     }
     le(dir, 0x06054b50, 4); le(dir, 0, 2); le(dir, 0, 2); le(dir, entries.size(), 2); le(dir, entries.size(), 2);
     le(dir, central, 4); le(dir, at, 4); le(dir, 0, 2);
-    http::write_all(fd, dir);
+    zipok = zipwrite(dir.data(), dir.size());
+    if (::close(zipfd) != 0) zipok = false;
+    if (!zipok || file_size(temp) != total) {
+      unlink(temp.c_str());
+      return http::send_error(fd, 500, "ZIP konnte nicht vollständig erstellt werden");
+    }
+    timeval tv{300, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    const std::string name = std::string("MAG Dateien ") + stamp + ".zip";
+    const http::Headers h = {{"Content-Disposition", download_disposition(name, true)},
+                             {"Cache-Control", "no-store"}};
+    http::send_file(fd, r, temp, "application/zip", h);
+    unlink(temp.c_str());
   }
 
   // ---- the bots' sites ----------------------------------------------------

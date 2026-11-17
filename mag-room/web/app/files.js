@@ -77,12 +77,41 @@
     });
   }
 
+  async function downloadZip(url, button) {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const response = await fetch(url, { credentials:'same-origin' });
+      if (!response.ok) {
+        let problem = 'HTTP ' + response.status;
+        try {
+          const body = await response.json();
+          problem = body.error || body.message || problem;
+        } catch (_) { try { problem = (await response.text()).slice(0,180) || problem; } catch (_) {} }
+        throw new Error(problem);
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('Die ZIP-Datei ist leer.');
+      const object = URL.createObjectURL(blob);
+      const a = el('a',{ href:object,download:'MAG_Dateien.zip' });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      // Android's download manager may still be acquiring the blob URL.
+      setTimeout(() => URL.revokeObjectURL(object),60000);
+    } catch (err) { MAG.toast('ZIP-Download fehlgeschlagen: ' + err.message,true); }
+    finally { button.disabled = false; }
+  }
+
   function open() {
     let all = [], group = '', query = '';
     MAG.sheet('Dateien', (content, sheet, close) => {
       const search = el('input', { type: 'search', placeholder: 'Suchen …', 'aria-label': 'Dateien suchen', value: query });
       const seg = el('div', { class: 'seg files-seg' }), grid = el('div', { class: 'files-grid' }), foot = el('p', { class: 'fine' });
-      const zip = el('a', { class: 'pill', download: '' }, MAG.icon('down'), 'Als ZIP');
+      let zipUrl = '';
+      const zip = el('button', { class: 'pill', type:'button',
+        'aria-label':'Ausgewählte Dateien als ZIP herunterladen',
+        onclick: () => downloadZip(zipUrl,zip) }, MAG.icon('down'), 'Als ZIP');
       sheet.classList.add('wide');
       content.append(el('div', { class: 'files-bar' }, search, zip), seg, grid, foot);
       const shown = () => all.filter((f) => (!group || f.group === group) &&
@@ -101,7 +130,7 @@
         foot.textContent = list.length ? list.length + (list.length === 1 ? ' Datei · ' : ' Dateien · ') + MAG.bytes(bytes) : all.length ? 'Nichts gefunden.' : 'Im Chat liegen noch keine Dateien.';
         // The ZIP holds what is shown; everything when nothing is filtered.
         zip.hidden = !list.length;
-        zip.href = '/api/files.zip' + (list.length === all.length ? '' : '?files=' + list.map((f) => encodeURIComponent(f.file)).join(','));
+        zipUrl = '/api/files.zip' + (list.length === all.length ? '' : '?files=' + list.map((f) => encodeURIComponent(f.file)).join(','));
       };
       search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); draw(); });
       foot.textContent = 'Lädt …';

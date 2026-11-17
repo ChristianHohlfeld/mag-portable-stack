@@ -55,6 +55,7 @@ const document = {
 };
 const ctx = {
   window, document, Worker: FakeWorker, fetch() {}, navigator: {},
+  URLSearchParams, // VM contexts do not inherit Node's URLSearchParams global
   localStorage: { getItem: () => null, setItem() {} },
   performance: { now: () => now },
   setTimeout: later, clearTimeout: (id) => timers.delete(id),

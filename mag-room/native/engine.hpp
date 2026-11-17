@@ -975,7 +975,8 @@ private:
   // A separate room-side trigger: conversation does not depend on a browser,
   // UI client, open socket or a new message from Chris. It is opt-in, checks
   // persisted bot pause flags and model readiness, and starts only while
-  // completely idle. A cooldown delays new sessions; once started, a\n  // session obeys the user's round setting (0 really means unlimited).
+  // completely idle. A cooldown delays new sessions; once started, a
+  // session obeys the user's round setting (0 really means unlimited).
   void maybe_autonomous_chat() {
     if (!jbool(room_.settings(), "auto_chat", false)) return;
     const Val configured = room_.bots();
@@ -998,7 +999,7 @@ private:
     if (available.size() < 2 || configured.asArr().size() < 2) return;
     Bot *starter = available[auto_next_++ % available.size()];
     auto_burst_ = true;
-    bot_turns_ = 1; // the opening assistant also counts toward the short burst
+    bot_turns_ = 1; // the opening assistant counts toward explicit positive limits
     passes_ = 0;
     audience_.clear(); // an old @mention must not mute a new autonomous session
     const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
@@ -4543,9 +4544,7 @@ private:
           if (o->reason != "human") o->want = false;
       return;
     }
-    if (!visible) {
-      return;
-    }
+    if (!visible) return;
     passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.

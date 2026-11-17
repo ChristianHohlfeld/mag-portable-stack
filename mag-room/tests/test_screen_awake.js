@@ -84,6 +84,20 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(pwa.locks.length, 2, 'PWA must reacquire on foreground');
   assert(pwa.control.active());
 
+  // OS revocation while still visible is different from a page hide.
+  const revoked = mount({ installed: true });
+  await settle();
+  await revoked.locks[0].release();
+  await settle();
+  assert.equal(revoked.locks.length, 2, 'unexpected visible release reacquires once');
+  assert(revoked.control.active());
+  await revoked.locks[1].release();
+  await settle();
+  assert.equal(revoked.locks.length, 2, 'repeated OS revocations must not spin indefinitely');
+  revoked.document.fire('pointerdown');
+  await settle();
+  assert.equal(revoked.locks.length, 3, 'real gesture can restore a revoked lock');
+
   await pwa.control.set(false);
   assert(!pwa.control.enabled());
   assert(!pwa.control.active());
@@ -129,9 +143,12 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert(!os.control.active());
   os.document.fire('pointerdown');
   await settle();
-  assert.equal(denied, 1, 'OS denial is throttled, not retried on every tap');
+  assert.equal(denied, 2, 'a real gesture retries despite 30-second automatic cooldown');
+  os.document.fire('pointerdown');
+  await settle();
+  assert.equal(denied, 2, 'rapid repeated taps must not cause a retry storm');
   assert.equal(await os.control.set(true), false, 'explicit toggle may retry');
-  assert.equal(denied, 2);
+  assert.equal(denied, 3);
 
   let resolvePending;
   const race = mount({ installed: true, request: () => new Promise(resolve => { resolvePending = resolve; }) });

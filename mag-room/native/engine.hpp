@@ -3333,6 +3333,23 @@ private:
                 "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre das Bot-Gespräch mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage fort. Brich es nicht aus eigenem Entschluss ab; wiederhole nichts bloß, um zu antworten.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
+    if (reason == "self") {
+      // Every voluntary self-turn is an ordinary one-bot response with a
+      // fresh user-role internal directive, preserving the warm KV prefix.
+      Val invite = Val::object();
+      invite["role"] = "user";
+      invite["content"] = "(Internes Selbstgespräch, nicht Chris und nicht der andere Bot: " +
+        observer + "Setze deinen EIGENEN jüngsten Gedanken kritisch fort. " +
+        "Stelle dir eine Rückfrage oder korrigiere eine Unstimmigkeit; " +
+        "keine alten Nutzeraufträge erneut ausführen, keine Aktionen erfinden, keine Werkzeuge. " +
+        std::string(pass_enabled
+          ? "Wenn es nichts Sinnvolles gibt, antworte exakt PASS (unsichtbar)."
+          : "PASS ist deaktiviert, bleibe sachlich und vermeide erfundene Tatsachen.") + ")";
+      invite["_self_talk"] = true;
+      b.wire["messages"].push(invite);
+      b.wire["fresh"] = true;
+      save_wire(b);
+    }
     if (reason == "autonomous") {
       // This is explicitly not a message from Chris. Append the short
       // initiative to the stored wire; changing an earlier prompt would
@@ -4739,6 +4756,13 @@ private:
     // A finished human answer must not revive an exchange stopped while it
     // was in flight. A separately requested tool continuation above is safe.
     if (dialogue_stopped_ || (limit > 0 && bot_turns_ >= limit)) return;
+    // Opt-in follow-up on the same bot. A human turn and goals always win.
+    if (self_enabled_ && !b.goal_on && !b.goal_arm && !b.want) {
+      bool enabled_here = false;
+      for (const auto &item : bots.asArr())
+        if (jstr(item, "id") == b.id) enabled_here = jbool(item, "enabled", true);
+      if (enabled_here) { b.want = true; b.reason = "self"; }
+    }
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
       if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name

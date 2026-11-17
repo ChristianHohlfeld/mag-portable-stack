@@ -50,8 +50,15 @@ first.input.value = 'print("edited")';
 first.input.dispatchEvent(new window.Event('input', { bubbles: true }));
 assert.equal(updates, 1);
 assert(first.changed());
+assert.match(first.status.textContent, /wird gespeichert/);
+assert.equal(window.localStorage.getItem('mag-code-draft:' + key), null,
+  'typing never serializes to synchronous localStorage');
+window.dispatchEvent(new window.Event('pagehide'));
+const written = JSON.parse(window.localStorage.getItem('mag-code-draft:' + key));
+assert.equal(written.text, 'print("edited")');
+assert.match(written.hash, /^\d+:[0-9a-f]{8}$/);
+assert(!Object.hasOwn(written, 'base'), 'base source must not be duplicated in storage');
 assert.match(first.status.textContent, /nicht veröffentlicht/);
-assert.equal(JSON.parse(window.localStorage.getItem('mag-code-draft:' + key)).text, 'print("edited")');
 assert.equal(edit.editor(key, 'print("original")', 'python').get(), 'print("edited")',
   'a message redraw retains the local draft');
 first.resetButton.click();
@@ -69,6 +76,20 @@ assert.equal(deferred.get(), '', 'page source may be loaded asynchronously');
 deferred.setOriginal('<h1>Original</h1>');
 assert.equal(deferred.get(), '<h1>My draft</h1>',
   'local edits survive reload even when page source was fetched later');
+window.dispatchEvent(new window.Event('pagehide'));
+const migrated = JSON.parse(window.localStorage.getItem('mag-code-draft:' + pageKey));
+assert(!Object.hasOwn(migrated, 'base'), 'legacy page drafts migrate to compact records');
+assert.equal(migrated.text, '<h1>My draft</h1>');
+
+const hugeKey = 'message-big:part-0:code:0';
+const huge = edit.editor(hugeKey, 'start', 'html');
+huge.input.value = 'a'.repeat(200001);
+huge.input.dispatchEvent(new window.Event('input'));
+assert.match(huge.status.textContent, /zu groß zum Speichern/);
+window.dispatchEvent(new window.Event('pagehide'));
+assert.equal(window.localStorage.getItem('mag-code-draft:' + hugeKey), null,
+  'oversized draft is RAM-only, not a quota-filling storage write');
+assert.equal(huge.get().length, 200001, 'oversized edits remain available in memory');
 
 // Real browser-JS must have a complete script element with safe close tag.
 const js = edit.html('javascript', 'const s = "</script>"; document.querySelector("#app").textContent=s;');

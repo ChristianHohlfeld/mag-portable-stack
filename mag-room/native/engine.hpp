@@ -4,8 +4,9 @@
 // time) and its append-only prompt log. Rules (AGENTS.md):
 //  - a human message is answered by every addressed bot (all when nobody is
 //    named); a visible bot message may be answered by the other bot;
-//  - PASS is a bot's own, invisible choice; when all bots pass in a row the
-//    room rests; MAG_ROOM_BOT_ROUNDS bounds bot rounds per human message;
+//  - optional PASS is an invisible way to decline a bot-to-bot reply; turning
+//    it off affects only model instructions, never server-side leak filtering;
+//    MAG_ROOM_BOT_ROUNDS bounds bot rounds per conversation;
 //  - new human input and Stop preempt bot rounds at once;
 //  - bots do nothing without a trigger; tool work continues on its own only
 //    after a successful tool result, distinct progress and [[MAG:WEITER]].
@@ -1042,7 +1043,7 @@ private:
         " gefragt: Das liest du als Hintergrund, es ist keine Aufgabe für dich und du antwortest nicht darauf.\n"
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt. Jeden Satz schreibst du nur einmal und nur auf Deutsch, auch zwischen Werkzeugschritten; nie eine englische Fassung daneben und nie einen Werkzeugaufruf als JSON in den Text.\n"
         "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
-        "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar.\n"
+        "- Antworte auf Nachrichten, die an dich gerichtet sind. Ob du eine freiwillige Bot-Folgerunde auslassen darfst, legt die jeweilige Raumnotiz zur Runde fest.\n"
         "- Erfinde nichts. Was du nicht weißt oder nicht prüfen konntest, sagst du offen.\n"
         "- Ältere Teile des Gesprächs können aus deinem Kontext entfernt worden sein.\n";
     if (has_vm)
@@ -3221,6 +3222,7 @@ private:
     // What the plugins take at the head of the prompt is not taken from the conversation.
     const long budget = b.budget + plugins_.weight(me);
     const Val settings = room_.settings();
+    const bool pass_enabled = jbool(settings, "pass_enabled", true);
     ensure_wire(b, me, false);
 
     // Optional observer cue is appended only to autonomous turns, never to
@@ -3235,9 +3237,14 @@ private:
       note = autonomous_round
           ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: " + observer +
             "Antworte dem anderen Bot natürlich, kurz und direkt. Greife seine Frage oder These auf, "
-            "stelle ggf. eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. "
-            "Wenn die Unterhaltung erschöpft ist, PASS.)"
-          : "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
+            "stelle ggf. eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. " +
+            std::string(pass_enabled
+                ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
+                : "PASS ist deaktiviert: Antworte selbst mit einem eigenen Gedanken oder einer konkreten Anschlussfrage, statt auszusetzen.") +
+            ")"
+          : pass_enabled
+              ? "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)"
+              : "(Du wurdest nicht direkt angesprochen. PASS ist deaktiviert: Antworte selbst mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage, statt auszusetzen. Wiederhole nichts bloß, um zu antworten.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
     if (reason == "autonomous") {
@@ -3247,10 +3254,12 @@ private:
       Val invite = Val::object();
       invite["role"] = "user";
       invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-          "Der Raum ist ruhig. Wenn du dem anderen Bot etwas Neues oder Interessantes zu sagen hast, "
-          "starte eine natürliche kurze Unterhaltung oder stelle eine konkrete Frage. "
-          "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. "
-          "Wenn dir nichts Sinnvolles einfällt, antworte PASS.)";
+          "Der Raum ist ruhig. Starte mit einem eigenen Gedanken oder einer konkreten Frage an den anderen Bot. "
+          "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
+          std::string(pass_enabled
+              ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
+              : "PASS ist deaktiviert: Antworte selbst mit etwas Neuem, statt auszusetzen.") +
+          ")";
       b.wire["messages"].push(invite);
       b.wire["fresh"] = true;
       save_wire(b);
@@ -3305,6 +3314,7 @@ private:
 
     b.wire["model_since"] = since;
     bool cancelled = false, failed = false, retried = false, rethought = false, nudged = false, dumped = false;
+    bool pass_retried = false; // at most one extra model call if PASS is disabled but still emitted
     std::set<std::string> offered;
     for (auto &def : tools.asArr())
       if (const Val *f = def.find("function")) offered.insert(jstr(*f, "name"));
@@ -3607,6 +3617,28 @@ private:
         save_wire(b);
         logf("engine: " + b.id + " tool decision hit finish_reason=length; raising max_tokens " +
              std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
+        continue;
+      }
+      // PASS is always stripped server-side, even when disabled; a model
+      // ignoring the toggle gets one bounded opportunity to give real content.
+      // Keep the correction append-only, without changing the cached system
+      // and tool prefix, and do not retry interrupted/tool-using turns.
+      if (!pass_enabled && !pass_retried && !res.cancelled && !failed &&
+          !driving && !closing && t.steps == 0 && t.id.empty() &&
+          res.calls.empty() && group_chat::is_pass(res.content)) {
+        pass_retried = true;
+        t.held.clear();
+        t.tail.clear();
+        t.reasoning = mj::utf8_cut(t.reasoning, thought0);
+        Val correction = Val::object();
+        correction["role"] = "user";
+        correction["content"] = "(Notiz des Raums, nicht von Chris: PASS ist in den Einstellungen deaktiviert. "
+                                "Deine letzte Ausgabe wurde nicht angezeigt. Antworte jetzt mit einem kurzen, "
+                                "eigenständigen Beitrag zur laufenden Unterhaltung, ohne PASS oder bloße Wiederholung.)";
+        correction["_turn"] = t.token;
+        b.wire["messages"].push(correction);
+        save_wire(b);
+        logf("engine: " + b.id + " PASS despite disabled setting; retrying once");
         continue;
       }
       // Publish completed reasoning only after the token-cap retry decision.

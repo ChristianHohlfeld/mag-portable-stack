@@ -64,9 +64,9 @@ public:
       // How much conversation a bot keeps. Reuse makes a turn cheap, but
       // after a model restart the whole log is evaluated once (CPU: roughly
       // a minute per 4000 tokens), so the budget stays moderate.
-      // Identical default memory for both agents, independent of roster order.
-      // Explicit per-bot overrides still support models with smaller contexts.
-      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", 12000));
+      // Both bots use the same turn engine. Context sizes remain adjustable
+      // per model so resource tuning does not change conversation semantics.
+      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", index == 0 ? 16000 : 12000));
       bots_.push_back(std::move(rt));
       ++index;
     }

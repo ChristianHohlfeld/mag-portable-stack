@@ -853,6 +853,10 @@ article.flash { animation: flash 1.6s ease-out; }
 /* The label sits on the button's middle, not on a baseline pushed down by the height. */
 .m3 .line-acts.go .pill b { line-height: 1; display: block; }
 
+.m3 .head .video-retry { flex: none; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+.m3 .head .video-retry svg { width: 18px; height: 18px; }
+.m3 .head .video-retry:disabled { opacity: .45; cursor: default; }
+
 /* The video editor uses MAG's own segmented buttons, icon actions and links.
    No second card, no custom colors, and no inline toolbar overflow. */
 .voiceover { width: min(100%, 580px); min-width: 0; display: flex; flex-direction: column; gap: 5px; }

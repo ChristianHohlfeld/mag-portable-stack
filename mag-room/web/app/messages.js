@@ -852,6 +852,25 @@
   const waiting = (m3) => 'In der Warteschlange' + (m3.ahead > 0 ? ' · ' + (m3.ahead === 1 ? '1 Auftrag' : m3.ahead + ' Aufträge') + ' davor' : '');
   // A picture being painted from words: what was asked, how far it is, and
   // a way to stop it or try again. The picture itself is the message's image.
+  function retryVideoPart(m) {
+    const button = el('button', {
+      class: 'icon-btn video-retry',
+      type: 'button',
+      title: 'Diesen Videoteil mit demselben Prompt neu generieren',
+      'aria-label': 'Videoteil erneut generieren',
+      onclick: (e) => {
+        const target = e.currentTarget;
+        if (target.disabled) return;
+        target.disabled = true;
+        MAG.api('POST', '/api/video/retry', { message: m.id })
+          .then(() => MAG.scrollToEnd(), (x) => {
+            target.disabled = false;
+            MAG.toast(x.message, true);
+          });
+      }
+    }, MAG.icon('reset'));
+    return button;
+  }
   function buildPicture(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 image ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
@@ -866,10 +885,12 @@
     // A video shows the picture it comes from.
     const src = video && m3.image ? el('span', { class: 'src' }, el('img', { src: '/api/file/' + encodeURIComponent(m3.image), alt: '', loading: 'lazy' }))
       : el('span', { class: 'src' }, MAG.icon(video ? 'play' : 'image'));
+    const canRetryVideo = h3 && S.you?.role === 'owner' &&
+      (m3.state === 'done' || m3.state === 'error' || m3.state === 'cancelled');
     card.append(el('div', { class: 'head' }, src,
       el('div', { class: 'txt' }, el('b', { text: m3.prompt || (video ? 'Video' : 'Bild') }), el('small', { text: sub + next })),
-      running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
-        : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => MAG.toast(x.message, true)); } }) : null));
+      canRetryVideo ? retryVideoPart(m) : running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
+        : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => { e.currentTarget.disabled = false; MAG.toast(x.message, true); }); } }) : null));
     if (running) {
       const part = m3.state === 'running' && m3.steps ? (m3.phase === 2 ? (m3.step || 0) / m3.steps : 0.05) : 0;
       card.append(el('div', { class: 'prog' }, el('div', { class: 'segs' }, el('i', { style: 'width:' + Math.round(100 * part) + '%' }))));

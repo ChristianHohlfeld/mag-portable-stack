@@ -3286,7 +3286,9 @@ private:
       Val invite = Val::object();
       invite["role"] = "user";
       invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-          "Der Raum ist ruhig. Starte mit einem eigenen Gedanken oder einer konkreten Frage an den anderen Bot. "
+          "Der Raum war kurz ruhig. Knüpfe natürlich an den letzten Gedanken oder die letzte offene Frage "
+          "des anderen Bots an, falls sie noch aktuell ist; sonst bring ein eigenes, neues Gesprächsthema. "
+          "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
           "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
           std::string(pass_enabled
               ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."

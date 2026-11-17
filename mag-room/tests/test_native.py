@@ -494,8 +494,8 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("PASS", " ".join(r.texts()))
         self.assertEqual(len(r.lena.chats()), 2)
         self.assertEqual(len(r.noah.chats()), 2)
-        self.assertIn("Chris: Hi beide", r.lena.chats()[0]["messages"][-1]["content"])
-        self.assertIn("Noah: Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
+        self.assertIn("[Sprecher Chris] Hi beide", r.lena.chats()[0]["messages"][-1]["content"])
+        self.assertIn("[Sprecher Noah] Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
 
@@ -986,7 +986,7 @@ class RoomContract(unittest.TestCase):
         # A bracketed speaker tag the model copies never reaches the chat; links stay links.
         self.assertEqual(r.texts("lena"), ["Hallo Chris, Noah meinte das auch. Siehe [Doku](https://example.org)."])
         sent = r.lena.chats()[0]["messages"]
-        self.assertRegex(sent[-1]["content"], r"^\(\w\w \d\d\.\d\d\. \d\d:\d\d\)\nChris: @Lena hallo$")
+        self.assertRegex(sent[-1]["content"], r"^\(\w\w \d\d\.\d\d\. \d\d:\d\d\)\n\[Sprecher Chris\] @Lena hallo$")
         self.assertNotIn("[Chris", json.dumps(sent, ensure_ascii=False))
 
     def test_bot_dialogue_is_bounded_by_bot_rounds(self):
@@ -2706,14 +2706,14 @@ class RoomContract(unittest.TestCase):
         # Lena gets the image itself, right where the message names it, and wrote down once what it shows ...
         seen = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)]
         self.assertTrue(seen and all((placed(parts, "tasse.png") or "").startswith("data:image/") for parts in seen), seen)
-        self.assertTrue(all(parts[0]["type"] == "text" and parts[0]["text"].endswith("Chris: Was ist auf dem Bild?\n") for parts in seen), seen)
+        self.assertTrue(all(parts[0]["type"] == "text" and parts[0]["text"].endswith("[Sprecher Chris] Was ist auf dem Bild?\n") for parts in seen), seen)
         described = [parts for parts in seen if "Beschreibe das Bild tasse.png" in text_of(parts)]
         self.assertEqual(len(described), 1)
         # ... asked with the picture itself right in front of the question, not by its name alone.
         self.assertEqual((described[0][-2]["type"], described[0][-2]["image_url"]["url"]), ("image_url", placed(described[0], "tasse.png")))
         self.assertIn("Beschreibe das Bild tasse.png, das direkt vor dieser Notiz steht, und nur dieses", described[0][-1]["text"])
         answered = [parts for parts in seen if "Beschreibe das Bild" not in text_of(parts)]
-        self.assertIn("Chris: Was ist auf dem Bild?", text_of(answered[0]))
+        self.assertIn("[Sprecher Chris] Was ist auf dem Bild?", text_of(answered[0]))
         self.assertTrue(text_of(described[0]).startswith(text_of(answered[0])))  # same prefix: only a short branch is evaluated
         # ... which is what Noah, who has no eyes, reads; the small text file is simply part of the chat.
         noah = r.noah.chats()[0]["messages"][-1]["content"]
@@ -2805,7 +2805,7 @@ class RoomContract(unittest.TestCase):
         bundle = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)
                   and "Was seht ihr da" in text_of(c["messages"][-1]["content"])][0]
         self.assertIn("Chris an Noah: @Noah wann kommt die Lieferung?", bundle[0]["text"])     # other people's words first ...
-        self.assertTrue(bundle[0]["text"].endswith("Chris: Was seht ihr da\n"))                 # ... then the question, the picture,
+        self.assertTrue(bundle[0]["text"].endswith("[Sprecher Chris] Was seht ihr da\n"))                 # ... then the question, the picture,
         self.assertEqual(bundle[1]["type"], "image_url")                                        # and its own line
         self.assertTrue(bundle[2]["text"].startswith("[Bild Screenshot.png ("))
         self.assertNotIn("FALSCH", image(first["id"])["description"] + image(second["id"])["description"])

@@ -1265,6 +1265,21 @@
   const DE = new Set('ich die der das und zu ist nicht ein eine mit auf für du dich dein deine jetzt bitte den dem es wird werde sie wir kann noch auch einloggen anmelden öffne klicke seite'.split(' '));
   function tidy(text) {
     if (!text) return text;
+    // Only configured bot names count as presentation labels; all stacked
+    // leading labels are removed, without ever editing mid-sentence names.
+    const botNames = (S.bots || []).map(b => b.name).filter(Boolean);
+    const labels = botNames.map(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\    // The room's markers and a lone PASS');
+      return new RegExp('^\\s*(?:\\*\\*' + escaped + ':\\*\\*|\\*\\*' +
+        escaped + '\\*\\*:|\\[' + escaped + '\\]:?|' + escaped + '[:：,])\\s*', 'i');
+    });
+    for (;;) {
+      const before = text;
+      for (const re of labels) {
+        if (re.test(text)) { text = text.replace(re, ''); break; }
+      }
+      if (text === before) break;
+    }
     // The room's markers and a lone PASS are for the room (it takes them out too; this is for a page from before).
     text = text.replace(/\[\[MAG:[^\]]*\]\]/g, '');
     if (/^[\s*_`"'.()[\]]*pass[\s*_`"'.!()[\]]*$/i.test(text)) return '';

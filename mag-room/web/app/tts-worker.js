@@ -428,8 +428,16 @@ function german(text) {
   });
   return t;
 }
+// Generic speaker-caption grammar, independent of configured bot names.
+// Only labels at the start are removed; repeated labels consume real text.
+const leadingSpeakerCaption = /^\s*(?:\[[^\]\r\n]{1,64}\]:?|\*\*[\p{Lu}][\p{L}\p{M}\p{N} ._'-]{0,63}(?::\*\*|\*\*:)|[\p{Lu}][\p{L}\p{M}\p{N}_'-]{0,63}[:：,])\s*/u;
+function stripSpeakerCaptions(value) {
+  let t = String(value || '');
+  while (leadingSpeakerCaption.test(t)) t = t.replace(leadingSpeakerCaption, '');
+  return t;
+}
 function spoken(text, lang) {
-  let t = String(text || '');
+  let t = stripSpeakerCaptions(text);
   if (lang === 'de') t = german(t);
   t = t.normalize('NFKD').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]+/gu, '');
   // (Decomposed on purpose: the model's table knows "a" and the two dots above it, not "ä" as one sign.)

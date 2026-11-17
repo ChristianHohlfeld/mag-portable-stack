@@ -65,10 +65,11 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
 
 (async () => {
   const f = fixture(), { w, d } = f, { MAG } = w;
-  const uploads = [], bakes = [];
+  const uploads = [], bakes = [], restores = [];
   MAG.api = async (method, endpoint, body) => {
     if (endpoint.startsWith('/api/video/voiceover')) { uploads.push({ method, endpoint, body }); return {}; }
-    if (endpoint === '/api/video/bake') { bakes.push({ method, body }); return {}; }
+    if (endpoint === '/api/video/bake') { bakes.push({ method, body }); return { video: {file:'baked.mp4'},mix:{file:'mix.m4a'} }; }
+    if (endpoint === '/api/video/restore') { restores.push(body); return {}; }
     throw Error('Unexpected request ' + endpoint);
   };
   const original = { file: 'original.mp4', name: 'original.mp4', kind: 'video' };
@@ -79,7 +80,7 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
   assert.equal(ui.querySelectorAll('select').length, 0, 'no bloated source/mix selectors');
   assert.equal(ui.querySelectorAll('.voice-lanes button').length, 3);
   assert(ui.querySelector('.voice-lanes.seg'), 'use MAG native segmented control');
-  assert.equal(ui.querySelectorAll('.voice-actions .icon-btn').length, 4,
+  assert.equal(ui.querySelectorAll('.voice-actions .icon-btn').length, 5,
     'use existing MAG icon actions including contextual discard');
   assert.equal(ui.querySelectorAll('.voice-controls .pill').length, 0,
     'no crowded pills or separate button styles');
@@ -137,29 +138,38 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
     a.voiceover_kind === 'take' && a.voiceover_lane === 'voice').length, 1,
     'no stale voice attachment in the SSE snapshot');
   assert.equal(ui.querySelectorAll('video').length, 1, 'retake does not add a player');
-  find(ui, 'Mix und MP4 erstellen').click();
+  find(ui, 'Finale Videoversion erstellen').click();
   await flush();
   assert.equal(bakes.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(bakes[0].body)), {
     message: message.id, video: original.file, mode: 'mix',
-    lanes: { voice: 'v2.weba', melody: 'mel.weba', effects: 'fx.weba' }
+    lanes: { voice: 'v2.weba', melody: 'mel.weba', effects: 'fx.weba' },
+    gains: { original: 0.55, voice: 1, melody: 0.55, effects: 0.85 }
   });
   const mix = { file: 'mix.m4a', name: 'mix.m4a', kind: 'audio',
     voiceover_kind: 'mix', voiceover_for: original.file };
   const baked = { file: 'baked.mp4', name: 'baked.mp4', kind: 'video',
     voiceover_kind: 'baked', voiceover_for: original.file };
-  message = { ...message, attachments: [...message.attachments, mix, baked] };
+  message = { ...message,
+    voiceover_active: baked.file,
+    attachments: [...message.attachments, mix, baked] };
   ui._voiceoverRefresh(message);
+  assert(ui.querySelector('video').src.endsWith('/api/file/baked.mp4'),
+    'SSE/reload selects the finished MP4 as canonical video');
   assert.equal(ui.querySelectorAll('video').length, 1, 'only ONE video player after bake');
-  assert.equal(ui.querySelectorAll('.voice-exports a').length, 2, 'one mix + one MP4 download');
-  assert.equal(ui.querySelectorAll('.voice-exports .pill').length, 0,
-    'exports are plain links, not more buttons');
-  assert.match(ui.querySelector('.voice-exports').textContent, /Audiomix.*MP4/);
+  assert.equal(ui.querySelectorAll('.voice-exports').length, 0, 'export links belong to final player, not toolbar');
   assert.equal(ui.querySelectorAll('.voice-lanes button').length, 3);
+  assert.equal(ui.querySelectorAll('.voice-levels input[type="range"]').length, 4);
+  find(ui, 'Originalvideo wiederherstellen').click();
+  await flush();
+  assert.equal(restores.length, 1);
+  assert.equal(restores[0].video, original.file);
+  assert(ui.querySelector('video').src.endsWith('/api/file/original.mp4'),
+    'restore returns to the original movie and its soundtrack');
 
   MAG.state.you = { role: 'guest' };
   const guest = MAG.voiceover.player(message, original);
-  assert(!find(guest, 'Mikrofon') && !find(guest, 'Mix und MP4 erstellen'));
+  assert(!find(guest, 'Mikrofon') && !find(guest, 'Finale Videoversion erstellen'));
   assert(find(guest, 'Mit Tonspuren anhören'), 'guests can hear all three lanes');
   MAG.state.you = { role: 'owner' };
   w.navigator.mediaDevices.getUserMedia = async () => {
@@ -186,7 +196,7 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
     }
     if (endpoint === '/api/video/voiceover/cue') {
       cueCalls.push(payload);
-      return { at: payload.at, from: payload.from };
+      return { at: payload.at, from: payload.from, end: payload.end };
     }
     throw Error('Unexpected melody API request ' + endpoint);
   };
@@ -203,31 +213,48 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
   assert.equal(mf.perms.length, 0, 'file upload must never activate microphone');
   const picker = musicUI.querySelector('input[type=file]');
   const file = new wm.File(['X'.repeat(512)], 'cue-melodie.mp3', { type: 'audio/mpeg' });
+  Object.defineProperty(file, 'size', { value: 0 }); // Android content:// picker edge case
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => new Uint8Array(512).fill(88).buffer });
   Object.defineProperty(picker, 'files', { value: [file], configurable: true });
   picker.dispatchEvent(new wm.Event('change'));
   await flush();
   assert.equal(musicCalls.length, 1);
   assert(musicCalls[0].endpoint.includes('lane=melody&name=cue-melodie.mp3'));
-  assert.equal(musicCalls[0].payload, file);
+  assert(musicCalls[0].payload instanceof wm.Blob && musicCalls[0].payload.size === 512,
+    'picker contents materialized into a Blob before clearing file input');
   assert.equal(musicUI.querySelectorAll('video').length, 1);
-  assert.equal(musicUI.querySelector('.voice-cues').hidden, false);
-  const at = musicUI.querySelector('[aria-label="Melodie ab Videosekunde"]');
-  const from = musicUI.querySelector('[aria-label="Song ab Sekunde"]');
-  at.value = '0.4';
-  at.dispatchEvent(new wm.Event('change'));
+  assert.equal(musicUI.querySelector('.voice-timeline').hidden, false);
+  assert.equal(musicUI.querySelectorAll('.voice-cue-input').length, 0,
+    'no confusing numeric time fields');
+  const timeline = musicUI.querySelector('.voice-timeline');
+  assert(timeline && !timeline.hidden, 'cut timeline visible after melody upload');
+  const clipTrack = timeline.querySelector('.melody-track');
+  clipTrack.getBoundingClientRect = () => ({left:0,width:100});
+  const left = clipTrack.querySelector('.voice-grip.left');
+  const pointer = (target,type,x) => target.dispatchEvent(new wm.MouseEvent(type,{
+    bubbles:true,button:0,clientX:x
+  }));
+  pointer(left,'pointerdown',10);
+  pointer(clipTrack,'pointermove',20);
+  pointer(clipTrack,'pointerup',20);
   await flush();
-  assert.equal(cueCalls[0].at, 0.4);
-  assert.equal(cueCalls[0].from, 0);
-  from.value = '0.9';
-  from.dispatchEvent(new wm.Event('change'));
+  assert.equal(cueCalls.length,1,'dragging the clip grip stores one edit');
+  assert(cueCalls[0].at > 0 && cueCalls[0].at < 1);
+  assert(cueCalls[0].end > cueCalls[0].at);
+  const sourceTrack = timeline.querySelector('.source-track');
+  sourceTrack.getBoundingClientRect = () => ({left:0,width:100});
+  pointer(sourceTrack.querySelector('.voice-source-grip'),'pointerdown',10);
+  pointer(sourceTrack,'pointermove',35);
+  pointer(sourceTrack,'pointerup',35);
   await flush();
-  assert.equal(cueCalls[1].from, 0.9);
-  assert.equal(cueCalls[1].at, 0.4);
-  melodyMessage = { ...melodyMessage, attachments: [...melodyMessage.attachments,
-    { ...track, voiceover_at: 0.4, voiceover_from: 0.9 }] };
+  assert(cueCalls.at(-1).from > cueCalls[0].from,'source in-point draggable');
+  melodyMessage = { ...melodyMessage, attachments: [clip, {
+    ...track, voiceover_at:cueCalls.at(-1).at,
+    voiceover_from:cueCalls.at(-1).from,voiceover_end:cueCalls.at(-1).end
+  }] };
   musicUI._voiceoverRefresh(melodyMessage);
-  assert.equal(Number(at.value), 0.4, 'SSE preserves stored video cue');
-  assert.equal(Number(from.value), 0.9, 'SSE preserves song in-point');
+  assert.equal(timeline.querySelectorAll('.voice-grip').length,2,
+    'clip includes draggable in/out handles');
   const mv = musicUI.querySelector('video');
   // Each lane has its own audio element. The first one is "voice", so
   // testing querySelector('audio') would silently inspect the wrong lane.
@@ -237,26 +264,17 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
   await flush();
   assert.equal(ma.paused, false,
     'delayed melody is armed directly by the preview tap, not a later autoplay');
-  mv.currentTime = 0.25;
+  mv.currentTime = 0;
   mv.dispatchEvent(new wm.Event('timeupdate'));
-  assert.equal(ma.muted, true, 'song must be inaudible before its video cue');
-  assert.equal(ma.paused, false, 'keep muted audio active before the cue to avoid autoplay blocks');
-  mv.currentTime = 0.75;
+  assert.equal(ma.volume, 0, 'song is silent before cue');
+  assert.equal(ma.paused, false, 'delayed melody armed by direct preview gesture');
+  mv.currentTime = 1.3;
   mv.dispatchEvent(new wm.Event('timeupdate'));
   await flush();
-  assert.equal(ma.paused, false, 'the correct melody lane plays after the cue');
-  assert.equal(ma.muted, false, 'melody becomes audible after the cue');
-  assert(Math.abs(ma.currentTime - 1.25) < 0.02,
-    'preview must seek into the song: 0.75 video - 0.4 cue + 0.9 song');
+  assert.equal(ma.paused, false,'melody stays playing through cue');
+  assert(ma.playbackRate >= 0.5 && ma.playbackRate <= 4);
   mv.pause();
-  assert.equal(ma.paused, true, 'pausing video also pauses melody');
-  mv.play();
-  mv.currentTime = 0.1;
-  mv.dispatchEvent(new wm.Event('timeupdate'));
-  assert.equal(ma.muted, true, 'scrubbing backwards before cue silences melody');
-  mv.currentTime = 0.9;
-  mv.dispatchEvent(new wm.Event('timeupdate'));
-  assert.equal(ma.muted, false, 'returning after cue resumes audible melody');
+  assert.equal(ma.paused,true,'pausing video pauses melody');
   assert.equal(mf.perms.length, 0);
   wm.MAG.state.you = { role: 'guest' };
   const musicGuest = wm.MAG.voiceover.player(melodyMessage, clip);
@@ -317,4 +335,4 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => (b
   assert.equal(sc.stopped, 1, 'recording cleanup still works after reconciliation');
   sc.dom.window.close();
   console.log('Voiceover: three compact lanes, mic permission, latest-take selection, mix+bake and multi-keep scene SSE OK');
-})().catch((e) => { console.error(e); process.exitCode = 1; });
+})().catch((e) => { console.error(e); process.exit(1); });

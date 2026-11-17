@@ -1448,7 +1448,17 @@ class RoomContract(unittest.TestCase):
         state = r.api("GET", "/api/state")[1]
         saved = next(x for x in state["messages"] if x["id"] == message)
         self.assertEqual(len(saved["attachments"]), 8)  # original + 3 active lanes + 2*(mix + mp4)
+        self.assertEqual(saved["voiceover_active"], video["file"],
+                         "latest bake must be the canonical active card video")
         self.assertEqual(saved["attachments"][0]["file"], stored)
+        # Returning to the original changes only the selected version,
+        # not the stored takes or older baked MP4s.
+        self.assertEqual(r.api("POST", "/api/video/restore",
+                               {"message": message, "video": stored})[0], 200)
+        restored = next(m for m in r.api("GET", "/api/state")[1]["messages"]
+                        if m["id"] == message)
+        self.assertEqual(restored["voiceover_active"], "")
+        self.assertEqual(len(restored["attachments"]), 8)
         folder = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files"
         self.assertEqual((folder / stored).read_bytes(), original_bytes)
         self.assertFalse((folder / voice_old["file"]).exists(), "old voice lane is retired")

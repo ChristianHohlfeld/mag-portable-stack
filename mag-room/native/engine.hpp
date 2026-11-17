@@ -483,8 +483,19 @@ public:
       // Only a deliberate mode change can start a fresh autonomous session.
       // Renaming or changing Thinking must not wake both expensive models.
       if (enabled && !auto_enabled_) auto_last_ms_ = 0;
+      if (!enabled && auto_enabled_ && auto_burst_) {
+        // Turning off autonomous chat stops any running/queued conversation.
+        // Do not cancel a separately requested human turn or open browser goal.
+        for (auto &b : bots_) {
+          if (b->want && (b->reason == "bot" || b->reason == "autonomous"))
+            b->want = false;
+          if ((b->running == "bot" || b->running == "autonomous") &&
+              b->cancel && !b->warming) b->cancel->stop();
+        }
+      }
       auto_enabled_ = enabled;
     }
+    cv_.notify_all();
     publish_bots(true);
   }
 
@@ -847,7 +858,6 @@ private:
   int64_t auto_last_ms_ = 0, last_human_ms_ = 0;
   size_t auto_next_ = 0;
   std::set<std::string> audience_; // bots Chris mentioned with @ (empty = everybody)
-  const long fuse_ = envl("MAG_ROOM_BOT_FUSE", 24);
   std::thread status_thread_;
   std::mutex models_mu_;
   Val models_ = Val::object();
@@ -965,7 +975,7 @@ private:
   // A separate room-side trigger: conversation does not depend on a browser,
   // UI client, open socket or a new message from Chris. It is opt-in, checks
   // persisted bot pause flags and model readiness, and starts only while
-  // completely idle. Most importantly it has a long cooldown and short fuse.
+  // completely idle. A cooldown delays new sessions; once started, a\n  // session obeys the user's round setting (0 really means unlimited).
   void maybe_autonomous_chat() {
     if (!jbool(room_.settings(), "auto_chat", false)) return;
     const Val configured = room_.bots();
@@ -992,7 +1002,7 @@ private:
     passes_ = 0;
     audience_.clear(); // an old @mention must not mute a new autonomous session
     const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
-    round_limit_ = limit > 0 ? std::min<long>(limit, 4) : 4;
+    round_limit_ = limit;
     auto_last_ms_ = now;
     write_atomic(room_.cfg.state_dir + "/auto-chat-last", std::to_string(now) + "\n", 0600);
     starter->want = true;
@@ -2913,9 +2923,6 @@ private:
           // two bots answering each other at once cannot exceed the bound.
           if (reason == "bot") {
             if (round_limit_ > 0 && bot_turns_ >= round_limit_) continue;
-            // "Unlimited" still rests after a long run without a word from
-            // Chris: a safety net against two bots talking all night.
-            if (fuse_ > 0 && bot_turns_ >= fuse_) continue;
             ++bot_turns_;
           }
           b.running = reason;
@@ -3202,12 +3209,20 @@ private:
     const Val settings = room_.settings();
     ensure_wire(b, me, false);
 
+    // Optional observer cue is appended only to autonomous turns, never to
+    // the stable system/tool prefix. Visibility describes the persistent room,
+    // not a claim that Chris is online or actively watching right now.
+    const std::string observer = jbool(settings, "auto_chat_visible", true)
+        ? "Chris kann alle eure Nachrichten im Raum-Chat lesen, auch später und ohne geöffneten Browser. "
+          "Das bedeutet nicht, dass Chris gerade zusieht oder euch angesprochen hat. "
+        : "";
     std::string note;
     if (reason == "bot")
       note = autonomous_round
-          ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: Antworte dem anderen Bot natürlich, "
-            "kurz und direkt. Greife seine Frage oder These auf, stelle ggf. eine Anschlussfrage. "
-            "Keine Aufgaben ausführen, keine Werkzeuge verwenden. Wenn die Unterhaltung erschöpft ist, PASS.)"
+          ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: " + observer +
+            "Antworte dem anderen Bot natürlich, kurz und direkt. Greife seine Frage oder These auf, "
+            "stelle ggf. eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. "
+            "Wenn die Unterhaltung erschöpft ist, PASS.)"
           : "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
@@ -3217,8 +3232,8 @@ private:
       // invalidate the entire warm KV cache on the dual CPU servers.
       Val invite = Val::object();
       invite["role"] = "user";
-      invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: Der Raum ist ruhig. "
-          "Wenn du dem anderen Bot etwas Neues oder Interessantes zu sagen hast, "
+      invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
+          "Der Raum ist ruhig. Wenn du dem anderen Bot etwas Neues oder Interessantes zu sagen hast, "
           "starte eine natürliche kurze Unterhaltung oder stelle eine konkrete Frage. "
           "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. "
           "Wenn dir nichts Sinnvolles einfällt, antworte PASS.)";
@@ -4511,8 +4526,11 @@ private:
     const Val bots = room_.bots();
     const long configured_limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
     std::lock_guard<std::mutex> lk(mu_);
-    const long limit = auto_burst_ ? (configured_limit > 0 ? std::min<long>(configured_limit, 4) : 4) : configured_limit;
+    // One limit for human-triggered and autonomous bot conversations alike.
+    // Zero stays unlimited: no implicit four-turn cap or hidden fuse.
+    const long limit = configured_limit;
     round_limit_ = limit;
+    if (auto_burst_ && !auto_enabled_) return;
     // Only a visible answer is a round; a PASS or a stopped turn gives it back.
     if (reason == "bot" && !visible && bot_turns_ > 0) --bot_turns_;
     size_t active = 0;
@@ -4523,11 +4541,9 @@ private:
       if (group_chat::conversation_rests(passes_, active))
         for (auto &o : bots_)
           if (o->reason != "human") o->want = false;
-      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
       return;
     }
     if (!visible) {
-      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
       return;
     }
     passes_ = 0;
@@ -4542,10 +4558,7 @@ private:
       return;
     }
     b.continues = 0;
-    if (limit > 0 && bot_turns_ >= limit) {
-      if (auto_burst_) { auto_burst_ = false; round_limit_ = configured_limit; }
-      return;
-    }
+    if (limit > 0 && bot_turns_ >= limit) return;
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
       if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name

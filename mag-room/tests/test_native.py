@@ -456,12 +456,15 @@ class RoomContract(unittest.TestCase):
         self.addCleanup(r.close)
         self.assertIsNone(r.stream)
 
+        replies = {"Lena": 0, "Noah": 0}
+
         def make_reply(name):
             def reply(body):
                 last = str(body["messages"][-1].get("content", ""))
                 self.assertIn("eigene Beendigungsentscheidung", last)
                 self.assertIn("Chris kann alle eure Nachrichten im Raum-Chat lesen", last)
-                return "Ein neuer Gedanke von " + name + "."
+                replies[name] += 1
+                return "Ein neuer Gedanke von %s, Runde %d." % (name, replies[name])
             return reply
 
         r.lena.reply, r.noah.reply = make_reply("Lena"), make_reply("Noah")

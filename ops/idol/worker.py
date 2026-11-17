@@ -720,14 +720,25 @@ def discard(job_id):
     cancel(job_id)
     with lock:
         item = dict(jobs.get(job_id) or {})
-    kill_stage(item)
+    # Unregister before killing the stage so the queue cannot start this
+    # job again while a DELETE is removing the output directory.
     with lock:
         jobs.pop(job_id, None)
+    kill_stage(item)
     folder = ROOT / job_id
-    if not VALID_ID.fullmatch(job_id) or not folder.is_dir():
+    if not VALID_ID.fullmatch(job_id):
         return False
-    shutil.rmtree(folder, ignore_errors=True)
-    return not folder.exists()
+    existed = folder.is_dir()
+    if not existed:
+        return False
+    # The stage's final filesystem flush can race a concurrent rmtree.
+    # Retry within the request, preserving the API's truthful deleted flag.
+    for attempt in range(20):
+        shutil.rmtree(folder, ignore_errors=True)
+        if not folder.exists():
+            return True
+        time.sleep(0.05)
+    return False
 
 def sampling_line(job_id, value):
     """One line of the Idol process: the sampler's step counter."""

@@ -876,10 +876,6 @@ article.flash { animation: flash 1.6s ease-out; }
 /* The label sits on the button's middle, not on a baseline pushed down by the height. */
 .m3 .line-acts.go .pill b { line-height: 1; display: block; }
 
-.m3 .head .video-retry { flex: none; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
-.m3 .head .video-retry svg { width: 18px; height: 18px; }
-.m3 .head .video-retry:disabled { opacity: .45; cursor: default; }
-
 /* The video editor uses MAG's own segmented buttons, icon actions and links.
    No second card, no custom colors, and no inline toolbar overflow. */
 .voiceover { width: min(100%, 580px); min-width: 0; display: flex; flex-direction: column; gap: 5px; }
@@ -902,6 +898,31 @@ article.flash { animation: flash 1.6s ease-out; }
 .voiceover .voice-cues { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; font-size: 12px; }
 .voiceover .voice-cues label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--muted); }
 .voiceover .voice-cue-input { box-sizing: border-box; width: 58px; min-height: 30px; padding: 3px 4px; font: inherit; font-size: 13px; text-align: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums; }
+.voiceover .voice-remove { flex: none; width: 28px; height: 28px; padding: 5px; }
+.voiceover .voice-remove svg { width: 15px; height: 15px; }
+.voiceover .voice-levels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; padding: 1px 0; }
+.voiceover .voice-levels[hidden] { display: none; }
+.voiceover .voice-level { min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.voiceover .voice-level input { width: 100%; min-width: 0; accent-color: var(--accent); height: 18px; margin: 0; }
+@media (max-width: 420px) { .voiceover .voice-levels { gap: 5px; } .voiceover .voice-level { font-size: 10px; } }
+.m3 .head .video-retry { flex: none; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+.m3 .head .video-retry svg { width: 18px; height: 18px; }
+.m3 .head .video-retry:disabled { opacity: .45; cursor: default; }
+.voiceover .voice-timeline { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px; min-width: 0; }
+.voiceover .voice-timeline[hidden] { display: none; }
+.voiceover .voice-ruler { display: flex; justify-content: space-between; gap: 8px; align-items: center; font: 11px ui-monospace,monospace; color: var(--muted); }
+.voiceover .voice-track-row { display: grid; grid-template-columns: 48px minmax(0,1fr); align-items: center; gap: 7px; }
+.voiceover .voice-track-row small { font-size: 11px; color: var(--muted); }
+.voiceover .voice-track { height: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 5px; position: relative; min-width: 0; touch-action: pan-y; }
+.voiceover .voice-clip { position: absolute; top: 2px; bottom: 2px; background: var(--accent); color: var(--bg); border-radius: 4px; min-width: 6px; display: flex; align-items: center; justify-content: center; font-size: 10px; overflow: visible; cursor: grab; touch-action: none; }
+.voiceover .voice-grip { position: absolute; top: -3px; bottom: -3px; width: 13px; background: var(--text); opacity: .85; border: 0; border-radius: 3px; padding: 0; cursor: ew-resize; touch-action: none; }
+.voiceover .voice-grip.left { left: -5px; }
+.voiceover .voice-grip.right { right: -5px; }
+.voiceover .voice-source-grip { position: absolute; top: -2px; bottom: -2px; width: 15px; transform: translateX(-50%); border: 0; background: var(--accent); border-radius: 4px; cursor: ew-resize; touch-action: none; }
+.voiceover .voice-video-span { display: block; position: absolute; inset: 3px; background: var(--muted); opacity: .25; border-radius: 3px; }
+.voiceover .voice-playhead { position: absolute; top: -3px; bottom: -3px; border-left: 2px solid var(--accent); pointer-events: none; z-index: 2; }
+.voiceover .voice-track.video-track { cursor: crosshair; }
+.voiceover .voice-grip:focus-visible, .voiceover .voice-source-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .voiceover .voice-footer { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .voiceover .voice-footer:has(.voice-exports:empty) .voice-exports { display: none; }
 .voiceover .voice-exports { display: inline-flex; align-items: center; gap: 12px; font-size: 12.5px; }

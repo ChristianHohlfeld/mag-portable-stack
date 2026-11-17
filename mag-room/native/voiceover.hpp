@@ -80,15 +80,17 @@ struct LaneInput {
   std::string name, path;
   double at = 0;   // where music starts on the VIDEO timeline
   double from = 0; // where playback starts in the SOURCE song
+  double gain = 1; // user-selected 0..1 gain
+  double until = 0; // optional trim-out on video timeline, 0 = natural end
 };
 
 // Each of the three lanes is optional. They are deliberately mixed to ONE
 // audio master. Original MP4 soundtrack remains an alternate audio track.
 inline bool bake(const std::string &video,
                  const std::vector<LaneInput> &lanes,
-                 const std::string &out, const std::string &mode, std::string &error) {
+                 const std::string &out, const std::string &mode, std::string &error, double original_gain = 0.55) {
   const double length = seconds(video);
-  if (!length || lanes.empty() || lanes.size() > 3) {
+  if (!length || lanes.empty() || lanes.size() > 3 || !std::isfinite(original_gain) || original_gain < 0 || original_gain > 1) {
     error = "Video oder Tonspuren fehlen oder sind zu lang."; return false;
   }
   const bool original_audio = audio_ok(video);
@@ -103,11 +105,11 @@ inline bool bake(const std::string &video,
   };
   if (mode == "mix" && original_audio) {
     filters += "[0:a:0]aresample=async=1:first_pts=0,apad,atrim=0:" + std::to_string(length) + "[orig];";
-    append_mix("orig", "0.55");
+    append_mix("orig", std::to_string(original_gain));
   }
   for (size_t i = 0; i < lanes.size(); ++i) {
     const LaneInput &input = lanes[i];
-    if (!lane(input.name) || !audio_ok(input.path)) {
+    if (!lane(input.name) || !std::isfinite(input.gain) || input.gain < 0 || input.gain > 1 || !audio_ok(input.path)) {
       error = "Tonspur ist beschädigt oder hat eine ungültige Zuordnung."; return false;
     }
     const double duration = seconds(input.path);
@@ -116,8 +118,9 @@ inline bool bake(const std::string &video,
       error = "Sprach- oder Geräuschspur ist länger als das Video."; return false;
     }
     if (input.name == "melody" &&
-        (!std::isfinite(input.at) || !std::isfinite(input.from) ||
-         input.at < 0 || input.at >= length || input.from < 0 || input.from >= duration)) {
+        (!std::isfinite(input.at) || !std::isfinite(input.from) || !std::isfinite(input.until) ||
+         input.at < 0 || input.at >= length || input.from < 0 || input.from >= duration ||
+         (input.until != 0 && (input.until <= input.at || input.until > length)))) {
       error = "Melodie-Einsatz oder Song-Start liegt außerhalb der Audiodauer."; return false;
     }
     args.insert(args.end(), {"-i", input.path});
@@ -129,20 +132,31 @@ inline bool bake(const std::string &video,
       // the delay, the muxer can discard it and start music at video 0.
       // Sample-count PTS also keeps A/V in sync for AAC, MP3 and WAV.
       const long long delay_ms = std::llround(input.at * 1000);
+      const double audible = std::min(duration - input.from,
+        (input.until > input.at ? input.until : length) - input.at);
+      const double fade = std::min(0.01, audible / 2);
       filters += channel + "atrim=start=" + std::to_string(input.from) +
-                 ",asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0,adelay=" +
+                 ",asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0,afade=t=in:st=0:d=" +
+                 std::to_string(fade) + ",afade=t=out:st=" +
+                 std::to_string(std::max(0.0, audible - fade)) + ":d=" + std::to_string(fade) +
+                 ",atrim=0:" + std::to_string(audible) + ",adelay=" +
                  std::to_string(delay_ms) + ":all=1,asetpts=N/SR/TB,apad,atrim=0:" +
                  std::to_string(length) + "[" + label + "];";
     } else {
-      filters += channel + "aresample=async=1:first_pts=0,apad,atrim=0:" +
+      const double audible = std::min(duration, length);
+      const double fade = std::min(0.01, audible / 2);
+      filters += channel + "aresample=async=1:first_pts=0,afade=t=in:st=0:d=" +
+                 std::to_string(fade) + ",afade=t=out:st=" +
+                 std::to_string(std::max(0.0, audible - fade)) + ":d=" + std::to_string(fade) +
+                 ",atrim=0:" + std::to_string(audible) + ",apad,atrim=0:" +
                  std::to_string(length) + "[" + label + "];";
     }
-    append_mix(label, input.name == "voice" ? "1" : input.name == "melody" ? "0.55" : "0.85");
+    append_mix(label, std::to_string(input.gain));
   }
   // Amix's default "duration=longest" is limited by our pads to the video
   // duration, so short takes do not prematurely cut off music or ambience.
   filters += inputs + "amix=inputs=" + std::to_string(n) +
-             ":duration=longest:dropout_transition=0:weights='" + weights +
+             ":duration=longest:dropout_transition=0.01:weights='" + weights +
              "':normalize=0,alimiter=limit=0.95[mixed]";
   args.insert(args.end(), {"-filter_complex", filters, "-map", "0:v:0", "-map", "[mixed]"});
   if (original_audio) args.insert(args.end(), {"-map", "0:a:0"});

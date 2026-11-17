@@ -180,6 +180,14 @@ public:
       if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
       return voiceover_upload(fd, r);
     }
+    if (r.method == "DELETE" && p == "/api/video/voiceover") {
+      if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      return voiceover_remove(fd, r);
+    }
+    if (r.method == "POST" && p == "/api/video/restore") {
+      if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+      return voiceover_restore(fd, r);
+    }
     if (r.method == "POST" && p == "/api/video/voiceover/cue") {
       if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
       return voiceover_cue(fd, r);
@@ -1097,6 +1105,10 @@ private:
     // A concurrent bake may still be reading an earlier take. Never unlink
     // that file until ffmpeg finishes; room startup GC removes any leftovers.
     std::unique_lock<std::mutex> deletion_guard(voiceover_render_mu_, std::try_to_lock);
+    if (!deletion_guard.owns_lock()) {
+      unlink(path.c_str());
+      return http::send_error(fd, 409, "Video wird gerade gemischt");
+    }
     std::vector<std::string> superseded;
     if (!room_.update(id, [&](Val &message) {
       Val next = Val::array();
@@ -1125,18 +1137,66 @@ private:
     http::send_json(fd, 201, a);
   }
 
+  // Remove precisely the current melody, under the same serialization lock
+  // used by cue edits and ffmpeg. Never remove other audio takes or the video.
+  void voiceover_remove(int fd, const http::Request &r) {
+    const Val arg = jparse(r.body);
+    const std::string id = jstr(arg, "message"), video = jstr(arg, "video"),
+                      file = jstr(arg, "file");
+    if (!is_id(id)) return http::send_error(fd, 400, "Ungültige Nachricht");
+    std::unique_lock<std::mutex> guard(voiceover_render_mu_, std::try_to_lock);
+    if (!guard.owns_lock()) return http::send_error(fd, 409, "Video wird gerade gemischt");
+    Val m;
+    if (!room_.get(id, m) || !voiceover::original(m, video) ||
+        !voiceover::take(m, video, file, "melody"))
+      return http::send_error(fd, 404, "Melodie wurde bereits entfernt");
+    bool found = false;
+    if (!room_.update(id, [&](Val &message) {
+      Val next = Val::array();
+      if (const Val *atts = message.find("attachments"); atts && atts->isArr())
+        for (const Val &a : atts->asArr()) {
+          if (jstr(a, "file") == file && jstr(a, "voiceover_kind") == "take" &&
+              jstr(a, "voiceover_lane") == "melody" && jstr(a, "voiceover_for") == video)
+            found = true;
+          else next.push(a);
+        }
+      message["attachments"] = next;
+    }) || !found) return http::send_error(fd, 409, "Melodie wurde inzwischen ersetzt");
+    const std::string prior = room_.file_path(file);
+    if (!prior.empty()) unlink(prior.c_str());
+    http::send_ok(fd);
+  }
+
+  // Return to the immutable source after baking; a new bake never destroys
+  // that file, so restore works after room restarts and on other devices.
+  void voiceover_restore(int fd, const http::Request &r) {
+    const Val arg = jparse(r.body);
+    const std::string id = jstr(arg, "message"), video = jstr(arg, "video");
+    if (!is_id(id)) return http::send_error(fd, 400, "Ungültige Nachricht");
+    std::unique_lock<std::mutex> guard(voiceover_render_mu_, std::try_to_lock);
+    if (!guard.owns_lock()) return http::send_error(fd, 409, "Video wird gerade gemischt");
+    Val m;
+    if (!room_.get(id, m) || !voiceover::original(m, video))
+      return http::send_error(fd, 404, "Originalvideo fehlt");
+    if (!room_.update(id, [&](Val &message) {
+      message["voiceover_active"] = "";
+    })) return http::send_error(fd, 404, "Nachricht wurde entfernt");
+    http::send_ok(fd);
+  }
+
   // Adjust the current melody without uploading it again. The two offsets
   // live on the melody attachment, so SSE/restart and the bake always agree.
   void voiceover_cue(int fd, const http::Request &r) {
     const Val arg = jparse(r.body);
     const std::string id = jstr(arg, "message"), video = jstr(arg, "video"),
                       file = jstr(arg, "file");
-    const Val *at_arg = arg.find("at"), *from_arg = arg.find("from");
-    if (!is_id(id) || !at_arg || !from_arg ||
+    const Val *at_arg = arg.find("at"), *from_arg = arg.find("from"), *end_arg = arg.find("end");
+    if (!is_id(id) || !at_arg || !from_arg || (end_arg && end_arg->type != Val::NUM) ||
         at_arg->type != Val::NUM || from_arg->type != Val::NUM)
       return http::send_error(fd, 400, "Melodie-Positionen müssen Zahlen in Sekunden sein");
-    const double at = jnum(arg, "at"), from = jnum(arg, "from");
-    if (!std::isfinite(at) || !std::isfinite(from) || at < 0 || from < 0)
+    const double at = jnum(arg, "at"), from = jnum(arg, "from"),
+                 end = end_arg ? jnum(arg, "end") : 0;
+    if (!std::isfinite(at) || !std::isfinite(from) || !std::isfinite(end) || at < 0 || from < 0)
       return http::send_error(fd, 400, "Ungültige Melodie-Position");
     // Lock against ffmpeg snapshotting the old offsets; retakes revalidate
     // the exact stored attachment ID inside room_.update below.
@@ -1148,7 +1208,8 @@ private:
       return http::send_error(fd, 404, "Aktuelle Melodie-Spur nicht gefunden");
     const std::string video_path = room_.file_path(video), song_path = room_.file_path(file);
     const double video_length = voiceover::seconds(video_path), song_length = voiceover::seconds(song_path);
-    if (!video_length || !song_length || at >= video_length || from >= song_length)
+    if (!video_length || !song_length || at >= video_length || from >= song_length ||
+        (end_arg && (end <= at || end > video_length)))
       return http::send_error(fd, 400, "Position muss innerhalb von Video und Song liegen");
     bool found = false;
     if (!room_.update(id, [&](Val &message) {
@@ -1158,12 +1219,16 @@ private:
               jstr(a, "voiceover_lane") == "melody" && jstr(a, "voiceover_for") == video) {
             a["voiceover_at"] = at;
             a["voiceover_from"] = from;
+            if (end_arg) a["voiceover_end"] = end;
             found = true;
           }
     }) || !found) return http::send_error(fd, 404, "Melodie wurde inzwischen ersetzt");
     Val result = Val::object();
     result["at"] = at;
     result["from"] = from;
+    // Preserve the original two-offset API contract for clients that do
+    // not edit the optional trim-out handle.
+    if (end_arg) result["end"] = end;
     http::send_json(fd, 200, result);
   }
 
@@ -1180,6 +1245,18 @@ private:
     Val m;
     if (!room_.get(id, m) || !voiceover::original(m, video))
       return http::send_error(fd, 404, "Originalvideo nicht in dieser Nachricht");
+    const Val *gains = arg.find("gains");
+    const auto gain = [&](const std::string &lane, double fallback) {
+      return gains && gains->isObj() ? jnum(*gains, lane.c_str(), fallback) : fallback;
+    };
+    const auto valid_gain = [&](const std::string &lane, double fallback) {
+      const Val *v = gains && gains->isObj() ? gains->find(lane) : nullptr;
+      return (!v || v->type == Val::NUM) && std::isfinite(gain(lane, fallback)) &&
+             gain(lane, fallback) >= 0 && gain(lane, fallback) <= 1;
+    };
+    if (!valid_gain("original", 0.55) || !valid_gain("voice", 1) ||
+        !valid_gain("melody", 0.55) || !valid_gain("effects", 0.85))
+      return http::send_error(fd, 400, "Lautstärken müssen zwischen 0 und 1 liegen");
     const Val *chosen = arg.find("lanes");
     if (!chosen || !chosen->isObj()) return http::send_error(fd, 400, "Spuren fehlen");
     std::vector<voiceover::LaneInput> lanes;
@@ -1194,10 +1271,13 @@ private:
       voiceover::LaneInput input;
       input.name = lane;
       input.path = path;
+      input.gain = gain(lane, std::string(lane) == "voice" ? 1 :
+                        std::string(lane) == "melody" ? 0.55 : 0.85);
       if (input.name == "melody") {
         const Val *take = voiceover::attachment(m, file);
         input.at = jnum(*take, "voiceover_at");
         input.from = jnum(*take, "voiceover_from");
+        input.until = jnum(*take, "voiceover_end");
       }
       lanes.push_back(input);
       saved[lane] = file;
@@ -1208,7 +1288,7 @@ private:
     const std::string base = room_.cfg.state_dir + "/voiceover-" + random_hex(12);
     const std::string mp4 = base + ".mp4", m4a = base + ".m4a";
     std::string error;
-    if (!voiceover::bake(source, lanes, mp4, mode, error)) {
+    if (!voiceover::bake(source, lanes, mp4, mode, error, gain("original", 0.55))) {
       unlink(mp4.c_str());
       return http::send_error(fd, 422, error);
     }
@@ -1234,11 +1314,18 @@ private:
     baked["voiceover_mix"] = jstr(mixed, "file");
     baked["voiceover_lanes"] = saved;
     baked["voiceover_mode"] = mode;
+    // The chosen baked video is the canonical version of this card.
+    // Keep the original attachment for an explicit one-tap restore.
     if (!room_.update(id, [&](Val &message) {
+      // Previous baked versions remain immutable, discoverable attachments.
+      // The active pointer alone selects the canonical displayed MP4, and
+      // restore resets it to the byte-identical source.
       Val &atts = message["attachments"];
       if (!atts.isArr()) atts = Val::array();
       atts.push(mixed);
       atts.push(baked);
+      message["voiceover_active"] = jstr(baked, "file");
+      if (gains && gains->isObj()) message["voiceover_gains"] = *gains;
     })) {
       unlink(room_.file_path(jstr(mixed, "file")).c_str());
       unlink(room_.file_path(jstr(baked, "file")).c_str());

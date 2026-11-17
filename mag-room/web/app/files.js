@@ -29,12 +29,24 @@
     if (reader) reader.observe(box); else box._load();
     return box;
   }
+  function glbLiveTile(f, picture) {
+    // Blender may be unavailable for a server-generated GLB PNG. In that
+    // case provide a real, interactive fallback instead of a dead cube icon.
+    const canvas=el('canvas',{class:'glb-thumb-canvas',
+      'aria-label':'3D-Modell drehen und mit zwei Fingern zoomen'});
+    const live=el('span',{class:'pic glb-live'},canvas);
+    picture?.replaceWith(live);
+    canvas.addEventListener('click',e=>e.stopPropagation());
+    requestAnimationFrame(()=>{
+      if(live.isConnected)MAG.viewer3d.attach(canvas,fileUrl(f));
+    });
+  }
   function thumb(f) {
     if (!pictured(f)) return excerpt(f);
     const mark = badge(f);
     return el('span', { class: 'pic' + (f.kind === 'audio' ? ' wave' : '') },
       el('img', { src: fileUrl(f, '/thumb'), alt: f.description || f.name, loading: 'lazy', decoding: 'async',
-        onerror: (e) => e.target.closest('.pic')?.replaceWith(/\.pdf$/i.test(f.name) ? excerpt(f) : fallback(f)) }),
+        onerror: (e) => /\.glb$/i.test(f.name) ? glbLiveTile(f,e.target.closest('.pic')) : e.target.closest('.pic')?.replaceWith(/\.pdf$/i.test(f.name) ? excerpt(f) : fallback(f)) }),
       mark ? el('span', { class: 'badge' }, MAG.icon(mark)) : null);
   }
 

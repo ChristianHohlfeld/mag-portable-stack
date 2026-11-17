@@ -502,7 +502,7 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .m3 .stage .wait { position: absolute; inset: 0; display: grid; place-items: center; font-size: 14px; color: var(--muted); pointer-events: none; }
 .m3 .stage.ready .wait { display: none; }
 .m3 .stage .hint { position: absolute; left: 10px; bottom: 8px; right: 10px; font-size: 12px; color: var(--muted); pointer-events: none; transition: opacity .6s; }
-.m3 .stage .hint::after { content: "Ziehen dreht · Vollbild zum Zoomen"; }
+.m3 .stage .hint::after { content: "Ziehen dreht · zwei Finger zoomen · Desktop: Vollbild für Mausrad"; }
 .m3 .stage.touched .hint { opacity: 0; }
 .m3 .stage .tools { position: absolute; right: 8px; top: 8px; display: flex; gap: 6px; }
 .m3 .stage .tools button { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; color: #ececf0; background: rgba(20, 22, 26, .62); backdrop-filter: blur(6px); }
@@ -834,6 +834,8 @@ html[data-voice="making"] .act[data-speak]::after { animation: voice-making 1.6s
 .file-tile .th { position: relative; display: grid; place-items: center; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: var(--surface-2); border: 1px solid var(--line); }
 .file-tile .th img, .file-tile .th video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .file-tile .th .pic { position: absolute; inset: 0; }
+.file-tile .th .glb-live canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.file-tile .th .glb-live canvas:active { cursor: grabbing; }
 .file-tile .th .badge { position: absolute; right: 6px; bottom: 6px; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: rgba(20, 22, 26, .62); color: #ececf0; }
 .file-tile .th .badge svg { width: 16px; height: 16px; }
 .file-tile .ico-big { display: grid; justify-items: center; gap: 4px; color: var(--muted); }

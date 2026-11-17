@@ -986,7 +986,9 @@ private:
                 suffix == "ogg" || suffix == "weba" || suffix == "flac")) ext = suffix;
     }
     if (ext.empty()) return http::send_error(fd, 415, "Audioformat nicht unterstützt");
-    const std::string display = music && !name.empty() ? name
+    // Keep the verified format as the stored extension even if a client
+    // supplies a mismatching filename or a truncated 80-char basename.
+    const std::string display = music && suffix == ext ? name
         : "nachvertonung-" + lane + "-" + std::to_string(now_ms()) + "." + ext;
     Val a = room_.store_file(display, r.body, "chris");
     if (!a.isObj()) return http::send_error(fd, 500, "Audio konnte nicht gespeichert werden");

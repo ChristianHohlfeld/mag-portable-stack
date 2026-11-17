@@ -139,7 +139,8 @@ public:
       if (!m3 || jstr(*m3, "kind") != "video" || jstr(*m3, "model") != "h3" || jstr(*m3, "state") != "done") continue;
       if (const Val *atts = m.find("attachments"); atts && atts->isArr())
         for (auto &a : atts->asArr())
-          if (jstr(a, "kind") == "video" && (name.empty() || jstr(a, "name") == name || jstr(a, "file") == name)) return jstr(m, "id");
+          if (jstr(a, "kind") == "video" && jstr(a, "voiceover_kind").empty() &&
+              (name.empty() || jstr(a, "name") == name || jstr(a, "file") == name)) return jstr(m, "id");
     }
     error = name.empty() ? "Im Chat ist kein fertiges H3-Video." : "Im Chat gibt es kein fertiges H3-Video " + name + ".";
     return "";
@@ -155,7 +156,7 @@ public:
     Val video;
     if (const Val *atts = before.find("attachments"); atts && atts->isArr())
       for (auto &a : atts->asArr())
-        if (jstr(a, "kind") == "video") video = a;
+        if (jstr(a, "kind") == "video" && jstr(a, "voiceover_kind").empty()) { video = a; break; }
     std::string bytes;
     const std::string path = video.isObj() ? room_.file_path(jstr(video, "file")) : "";
     if (path.empty() || !read_file(path, bytes, 500u << 20) || bytes.size() < 8) { error = "Das Video fehlt oder ist größer als 500 MB."; return ""; }

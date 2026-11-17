@@ -996,7 +996,7 @@ private:
     if (!chosen || !chosen->isObj()) return http::send_error(fd, 400, "Spuren fehlen");
     std::vector<std::pair<std::string, std::string>> lanes;
     Val saved = Val::object();
-    for (const std::string &lane : {"voice", "melody", "effects"}) {
+    for (const char *lane : {"voice", "melody", "effects"}) {
       const std::string file = jstr(*chosen, lane);
       if (file.empty()) continue;
       if (!voiceover::take(m, video, file, lane))

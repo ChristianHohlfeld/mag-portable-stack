@@ -980,7 +980,7 @@
       MAG.speaking?.startFrom ? { icon: 'play', label: 'Play from here',
         run: () => MAG.speaking.startFrom(m.id, 1) } : null,
       ...[1.25, 1.5, 1.75, 2].map((rate) => MAG.speaking?.startFrom ? {
-        icon: 'speak', label: rate.toFixed(rate % 1 ? 2 : 1).replace(/0$/, '').replace('.', ',') + '× Talk Speed · ab hier',
+        icon: 'speak', label: (rate === 2 ? '2,0' : String(rate).replace('.', ',')) + '× Talk Speed · ab hier',
         run: () => MAG.speaking.startFrom(m.id, rate)
       } : null),
       MAG.speaking?.readingFrom?.() ? { icon: 'stop', label: 'Vorlesen stoppen',

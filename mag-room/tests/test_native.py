@@ -743,6 +743,37 @@ class RoomContract(unittest.TestCase):
                                 for req in model.chats() for m in req["messages"]))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
+    def test_explicit_self_talk_stays_off_by_default_and_stops_live(self):
+        """Self-followups use the same bot, never a tool or a new human task."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        self.assertFalse(r.state()["settings"].get("self_talk", False))
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "web": False, "auto_chat": False, "bot_rounds": 2,
+            "pass_enabled": True})[0], 200)
+        def lena(body):
+            notes = [str(m.get("content", "")) for m in body["messages"]]
+            if any("Internes Selbstgespräch" in line for line in notes[-3:]):
+                return "PASS"
+            return "Ein überprüfbarer Gedanke."
+        r.lena.reply = lena
+        r.noah.reply = lambda body: "PASS"
+        r.say("Lena, was meinst du?")
+        r.wait(lambda: bool(r.texts("lena")), "first direct answer", 25)
+        r.idle(25)
+        count = len(r.lena.chats())
+        self.assertEqual(count, 1, "default off cannot self-trigger")
+        self.assertEqual(r.api("PUT", "/api/settings", {"self_talk": True})[0], 200)
+        r.say("Lena, neuer Gedanke?")
+        r.wait(lambda: len(r.lena.chats()) >= 3, "self-turn after second direct answer", 30)
+        self.assertTrue(any("Internes Selbstgespräch" in
+                            str(m.get("content", ""))
+                            for req in r.lena.chats() for m in req["messages"]))
+        self.assertEqual(r.api("PUT", "/api/settings", {"self_talk": False})[0], 200)
+        count = len(r.lena.chats())
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()), count, "live off prevents queued self-turns")
+
     def test_live_self_talk_switches_reach_both_bots_on_next_turn(self):
         """Flip the four settings while a conversation is IN FLIGHT.
         Existing warm wire stays; each new request must append current policy.

@@ -1269,7 +1269,7 @@
     // leading labels are removed, without ever editing mid-sentence names.
     const botNames = (S.bots || []).map(b => b.name).filter(Boolean);
     const labels = botNames.map(name => {
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\    // The room's markers and a lone PASS');
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       return new RegExp('^\\s*(?:\\*\\*' + escaped + ':\\*\\*|\\*\\*' +
         escaped + '\\*\\*:|\\[' + escaped + '\\]:?|' + escaped + '[:：,])\\s*', 'i');
     });

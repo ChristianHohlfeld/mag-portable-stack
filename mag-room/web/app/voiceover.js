@@ -40,7 +40,7 @@
     const audio = el('audio', { preload: 'metadata' });
     audio.hidden = true;
     let selected = takes[takes.length - 1] || null;
-    let mode = 'original';
+    let mode = 'original', forcedMute = false;
     const announce = el('small', { class: 'voice-status', role: 'status', 'aria-live': 'polite', text: '' });
     const status = (msg, bad = false) => { announce.textContent = msg; announce.classList.toggle('err', bad); };
 
@@ -51,8 +51,13 @@
       // During microphone capture, do not mix in a previously selected take
       // or override the user's explicit monitor/mute choice.
       if (recorder?.state === 'recording') return;
-      if (!active()) { audio.pause(); video.muted = false; return; }
-      video.muted = mode === 'dub';
+      if (!active()) {
+        audio.pause();
+        if (forcedMute) { video.muted = false; forcedMute = false; }
+        return;
+      }
+      if (mode === 'dub') { video.muted = true; forcedMute = true; }
+      else if (forcedMute) { video.muted = false; forcedMute = false; }
       if (audio.src !== location.origin + url(selected)) audio.src = url(selected);
       if (Number.isFinite(video.currentTime) && Math.abs((audio.currentTime || 0) - video.currentTime) > 0.18)
         try { audio.currentTime = video.currentTime; } catch (_) {}

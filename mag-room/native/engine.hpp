@@ -1212,7 +1212,7 @@ private:
   // empty log, so `remember` never costs a re-evaluation.
   bool ensure_wire(Bot &b, const Val &me, bool fresh) {
     const std::string system = system_prompt(me);
-    const Val tools = reason == "self" ? Val::array() : tools_for(me);
+    const Val tools = tools_for(me);
     const std::string hash = prefix_hash(me, system, tools);
     Val shape = Val::object();
     shape["persona"] = jstr(me, "persona");
@@ -3297,7 +3297,7 @@ private:
       autonomous_round = autonomous_round || (reason == "bot" && auto_burst_);
     }
     const std::string name = jstr(me, "name");
-    const Val tools = tools_for(me);
+    const Val tools = reason == "self" ? Val::array() : tools_for(me);
     // What the plugins take at the head of the prompt is not taken from the conversation.
     const long budget = b.budget + plugins_.weight(me);
     const Val settings = room_.settings();

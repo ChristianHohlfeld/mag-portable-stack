@@ -463,6 +463,7 @@ class RoomContract(unittest.TestCase):
                 last = str(body["messages"][-1].get("content", ""))
                 self.assertIn("eigene Beendigungsentscheidung", last)
                 self.assertIn("Chris kann alle eure Nachrichten im Raum-Chat lesen", last)
+                self.assertIn("Projekte", last, "autonomous turns must not revive completed projects")
                 replies[name] += 1
                 return "Ein neuer Gedanke von %s, Runde %d." % (name, replies[name])
             return reply
@@ -933,6 +934,20 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((last["parts"][0]["state"], last["parts"][0]["exit"]), ("error", 3))
         self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "tool"][-1], "exit=3\nhallo\n")
 
+    def test_generic_prompt_does_not_resurrect_earlier_projects(self):
+        r = self.room
+        r.lena.reply = lambda body: "Bereit."
+        r.say("@Lena hallo")
+        r.idle()
+        sys = r.lena.chats()[-1]["messages"][0]["content"]
+        self.assertNotIn("3D-Szenen\\n", sys, "specific project/domain examples must not steer every reply")
+        self.assertNotIn("three.js", sys)
+        self.assertNotIn("bei Amazon:", sys)
+        names = {t["function"]["name"] for t in r.lena.chats()[-1]["tools"]}
+        self.assertIn("models_3d", names)
+        self.assertIn("scene_3d", names)
+        self.assertIn("browser_open", names)
+
     def test_finished_html_becomes_a_live_page_on_the_bots_site(self):
         r = self.room
         home = r.tmp / "guests" / "agent1"
@@ -1057,6 +1072,84 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("GET", "/api/vm/lena/files?path=projekt")[1]["entries"], [])
         self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=.")[0], 400)   # the home itself stays
         self.assertEqual(r.api("POST", "/api/vm/noah/run", {"command": "id"})[0], 404)   # no VM
+
+        # A web file has TWO copies: in the VM and in the published host site.
+        # A VM file deletion must revoke the public (tailnet) route immediately.
+        # Fake publish-site stands in for the full-tree, atomic publisher.
+        home = r.tmp / "guests" / "agent1"
+        guest_www = home / "www"
+        guest_www.mkdir(exist_ok=True)
+        (guest_www / "old-page.html").write_text("<!doctype html><title>Alt</title>")
+        published = r.tmp / "www" / "agent1"
+        published.mkdir(parents=True, exist_ok=True)
+        (published / "old-page.html").write_text("stale published copy")
+        marker = home / "republished.txt"
+        (home / "publish-site").write_text(
+            "echo called >> republished.txt\n"
+            "rm -rf " + str(published) + "\n"
+            "cp -a www " + str(published) + "\n"
+        )
+        self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=www/old-page.html")[0], 200)
+        self.assertFalse((guest_www / "old-page.html").exists())
+        self.assertFalse((published / "old-page.html").exists(), "deleted page must stop being served")
+        self.assertTrue((published / "index.html").exists(), "remaining website stays valid")
+        self.assertEqual(marker.read_text().count("called"), 1)
+        (home / "ordinary.txt").write_text("only in VM")
+        self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=ordinary.txt")[0], 200)
+        self.assertEqual(marker.read_text().count("called"), 1, "other VM files must not republish")
+
+        # Deleting the entire site root must remove its old paths, leaving the
+        # harmless default page. Deleting it is an explicit owner action.
+        (guest_www / "nested").mkdir()
+        (guest_www / "nested" / "app.js").write_text("app")
+        (published / "nested").mkdir()
+        (published / "nested" / "app.js").write_text("stale")
+        self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=www")[0], 200)
+        self.assertFalse((published / "nested" / "app.js").exists())
+        self.assertTrue((published / "index.html").exists())
+
+    def test_bot_delete_file_unpublishes_guest_site_and_rejects_escape(self):
+        r = self.room
+        home = r.tmp / "guests" / "agent1"
+        home.mkdir(parents=True, exist_ok=True)
+        guest_www = home / "www"
+        guest_www.mkdir(exist_ok=True)
+        (guest_www / "old-route.html").write_text("<!doctype html><title>Alt</title>")
+        published = r.tmp / "www" / "agent1"
+        published.mkdir(parents=True, exist_ok=True)
+        (published / "old-route.html").write_text("stale public copy")
+        (home / "publish-site").write_text(
+            "rm -rf " + str(published) + "\n"
+            "cp -a www " + str(published) + "\n"
+        )
+        answers = iter([
+            {"content": "", "tool_calls": [{"name": "delete_file", "arguments": {"path": "www/old-route.html"}}]},
+            "Gelöscht.",
+        ])
+        r.lena.reply = lambda body: next(answers)
+        r.say("@Lena hallo")
+        r.idle()
+        self.assertFalse((guest_www / "old-route.html").exists())
+        self.assertFalse((published / "old-route.html").exists())
+        self.assertTrue((published / "index.html").exists())
+        step = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"]
+                if p["k"] == "step" and p["tool"] == "delete_file"]
+        self.assertEqual(len(step), 1)
+        self.assertEqual(step[0]["state"], "ok")
+        self.assertIn("Website aktualisiert", step[0]["output"])
+
+        answers = iter([
+            {"content": "", "tool_calls": [{"name": "delete_file", "arguments": {"path": "/etc/passwd"}}]},
+            "Abgelehnt.",
+        ])
+        r.lena.reply = lambda body: next(answers)
+        r.say("@Lena hallo nochmal")
+        r.idle()
+        step = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"]
+                if p["k"] == "step" and p["tool"] == "delete_file"]
+        self.assertEqual(len(step), 2)
+        self.assertEqual(step[-1]["state"], "error")
+        self.assertIn("Löschen fehlgeschlagen", step[-1]["output"])
 
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room

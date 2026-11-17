@@ -89,6 +89,11 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  "Create or replace a text file in your VM (relative paths are below /home/bot). Prefer this over heredocs. "
                  "A file below /home/bot/www is published on your website at once; an .html file there is shown to Chris as a live page in the chat.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})"));
+    list.push(fn("delete_file",
+                 "Delete a file or folder in your own VM only when Chris requests its removal. Never delete the VM home itself, "
+                 "other users' data, or a path outside your home. For files in www, the published website is "
+                 "synchronized immediately so obsolete URLs no longer serve old copies.",
+                 R"({"type":"object","properties":{"path":{"type":"string","description":"file or folder below /home/bot"}},"required":["path"]})"));
     list.push(fn("browser_open", "Open a URL in your own VM browser (real Chrome, persistent profile: logins and cookies stay). Shows the page as browser_look does.",
                  R"({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})"));
     list.push(fn("browser_look",
@@ -308,6 +313,7 @@ inline std::string title(const std::string &name, const Val &args) {
     return clip(trim(s), max, "…");
   };
   if (name == "shell") return "$ " + one(jstr(args, "command"), 140);
+  if (name == "delete_file") return "Löscht " + one(jstr(args, "path"), 90);
   if (name == "write_file") return "Schreibt " + one(jstr(args, "path"), 100);
   if (name == "browser_open") return "Öffnet " + one(jstr(args, "url"), 120);
   if (name == "browser_read") return "Liest die Seite";
@@ -670,6 +676,33 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       return {"Zeitlimit von " + std::to_string(timeout) + " s überschritten; der Befehl wurde beendet.\n" +
                   for_model(r.out, r.log_path, 3000), false};
     return {"exit=" + std::to_string(r.code) + "\n" + for_model(r.out, r.log_path), r.code == 0};
+  }
+  if (name == "delete_file") {
+    if (!need_vm()) return fail("Du hast keine eigene VM.");
+    const std::string path = trim(jstr(args, "path"));
+    if (path.empty()) return fail("Pfad fehlt.");
+    // Same boundary as the owner file manager: the guest resolves symlinks
+    // and refuses home/outside-home paths before removing anything.
+    const std::string script = "python3 -c " + shell_quote(
+        "import os,sys,shutil\n"
+        "home=os.path.realpath(os.path.expanduser('~'))\n"
+        "p=os.path.realpath(os.path.join(home,sys.argv[1]))\n"
+        "if p==home or not p.startswith(home+os.sep): sys.exit('Pfad außerhalb der VM oder Home-Verzeichnis')\n"
+        "if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)\n"
+        "else: os.remove(p)\n"
+        "print(p)\n") + " " + shell_quote(path);
+    const auto r = ctx.guests.exec(vm, script, 60, ctx.cancel, {});
+    if (r.cancelled) return {"abgebrochen (Stop)", false};
+    if (r.timed_out) return fail("Löschen hat das Zeitlimit überschritten.");
+    if (r.code != 0) return fail("Löschen fehlgeschlagen: " + clip(trim(r.out), 300));
+    const std::string deleted = trim(r.out);
+    const std::string www = env("MAG_ROOM_GUEST_HOME", "/home/bot") + "/www";
+    if (deleted == www || starts_with(deleted, www + "/")) {
+      const std::string why = site::publish(ctx.guests, vm, ctx.cancel);
+      if (!why.empty()) return fail("Datei gelöscht, aber Website noch nicht aktualisiert: " + why);
+      return {"Gelöscht und Website aktualisiert: " + deleted, true};
+    }
+    return {"Gelöscht: " + deleted, true};
   }
   if (name == "write_file") {
     if (!need_vm()) return fail("Du hast keine eigene VM.");

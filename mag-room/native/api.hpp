@@ -1582,10 +1582,19 @@ private:
         "if p==home: print(json.dumps({'error':'Das Home-Verzeichnis bleibt'})); sys.exit(0)\n"
         "if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)\n"
         "else: os.remove(p)\n"
-        "print(json.dumps({'ok':True}))\n", path, 60, 1 << 16);
+        "print(json.dumps({'ok':True,'path':p}))\n", path, 60, 1 << 16);
     if (!res.error.empty()) return http::send_error(fd, 502, "VM: " + res.error);
     const Val v = jparse(res.body);
     if (!jbool(v, "ok")) return http::send_error(fd, 400, jstr(v, "error", "Löschen fehlgeschlagen"));
+    // The published site is a separate host-side copy of the VM's www.
+    // Removing only the guest file leaves a stale, still-reachable URL.
+    // Republish the whole current www tree (also after deleting www itself).
+    const std::string deleted = jstr(v, "path");
+    const std::string www = env("MAG_ROOM_GUEST_HOME", "/home/bot") + "/www";
+    if (deleted == www || starts_with(deleted, www + "/")) {
+      const std::string why = site::publish(guests_, vm);
+      if (!why.empty()) return http::send_error(fd, 502, "Datei gelöscht, aber Website noch nicht aktualisiert: " + why);
+    }
     http::send_ok(fd);
   }
 

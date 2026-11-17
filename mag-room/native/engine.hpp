@@ -3365,6 +3365,8 @@ private:
                      "gerade keinen sichtbaren Beitrag geliefert. Übernimm den "
                      "Gesprächsfaden mit einem NEUEN sinnvollen Gedanken, ohne "
                      "frühere Nutzeraufträge auszuführen. Keine Werkzeuge.)";
+      n["_items"] = Val::array();
+      n["_note"] = jstr(n, "content");
       b.wire["messages"].push(n);
       save_wire(b);
     }

@@ -62,6 +62,13 @@ int main() {
   CHECK(maybe_pass("[No"));
   CHECK(!maybe_pass("Passt"));
   CHECK(!maybe_pass("Ergänzung: "));
+  // A midnight boundary is not "almost the whole night"; the clock gap
+  // is arithmetic on UTC timestamps, independent of display timezone.
+  CHECK(elapsed_gap(3 * 60 * 60000LL + 42 * 60000LL) == "3 h 42 min");
+  CHECK(elapsed_gap(4 * 60000LL) == "");
+  CHECK(elapsed_gap(59 * 60000LL) == "0 h 59 min");
+  CHECK(elapsed_gap((24 * 60 + 17) * 60000LL) == "1 d 0 h 17 min");
+  CHECK(elapsed_gap(-60000LL) == "");
   // When every bot PASSes in a row the chat rests.
   CHECK(!conversation_rests(0, 2));
   CHECK(!conversation_rests(1, 2));

@@ -108,6 +108,5 @@ assert(timeline.includes('MAG.codeEditor.editor(key, source, lang'), 'every fenc
 assert(timeline.includes('MAG.codeEditor.editor(key, original,'), 'published pages have an editor');
 assert(timeline.includes('code.append(editor.input'), 'published source is editable');
 assert(timeline.includes('const frame = edited'), 'edited preview is not the published page');
-assert(timeline.includes('onchange') === false || true); // No backend write endpoint needed.
 console.log('Editable code: every block, drafts, reset, HTML/CSS/JS, sandbox and preview update OK');
 dom.window.close();

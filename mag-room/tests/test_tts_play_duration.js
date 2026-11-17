@@ -115,6 +115,8 @@ const advance = async (time) => {
   assert(playing.startFrom('1', 2));
   await tick();
   assert.equal(running.sources.length, 2, 'second run creates one new source in the reused context');
+  assert.equal(running.sources[1].buffer.duration, 0.5,
+    '2x is also represented by half as many samples without a second tempo division');
   await advance(10.2);
   playing.stop();
   await tick();

@@ -120,10 +120,18 @@ const find = (node, text) => [...node.querySelectorAll('button')].find((b) => b.
 
   await record('Stimme');
   const v2 = { ...v1, file: 'v2.weba' };
-  message = { ...message, attachments: [...message.attachments, v2] };
+  message = { ...message, attachments: [
+    ...message.attachments.filter((a) =>
+      !(a.voiceover_kind === 'take' && a.voiceover_for === original.file &&
+        a.voiceover_lane === 'voice')), v2
+  ] };
   ui._voiceoverRefresh(message);
   assert.equal(MAG.voiceover.latest(message, original.file).voice.file, 'v2.weba',
-    'latest take replaces active voice lane while older source is retained');
+    'new voice take replaces the previous active lane');
+  assert.equal(message.attachments.filter((a) =>
+    a.voiceover_kind === 'take' && a.voiceover_lane === 'voice').length, 1,
+    'no stale voice attachment in the SSE snapshot');
+  assert.equal(ui.querySelectorAll('video').length, 1, 'retake does not add a player');
   find(ui, 'Mix & MP4').click();
   await flush();
   assert.equal(bakes.length, 1);

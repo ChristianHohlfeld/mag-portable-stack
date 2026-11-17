@@ -59,6 +59,7 @@ jobs:
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_code_editor.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_code_streaming.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_video_voiceover.js
+          NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_global_audio.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_video_part_retry.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_media_filter.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_media_initial.js

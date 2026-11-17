@@ -16,29 +16,67 @@
   if (window.marked) marked.setOptions({ gfm: true, breaks: true });
   // `live`: the text is still being written. Long code is then left plain
   // and coloured once at the end, so a phone keeps up with the stream.
-  function markdown(text, live) {
+  function markdown(text, live, scope = '') {
     if (!window.marked || !window.DOMPurify) return el('div', { class: 'md', text });
     const html = DOMPurify.sanitize(marked.parse(text || ''), { FORBID_TAGS: ['style', 'form', 'input', 'iframe', 'object', 'embed'], FORBID_ATTR: ['style', 'onerror', 'onclick'] });
     const box = el('div', { class: 'md', html });
     box.querySelectorAll('a').forEach((a) => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
     MAG.mentions?.decorate(box);
     box.querySelectorAll('img').forEach((img) => { img.loading = 'lazy'; });
-    box.querySelectorAll('pre').forEach((pre) => {
+    box.querySelectorAll('pre').forEach((pre, index) => {
       const code = pre.querySelector('code');
-      const lang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
-      const known = lang && window.hljs?.getLanguage(lang);
-      if (code && known && code.textContent.length < (live ? 6000 : 60000)) { try { hljs.highlightElement(code); } catch {} }
-      // Language and copy in a quiet head, the code below. Long code is
-      // folded like a step: its first lines show, the head opens it.
+      const rawLang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
       const source = code ? code.textContent : pre.textContent;
-      const lines = source.replace(/\n$/, '').split('\n');
-      const fold = !live && lines.length > 12;
-      const block = el(fold ? 'details' : 'div', { class: 'codeblock' + (fold ? ' fold' : '') });
+      const lang = MAG.codeEditor.language(rawLang, source);
+      const canRun = MAG.codeEditor.previewable(lang, source);
+      // Stable across streaming re-renders. Published pages use this same
+      // draft key when replacing their original fenced code block.
+      const key = (scope || 'snippet:' + sigOf(source)) + ':code:' + index;
+      const pane = el('div', { class: 'code-pane' });
+      const preview = el('div', { class: 'code-preview', hidden: true });
+      const block = el('div', { class: 'codeblock', dataset: { codeKey: key } });
+      let previewFrame = null, previewTimer = null, mode = 'code';
+      const edited = MAG.codeEditor.editor(key, source, lang, () => {
+        if (mode === 'preview' && previewFrame) {
+          clearTimeout(previewTimer);
+          previewTimer = setTimeout(() => previewFrame?._refresh?.(), 400);
+        }
+      });
+      // Keep the original code in the DOM only for page-signature matching.
+      // It is never executed or edited; the textarea is the source of truth.
+      pre.hidden = true;
+      pane.append(edited.input, pre);
+      const codeTab = el('button', { role: 'tab', type: 'button', text: 'Code' });
+      const previewTab = canRun ? el('button', { role: 'tab', type: 'button', text: 'Vorschau' }) : null;
+      function show(next) {
+        mode = next;
+        pane.hidden = next !== 'code';
+        preview.hidden = next !== 'preview';
+        for (const [name, button] of [['code', codeTab], ['preview', previewTab]]) {
+          if (!button) continue;
+          button.classList.toggle('on', name === next);
+          button.setAttribute('aria-selected', String(name === next));
+        }
+        if (next === 'preview' && !previewFrame) {
+          previewFrame = MAG.codeEditor.frame('Live-Code-Vorschau',
+            () => MAG.codeEditor.html(lang, edited.get()));
+          preview.replaceChildren(previewFrame);
+        }
+      }
+      codeTab.addEventListener('click', (e) => { e.preventDefault(); show('code'); });
+      previewTab?.addEventListener('click', (e) => { e.preventDefault(); show('preview'); });
+      const copyButton = el('button', { class: 'copy', type: 'button', text: 'Kopieren',
+        onclick: (e) => { e.preventDefault(); copy(edited.get(), e.currentTarget); } });
+      const header = el('div', { class: 'head' },
+        el('span', { class: 'code-lang', text: lang || 'Code' }),
+        el('div', { class: 'seg code-tabs', role: 'tablist' }, codeTab, previewTab),
+        edited.status, edited.resetButton, copyButton);
       pre.replaceWith(block);
-      const head = el('div', { class: 'head' }, el('span', { text: (lang || 'Code') + (fold ? ' · ' + lines.length + ' Zeilen' : '') }),
-        el('button', { class: 'copy', text: 'Kopieren', onclick: (e) => { e.preventDefault(); copy(source, e.target); } }),
-        fold ? el('span', { class: 'chev', html: MAG.icons.chev }) : null);
-      block.append(fold ? el('summary', {}, head, el('div', { class: 'peek', text: lines.slice(0, 5).join('\n') })) : head, pre);
+      // pre.replaceWith moves the original away; attach it again to keep
+      // placePages() signature matching for HTML published by a bot.
+      pane.append(pre);
+      block.append(header, pane, preview);
+      show('code');
     });
     return box;
   }
@@ -1000,7 +1038,7 @@
     if (user) {
       // The bubble, what was attached, and below them the actions.
       // A routine that came due speaks like a request, marked as the routine's.
-      const bubble = m.text ? el('div', { class: 'bubble' + (m.routine ? ' routine' : '') }, m.routine ? el('small', { class: 'tag', text: '⏰ Routine' }) : null, markdown(m.text)) : null;
+      const bubble = m.text ? el('div', { class: 'bubble' + (m.routine ? ' routine' : '') }, m.routine ? el('small', { class: 'tag', text: '⏰ Routine' }) : null, markdown(m.text, false, m.id + ':user')) : null;
       const col = el('div', { class: 'col' }, aboutChip(m), bubble, atts);
       node.append(el('div', { class: 'line' }, col, actions(m)));
       return node;
@@ -1027,7 +1065,7 @@
           }
         } else body.append(buildPart(m, i));
       });
-      if (!(m.parts || []).length && m.text) body.append(markdown(m.role === 'bot' ? tidy(m.text) : m.text));
+      if (!(m.parts || []).length && m.text) body.append(markdown(m.role === 'bot' ? tidy(m.text) : m.text, false, m.id + ':fallback'));
       node.append(body);
       placePages(m, body);
       // A finished answer of nothing but what is not shown (a request in words, a written-out call) is no message.
@@ -1123,7 +1161,7 @@
   function buildPart(m, index) {
     const p = m.parts[index];
     if (p.k === 'step') return buildStep(m, index);
-    const node = markdown(m.role === 'bot' ? tidy(p.text) : p.text, m.state === 'streaming');
+    const node = markdown(m.role === 'bot' ? tidy(p.text) : p.text, m.state === 'streaming', m.id + ':' + index);
     node.dataset.part = index;
     return node;
   }

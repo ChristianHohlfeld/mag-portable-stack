@@ -141,6 +141,8 @@ assert(cancelled >= 4, 'starting or stopping a queue cancels prior speech');
 
 const actionSource = fs.readFileSync(path.join(__dirname, '..', 'web', 'app', 'messages.js'), 'utf8');
 assert(actionSource.includes("label: 'Play from here'"), 'play-from-here appears in existing dots menu');
+assert(!actionSource.includes("owner' && !streaming) row.append(button('dots'"), 'dots stay while an answer is still being written');
+assert(actionSource.includes("!streaming ? { icon: 'trash'"), 'a streaming answer is not deleted from the menu');
 assert(actionSource.includes("label: 'Vorlesen stoppen'"), 'dots menu stops the sequence');
 assert(actionSource.includes('[1.25, 1.5, 1.75, 2]'), 'all requested speeds share one implementation');
 assert(actionSource.includes('MAG.speaking.startFrom(m.id, rate)'), 'speed applies from selected bubble');

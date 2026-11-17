@@ -49,6 +49,7 @@ jobs:
           node mag-room/tests/test_read_from_here.js
           node mag-room/tests/test_tts_stall.js
           node mag-room/tests/test_tts_play_duration.js
+          node mag-room/tests/test_tts_first_chunk.js
           node mag-room/tests/test_tts_stream_stop.js
       - name: Live browser (gestures, keyboard only from a tap, HTTPS picture)
         run: |

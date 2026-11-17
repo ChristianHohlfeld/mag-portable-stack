@@ -505,6 +505,16 @@
     }
     return tts.nativeAudio;
   }
+  function unlockNativeSink() {
+    // Unlock the exact element that will later play ONNX WAV chunks while
+    // this function is still inside the user's tap. Android may otherwise
+    // reject play() called after a slow asynchronous synthesis.
+    const audio=nativeSink();
+    const url=URL.createObjectURL(wavBlob({audio:new Float32Array(2205),rate:22050}));
+    try { audio.src=url; Promise.resolve(audio.play()).catch(()=>{}); }
+    catch (_) {}
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+  }
   async function nativeChunk(pb,res) {
     const element=nativeSink();
     const blob=wavBlob(res), src=URL.createObjectURL(blob);
@@ -802,6 +812,7 @@
       try { tts.worker.postMessage({type: 'cancel', before: tts.seq}); } catch (_) {}
     }
     current = pb;
+    if (pb.native) unlockNativeSink();
     MAG.audio?.activate('tts',{
       name:'tts',title:'MAG · Vorlesen',artist:who,
       stop:()=>stop(),

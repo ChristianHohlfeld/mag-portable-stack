@@ -243,20 +243,30 @@ public:
     };
     if (hush_only) {
       for (auto &b : bots_) {
-        if (b->cancel && b->running != "human" && !b->warming) b->cancel->stop();
-        if (std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end()) b->want = false;
+        const bool hushed = std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end();
+        if (b->cancel && !b->warming &&
+            (b->running != "human" || (hushed && !b->acted && !b->goal_on && !b->goal_arm)))
+          b->cancel->stop();
+        if (hushed) b->want = false;
       }
       cv_.notify_all();
       return;
     }
     for (auto &b : bots_) {
-      // Bot rounds and self-continuations yield to the human at once. The
-      // prefix being evaluated does not: the turn needs it anyway, and only
-      // a finished one is saved, so that the next trash restores it in seconds.
-      if (b->cancel && b->running != "human" && !b->warming) b->cancel->stop();
+      // New human input supersedes an earlier plain chat generation for the
+      // same bot. Do not interrupt an acting tool or a persistent browser goal:
+      // those read subsequent corrections at their next safe model boundary.
+      // Prefix prewarming stays untouched to preserve the llama.cpp cache.
+      const bool addressed = std::find(to.begin(), to.end(), b->id) != to.end();
+      if (b->cancel && !b->warming &&
+          (b->running != "human" ||
+           (addressed && !b->acted && !b->goal_on && !b->goal_arm))) {
+        if (b->running == "human")
+          logf("engine: " + b->id + " superseded stale plain chat turn by new human input");
+        b->cancel->stop();
+      }
       b->continues = 0;
       b->said.clear();
-      const bool addressed = std::find(to.begin(), to.end(), b->id) != to.end();
       const bool hushed = std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end();
       if (hushed) silenced_.insert(b->id);
       if (how.kind == goal::Kind::Stop && (addressed || to.size() == bots_.size())) mark_end(*b);
@@ -1031,7 +1041,8 @@ private:
         " gefragt: Das liest du als Hintergrund, es ist keine Aufgabe für dich und du antwortest nicht darauf.\n"
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt. Jeden Satz schreibst du nur einmal und nur auf Deutsch, auch zwischen Werkzeugschritten; nie eine englische Fassung daneben und nie einen Werkzeugaufruf als JSON in den Text.\n"
         "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
-        "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar.\n"
+        "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar. Auf eine neue, an dich gerichtete Nachricht antworte selbst; PASS ist kein Ersatz fuer die Antwort auf eine ausdrueckliche Bitte.\n"
+        "- Nachrichten-Zeitstempel zeigen, wann etwas gesendet wurde, nicht die aktuelle Uhrzeit. Fuer die genaue Uhrzeit JETZT rufe clock_now auf. Aus zeitlichen Luecken folgt keine Aktivitaet, insbesondere kein Schlaf.\n"
         "- Erfinde nichts. Was du nicht weißt oder nicht prüfen konntest, sagst du offen.\n"
         "- Ältere Teile des Gesprächs können aus deinem Kontext entfernt worden sein.\n";
     if (has_vm)
@@ -1923,6 +1934,10 @@ private:
       item["text"] = render(b, m, push_files(me, m), images);
       if (const auto it = dialogue_cues.find(jstr(m, "id")); it != dialogue_cues.end())
         item["text"] = jstr(item, "text") + "\n" + it->second;
+      if (jstr(m, "role") == "user")
+        item["text"] = jstr(item, "text") +
+            "\n(Raumzeit beim Lesen: " + clock_label(now_ms()) +
+            "; nur Momentaufnahme der Serveruhr. Bei Bedarf die exakte aktuelle Zeit mit clock_now pruefen.)";
       if (!images.asArr().empty()) item["images"] = images;
       items.push(item);
       if (!eyes)
@@ -4630,7 +4645,9 @@ private:
       for (auto &c : bots.asArr())
         if (jstr(c, "id") == o->id) enabled = jbool(c, "enabled", true);
       if (!enabled) continue;
-      if (o->want && o->reason == "human") continue; // already has to answer Chris
+      if (!o->running.empty() || (o->want && o->reason == "human")) continue;
+      // A human reply already in flight is not a new bot round; never queue a
+      // redundant PASS turn on that busy worker (or on any busy worker).
       if (silenced_.count(o->id)) continue;
       // While a browser goal is open, the other bot gets no automatic turn.
       bool goal_busy = false, owns = false;

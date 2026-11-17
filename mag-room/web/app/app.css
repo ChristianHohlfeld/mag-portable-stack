@@ -848,14 +848,21 @@ article.flash { animation: flash 1.6s ease-out; }
 /* The label sits on the button's middle, not on a baseline pushed down by the height. */
 .m3 .line-acts.go .pill b { line-height: 1; display: block; }
 
-/* Voiceover lives with the original video; on phones controls wrap below it. */
-.voiceover { width: min(100%, 580px); min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+/* One slim, phone-safe row under the same player. Raw lane files and bakes
+   live in the Files gallery instead of multiplying media players. */
+.voiceover { width: min(100%, 580px); min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .voiceover video { display: block; width: 100%; max-height: 60vh; border-radius: 10px; background: #000; }
-.voiceover .voice-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.voiceover .voice-controls select { min-width: 0; max-width: 100%; border: 1px solid var(--line); color: var(--text);
-  background: var(--surface-2); padding: 6px; border-radius: 9px; font-size: 13px; }
-.voiceover .voice-controls button { min-height: 34px; }
-.voiceover .voice-controls button:disabled { opacity: .5; }
-.voiceover .voice-monitor { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
-.voiceover .voice-status { display: block; color: var(--muted); font-size: 12px; }
+.voiceover .voice-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 3px 0; }
+.voiceover .voice-lanes { display: flex; flex: 1 1 auto; gap: 3px; min-width: 0; }
+.voiceover .voice-lanes .pill { flex: 1 1 0; min-width: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.voiceover .voice-controls .pill { padding: 4px 7px; font-size: 12px; min-height: 32px; border-radius: 8px; }
+.voiceover .voice-controls .pill:disabled { opacity: .5; }
+.voiceover .voice-controls .pill.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.voiceover .voice-exports { display: inline-flex; gap: 3px; }
+.voiceover .voice-status { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.voiceover .voice-status:empty { display: none; }
 .voiceover .voice-status.err { color: var(--bad); }
+@media (max-width: 460px) {
+  .voiceover .voice-lanes { flex-basis: 100%; }
+  .voiceover .voice-controls > .pill { flex: 1 0 auto; }
+}

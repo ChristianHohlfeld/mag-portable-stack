@@ -15,7 +15,7 @@ const image = (id, state = 'queued') => message(id, 'service', 'idol', {
   state, model3d: { kind: 'image', state, prompt: 'Sonnenaufgang' }
 });
 const file = (kind, name) => ({ file: name, name, kind, size: 300 });
-const fixture = (messages, mode = null, legacy = false) => {
+const fixture = async (messages, mode = null, legacy = false) => {
   const dom = new JSDOM(read('index.html'), {
     url: 'https://mag.test/', pretendToBeVisual: true, runScripts: 'outside-only'
   });
@@ -48,7 +48,12 @@ const fixture = (messages, mode = null, legacy = false) => {
     throw Error('unexpected request ' + method + ' ' + url);
   };
   w.eval(read('app/messages.js'));
-  d.dispatchEvent(new w.Event('DOMContentLoaded'));
+  // jsdom dispatches DOMContentLoaded itself after parsing. Sending a second
+  // synthetic event registers the toggle handler twice and one click undoes
+  // itself. Wait for the real event, just as a browser would.
+  if (d.readyState === 'loading') {
+    await new Promise(resolve => d.addEventListener('DOMContentLoaded', resolve, { once: true }));
+  }
   w.MAG.connect();
   stream.onopen();
   return { dom, w, d, S: w.MAG.state, push: (event) => stream.push(event) };
@@ -75,7 +80,7 @@ const visible = (w,node) => !!node && !node.hidden && w.getComputedStyle(node).d
   });
   const uploaded = message('000010', 'user', 'chris', { attachments: [file('image','upload.png')] });
   const service = message('000011', 'service', 'idol', { text: 'Hinweis' });
-  const f = fixture([human, lena, noah, queued, running, failed, video, scene, model, uploaded, service]);
+  const f = await fixture([human, lena, noah, queued, running, failed, video, scene, model, uploaded, service]);
   const { d, w, S } = f; await wait();
   const button = d.querySelector('#media-filter');
   assert.equal(button.getAttribute('aria-label'), 'Nur Medien');
@@ -113,7 +118,7 @@ const visible = (w,node) => !!node && !node.hidden && w.getComputedStyle(node).d
   assert.strictEqual(row(d,video.id).querySelector('video'),player);
   f.dom.window.close();
 
-  const g = fixture([human,lena], '1'); await wait();
+  const g = await fixture([human,lena], '1'); await wait();
   assert(g.d.querySelector('#app').classList.contains('media'),
     'filter restored after reload');
   assert.equal(g.d.querySelector('#empty').textContent,'Noch kein Bild, Video oder 3D.');
@@ -126,9 +131,14 @@ const visible = (w,node) => !!node && !node.hidden && w.getComputedStyle(node).d
   assert(visible(g.w,row(g.d,human.id)));
   g.dom.window.close();
 
-  const legacy = fixture([human,lena], '1', true); await wait();
+  const legacy = await fixture([human,lena], '1', true); await wait();
   assert(visible(legacy.w,row(legacy.d,lena.id)),
     'older DOM fixtures without the new button still render normally');
   legacy.dom.window.close();
   console.log('media filter: header toggle, queued/running/error/done jobs, SSE, persistence, player identity and legacy DOM OK');
-})().catch(err=>{console.error(err);process.exitCode=1;});
+})().catch(err=>{
+  console.error(err);
+  // A failed jsdom regression must fail CI immediately, not leave active
+  // handles blocking the next test for twenty minutes.
+  process.exit(1);
+});

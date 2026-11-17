@@ -406,6 +406,32 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.lena.chats(), [])
         self.assertEqual(r.noah.chats(), [])
 
+    def test_short_followup_sees_prior_bot_timestamp_and_recent_chat(self):
+        """Terse user follow-ups have grounded referents even when a bot's
+        older response was the last chat event. No website/task rules."""
+        r = self.room
+        sent = []
+
+        def reply(body):
+            sent.append(body)
+            return "Die erste Aussage." if len(sent) == 1 else "Ich berücksichtige den bisherigen Verlauf."
+
+        r.lena.reply = reply
+        r.say("@Lena Bitte antworte zuerst kurz.")
+        r.idle()
+        r.say("@Lena Überleg bitte nochmal.")
+        r.idle()
+        self.assertEqual(len(sent), 2)
+        prompt = "\\n".join(str(m.get("content", "")) for m in sent[-1]["messages"])
+        self.assertIn("Jüngster Gesprächskontext", prompt)
+        self.assertIn("Chris:", prompt)
+        self.assertIn("Lena: Die erste Aussage.", prompt)
+        # Bot messages get the same day/time source metadata as Chris'
+        # messages, rather than appearing untimed in the prompt.
+        self.assertRegex(prompt, r"\\([A-Za-z]{2} [0-9]{2}\\.[0-9]{2}\\. [0-9]{2}:[0-9]{2}\\)\\nLena:")
+        self.assertIn("Überleg bitte nochmal.", prompt)
+        self.assertNotIn("Über Aktivitäten in der Zwischenzeit", prompt)
+
     def test_named_bot_answers_alone(self):
         r = self.room
         r.say("Lena, wie geht es dir?")

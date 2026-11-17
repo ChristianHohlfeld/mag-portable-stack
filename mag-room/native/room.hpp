@@ -683,6 +683,8 @@ private:
     // know the room is readable, without assuming anyone is online now.
     if (!settings_.find("auto_chat")) settings_["auto_chat"] = false;
     if (!settings_.find("auto_chat_visible")) settings_["auto_chat_visible"] = true;
+    // Optional voluntary PASS in bot-to-bot dialogue (legacy default: on).
+    if (!settings_.find("pass_enabled")) settings_["pass_enabled"] = true;
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");

@@ -4,8 +4,9 @@
 // time) and its append-only prompt log. Rules (AGENTS.md):
 //  - a human message is answered by every addressed bot (all when nobody is
 //    named); a visible bot message may be answered by the other bot;
-//  - PASS is a bot's own, invisible choice; when all bots pass in a row the
-//    room rests; MAG_ROOM_BOT_ROUNDS bounds bot rounds per human message;
+//  - optional PASS is an invisible way to decline a bot-to-bot reply; turning
+//    it off affects only model instructions, never server-side leak filtering;
+//    MAG_ROOM_BOT_ROUNDS bounds bot rounds per conversation;
 //  - new human input and Stop preempt bot rounds at once;
 //  - bots do nothing without a trigger; tool work continues on its own only
 //    after a successful tool result, distinct progress and [[MAG:WEITER]].
@@ -63,6 +64,8 @@ public:
       // How much conversation a bot keeps. Reuse makes a turn cheap, but
       // after a model restart the whole log is evaluated once (CPU: roughly
       // a minute per 4000 tokens), so the budget stays moderate.
+      // Both bots use the same turn engine. Context sizes remain adjustable
+      // per model so resource tuning does not change conversation semantics.
       rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", index == 0 ? 16000 : 12000));
       bots_.push_back(std::move(rt));
       ++index;
@@ -88,6 +91,10 @@ public:
     // restarting the web UI/server must not trigger another expensive CPU chat.
     const std::string last = trim(slurp(room_.cfg.state_dir + "/auto-chat-last"));
     try { auto_last_ms_ = std::stoll(last); } catch (...) { auto_last_ms_ = now_ms(); }
+    // Keep the next starter across room restarts; otherwise every deploy
+    // silently puts the first roster entry (usually Lena) in the lead.
+    const std::string next = trim(slurp(room_.cfg.state_dir + "/auto-chat-next"));
+    try { auto_next_ = (size_t)std::stoull(next); } catch (...) { auto_next_ = 0; }
     for (auto &b : bots_) b->worker = std::thread([this, bot = b.get()] { work(*bot); });
     for (auto &b : bots_)
       if (restoring.count(b->id)) std::thread([this, bot = b->id] { run_restore(bot); }).detach();
@@ -997,7 +1004,10 @@ private:
       available.push_back(b.get());
     }
     if (available.size() < 2 || configured.asArr().size() < 2) return;
-    Bot *starter = available[auto_next_++ % available.size()];
+    const size_t starter_index = auto_next_ % available.size();
+    Bot *starter = available[starter_index];
+    auto_next_ = (starter_index + 1) % available.size();
+    write_atomic(room_.cfg.state_dir + "/auto-chat-next", std::to_string(auto_next_) + "\n", 0600);
     auto_burst_ = true;
     bot_turns_ = 1; // the opening assistant counts toward explicit positive limits
     passes_ = 0;
@@ -1042,7 +1052,7 @@ private:
         " gefragt: Das liest du als Hintergrund, es ist keine Aufgabe für dich und du antwortest nicht darauf.\n"
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt. Jeden Satz schreibst du nur einmal und nur auf Deutsch, auch zwischen Werkzeugschritten; nie eine englische Fassung daneben und nie einen Werkzeugaufruf als JSON in den Text.\n"
         "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
-        "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar.\n"
+        "- Antworte auf Nachrichten, die an dich gerichtet sind. Ob du eine freiwillige Bot-Folgerunde auslassen darfst, legt die jeweilige Raumnotiz zur Runde fest.\n"
         "- Erfinde nichts. Was du nicht weißt oder nicht prüfen konntest, sagst du offen.\n"
         "- Ältere Teile des Gesprächs können aus deinem Kontext entfernt worden sein.\n";
     if (has_vm)
@@ -3182,6 +3192,17 @@ private:
     if (!t.id.empty()) room_.append_text(t.id, text);
   }
 
+  // Plain acknowledgements are not substantive bot contributions. This
+  // detector is shared by the final duplicate guard and PASS-off recovery,
+  // so neither bot can end the dialogue with a disguised PASS.
+  static bool bot_filler_reply(const std::string &norm) {
+    static const std::set<std::string> filler = {
+        "ok", "okay", "alles klar", "verstanden", "danke", "gerne", "gern geschehen",
+        "genau", "stimmt", "einverstanden", "bin bereit", "kein auftrag", "bleibe still",
+        "dem ist nichts hinzuzufügen", "nichts hinzuzufügen"};
+    return filler.count(norm) != 0;
+  }
+
   static std::string strip_markers(std::string text, bool *wants_more = nullptr) {
     if (wants_more) *wants_more = text.find(kContinue) != std::string::npos;
     replace_all(text, kContinue, "");
@@ -3221,6 +3242,7 @@ private:
     // What the plugins take at the head of the prompt is not taken from the conversation.
     const long budget = b.budget + plugins_.weight(me);
     const Val settings = room_.settings();
+    const bool pass_enabled = jbool(settings, "pass_enabled", true);
     ensure_wire(b, me, false);
 
     // Optional observer cue is appended only to autonomous turns, never to
@@ -3235,9 +3257,14 @@ private:
       note = autonomous_round
           ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: " + observer +
             "Antworte dem anderen Bot natürlich, kurz und direkt. Greife seine Frage oder These auf, "
-            "stelle ggf. eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. "
-            "Wenn die Unterhaltung erschöpft ist, PASS.)"
-          : "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)";
+            "stelle ggf. eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. " +
+            std::string(pass_enabled
+                ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
+                : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
+            ")"
+          : pass_enabled
+              ? "(Du wurdest nicht direkt angesprochen. Antworte nur, wenn du etwas Neues beiträgst: Ergänzung, Korrektur, Widerspruch oder Rückfrage. Sonst antworte exakt PASS.)"
+              : "(Du wurdest nicht direkt angesprochen. PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre das Bot-Gespräch mit einer sinnvollen Ergänzung, Korrektur, Gegenposition oder Anschlussfrage fort. Brich es nicht aus eigenem Entschluss ab; wiederhole nichts bloß, um zu antworten.)";
     else if (reason == "continue")
       note = "(Mach mit dem nächsten konkreten Schritt weiter.)";
     if (reason == "autonomous") {
@@ -3247,10 +3274,12 @@ private:
       Val invite = Val::object();
       invite["role"] = "user";
       invite["content"] = "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-          "Der Raum ist ruhig. Wenn du dem anderen Bot etwas Neues oder Interessantes zu sagen hast, "
-          "starte eine natürliche kurze Unterhaltung oder stelle eine konkrete Frage. "
-          "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. "
-          "Wenn dir nichts Sinnvolles einfällt, antworte PASS.)";
+          "Der Raum ist ruhig. Starte mit einem eigenen Gedanken oder einer konkreten Frage an den anderen Bot. "
+          "Keine ausstehenden Aufträge neu ausführen, keine Webseitenaktionen. " +
+          std::string(pass_enabled
+              ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
+              : "PASS und eine eigene Beendigungsentscheidung sind deaktiviert: Beginne und fuehre das Gespräch aktiv mit neuen Gedanken fort; entscheide nicht selbst, es zu beenden.") +
+          ")";
       b.wire["messages"].push(invite);
       b.wire["fresh"] = true;
       save_wire(b);
@@ -3305,6 +3334,7 @@ private:
 
     b.wire["model_since"] = since;
     bool cancelled = false, failed = false, retried = false, rethought = false, nudged = false, dumped = false;
+    bool pass_retried = false; // at most one extra model call if PASS is disabled but still emitted
     std::set<std::string> offered;
     for (auto &def : tools.asArr())
       if (const Val *f = def.find("function")) offered.insert(jstr(*f, "name"));
@@ -3439,7 +3469,11 @@ private:
       };
       cb.on_content = [&](const std::string &d) {
         set_phase(b, "writing");
-        emit_text(b, t, d, name, reason, false);
+        // In PASS-off bot-to-bot turns, validate the completed reply before
+        // exposing it: even "OK", duplicate text, and partial markers can be
+        // voluntary endings. Human answers still stream normally.
+        if (pass_enabled || (reason != "bot" && reason != "autonomous"))
+          emit_text(b, t, d, name, reason, false);
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
       set_phase(b, "reading");
@@ -3609,6 +3643,54 @@ private:
              std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
         continue;
       }
+      // PASS/empty end-markers remain invisible regardless of the setting.
+      // When voluntary ending is OFF, give a bot-to-bot turn one bounded
+      // second attempt rather than silently obeying its attempt to end.
+      // If a model twice refuses to contribute, pause with a visible technical
+      // failure instead of a costly invisible CPU loop.
+      const bool bot_dialogue = reason == "bot" || reason == "autonomous";
+      const std::string candidate = trim(strip_self(strip_markers(res.content), name));
+      const std::string norm_candidate = group_chat::norm_reply(candidate);
+      bool duplicated = false;
+      if (!norm_candidate.empty() && !pass_enabled && bot_dialogue) {
+        std::lock_guard<std::mutex> lk(mu_);
+        duplicated = std::find(b.said.begin(), b.said.end(), norm_candidate) != b.said.end();
+      }
+      const bool voluntary_end = candidate.empty() ||
+          group_chat::is_pass(res.content) || group_chat::leading_pass(res.content) ||
+          group_chat::name_only(candidate, names()) ||
+          bot_filler_reply(norm_candidate) || duplicated;
+      if (!pass_enabled && bot_dialogue && !res.cancelled && !failed &&
+          !driving && !closing && t.steps == 0 && t.id.empty() &&
+          res.calls.empty() && voluntary_end) {
+        t.held.clear();
+        t.tail.clear();
+        t.reasoning = mj::utf8_cut(t.reasoning, thought0);
+        if (pass_retried) {
+          failed = true;
+          error = "Modell lieferte trotz deaktiviertem Gesprächsende erneut nur ein Steuersignal.";
+          logf("engine: " + b.id + " refused a substantive bot reply twice; suspending this turn");
+          emit_text(b, t, "Automatisches Gespräch technisch unterbrochen: Das Modell hat zweimal keinen Gesprächsbeitrag geliefert.", name, reason, true);
+          break;
+        }
+        pass_retried = true;
+        Val correction = Val::object();
+        correction["role"] = "user";
+        correction["content"] = "(Notiz des Raums, nicht von Chris: PASS und eigene Beendigungsentscheidungen "
+                                "sind ausgeschaltet. Deine letzte Ausgabe wurde verworfen. Fahre jetzt mit "
+                                "einem kurzen, eigenständigen Beitrag oder einer Anschlussfrage fort; "
+                                "kein PASS, keine Abschlussmarkierung und keine bloße Wiederholung.)";
+        correction["_turn"] = t.token;
+        b.wire["messages"].push(correction);
+        save_wire(b);
+        logf("engine: " + b.id + " tried to end with PASS/marker while disabled; retrying once");
+        continue;
+      }
+      // Flush only validated conversational content. Keeping it buffered in
+      // PASS-off mode prevents invisible termination attempts from briefly
+      // appearing in the chat before being withdrawn.
+      if (!pass_enabled && bot_dialogue && !res.cancelled && !failed && res.calls.empty())
+        emit_text(b, t, res.content, name, reason, false);
       // Publish completed reasoning only after the token-cap retry decision.
       // Raw streamed partial thoughts are replaced/cleared in the retry path.
       if (!t.id.empty() && t.reasoning.size() != thought0) show_thoughts(t);
@@ -4466,10 +4548,7 @@ private:
       std::lock_guard<std::mutex> lk(mu_);
       repeat = std::find(b.said.begin(), b.said.end(), norm) != b.said.end();
       if (!repeat) b.said.push_back(norm);
-      static const std::set<std::string> filler = {"ok", "okay", "alles klar", "verstanden", "danke", "gerne", "gern geschehen",
-                                                   "genau", "stimmt", "einverstanden", "bin bereit", "kein auftrag", "bleibe still",
-                                                   "dem ist nichts hinzuzufügen", "nichts hinzuzufügen"};
-      if (reason == "bot" && filler.count(norm)) repeat = true;
+      if (reason == "bot" && bot_filler_reply(norm)) repeat = true;
     }
     if (repeat) {
       room_.remove(t.id);

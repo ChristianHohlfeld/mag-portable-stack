@@ -384,6 +384,124 @@ class RoomContract(unittest.TestCase):
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
 
+    def test_pass_toggle_on_keeps_invisible_self_termination(self):
+        r = self.room
+        self.assertTrue(r.state()["settings"]["pass_enabled"])
+        r.lena.reply = lambda body: "Ein erster Gedanke."
+        r.noah.reply = lambda body: "PASS"
+        r.say("Lena, wie geht es dir?")
+        r.idle()
+        self.assertEqual(r.texts("lena"), ["Ein erster Gedanke."])
+        self.assertEqual(r.texts("noah"), [])
+        self.assertEqual(len(r.noah.chats()), 1, "PASS on must not retry")
+        self.assertNotIn("PASS", " ".join(r.texts()))
+
+    def test_pass_toggle_off_retries_bot_reply_and_keeps_controls_hidden(self):
+        r = self.room
+        attempts = [0]
+        r.lena.reply = lambda body: "Ein erster Gedanke."
+
+        def noah(body):
+            attempts[0] += 1
+            return "PASS" if attempts[0] == 1 else "Eine eigenständige Ergänzung."
+
+        r.noah.reply = noah
+        code, settings = r.api("PUT", "/api/settings", {
+            "pass_enabled": False, "bot_rounds": 1})
+        self.assertEqual(code, 200)
+        self.assertFalse(settings["pass_enabled"])
+        self.assertFalse(r.state()["settings"]["pass_enabled"])
+        r.say("Lena, wie geht es dir?")
+        r.idle()
+        self.assertEqual(r.texts("noah"), ["Eine eigenständige Ergänzung."])
+        self.assertEqual(len(r.noah.chats()), 2, "PASS off must ask for a real contribution once")
+        self.assertTrue(any("eigene Beendigungsentscheidungen" in
+                            str(msg.get("content", ""))
+                            for msg in r.noah.chats()[-1]["messages"]))
+        self.assertNotIn("PASS", " ".join(r.texts()))
+        # The setting is durable and can change independently of auto-chat.
+        self.assertFalse(json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) /
+                                    "settings.json").read_text())["pass_enabled"])
+        self.assertTrue(r.api("PUT", "/api/settings", {"pass_enabled": True})[1]["pass_enabled"])
+
+    def test_pass_toggle_off_rejects_end_marker_in_unattended_no_browser_chat(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        self.assertIsNone(r.stream)
+        attempts = {"lena": 0, "noah": 0}
+
+        def respond(bot):
+            def reply(body):
+                attempts[bot] += 1
+                return "[[MAG:ENDE]]" if attempts[bot] == 1 else "Neuer Gedanke von " + bot
+            return reply
+
+        r.lena.reply, r.noah.reply = respond("lena"), respond("noah")
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 2, "pass_enabled": False,
+            "web": False})[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 2,
+               "autonomous bots respond after invalid end markers", 35)
+        r.idle()
+        self.assertEqual(attempts, {"lena": 2, "noah": 2})
+        self.assertEqual(sorted(m["from"] for m in r.messages()), ["lena", "noah"])
+        self.assertNotIn("[[MAG:", " ".join(r.texts()))
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_pass_policy_symmetric_across_bots(self):
+        """Either bot can start and follow up, with identical PASS-off rules.
+        No browser or SSE connection is needed."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        self.assertIsNone(r.stream)
+
+        def make_reply(name):
+            def reply(body):
+                last = str(body["messages"][-1].get("content", ""))
+                self.assertIn("eigene Beendigungsentscheidung", last)
+                self.assertIn("Chris kann alle eure Nachrichten im Raum-Chat lesen", last)
+                return "Ein neuer Gedanke von " + name + "."
+            return reply
+
+        r.lena.reply, r.noah.reply = make_reply("Lena"), make_reply("Noah")
+        settings = {"auto_chat": True, "bot_rounds": 2,
+                    "pass_enabled": False, "auto_chat_visible": True, "web": False}
+        self.assertEqual(r.api("PUT", "/api/settings", settings)[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 2,
+               "first autonomous session with both bots", 35)
+        r.idle()
+        first = [m for m in r.messages() if m["from"] in ("lena", "noah")]
+        self.assertEqual([(m["from"], m["reason"]) for m in first],
+                         [("lena", "autonomous"), ("noah", "bot")])
+
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 4,
+               "second autonomous session with reversed bot order", 35)
+        r.idle()
+        all_bots = [m for m in r.messages() if m["from"] in ("lena", "noah")]
+        self.assertEqual([(m["from"], m["reason"]) for m in all_bots[2:4]],
+                         [("noah", "autonomous"), ("lena", "bot")])
+        self.assertTrue(all("PASS" not in m["text"] for m in all_bots))
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_pass_toggle_off_fails_safely_after_two_passes(self):
+        r = self.room
+        r.lena.reply = lambda body: "Ein erster Gedanke."
+        r.noah.reply = lambda body: "PASS"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "pass_enabled": False, "bot_rounds": 1})[0], 200)
+        r.say("Lena, wie geht es dir?")
+        r.idle()
+        self.assertEqual(len(r.noah.chats()), 2,
+                         "do not spend unlimited CPU attempts on a non-cooperating model")
+        self.assertTrue(any(m["state"] == "error" and "technisch unterbrochen" in m["text"]
+                            for m in r.messages() if m["from"] == "noah"))
+        self.assertNotIn("PASS", " ".join(r.texts()))
+
     def test_autonomous_chat_can_start_without_human_or_browser(self):
         # No SSE socket and no frontend: only the room and its two workers.
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")

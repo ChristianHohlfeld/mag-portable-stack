@@ -140,6 +140,7 @@
     refreshStatus();
     return {
       input, status, resetButton, get: () => input.value,
+      activate: () => { d.repaint = refreshStatus; refreshStatus(); },
       changed: () => d.text !== d.base,
       setOriginal: (text) => {
         const edited = d.text !== d.base;

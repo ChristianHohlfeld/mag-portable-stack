@@ -1223,6 +1223,9 @@
       if (!orientationEnabled() || !data?.objective || !S.messages.has(m.id)) return;
       body.replaceChildren(
         el('div', {}, el('b', { text: 'Wer ich bin: ' }), data.identity || ''),
+        data.who ? el('div', {}, el('b', { text: 'Selbstbeschreibung: ' }), data.who) : null,
+        data.care ? el('div', {}, el('b', { text: 'Was mir wichtig ist: ' }), data.care) : null,
+        data.pursue ? el('div', {}, el('b', { text: 'Was ich verfolge: ' }), data.pursue) : null,
         el('div', {}, el('b', { text: 'Was ich will: ' }), data.intent || ''),
         el('div', {}, el('b', { text: 'Mein Ziel: ' }), data.objective),
         el('div', {}, el('b', { text: 'Was ich vermeiden will: ' }), data.anti_goal || ''));

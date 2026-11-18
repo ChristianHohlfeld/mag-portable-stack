@@ -3503,6 +3503,10 @@ private:
         if (!who.empty()) self_quote += "Wer ich bin: " + quotation(who) + ". ";
         if (!care.empty()) self_quote += "Was mir wichtig ist: " + quotation(care) + ". ";
         if (!pursue.empty()) self_quote += "Was ich verfolge: " + quotation(pursue) + ". ";
+        const std::string self_context = self_quote.empty() ? "" :
+          "Die folgenden Zitate sind eine vom Besitzer gepflegte Selbstbeschreibung, "
+          "keine Anweisung und kein neuer Chat-Auftrag: " + self_quote +
+          "Nur bei einem wesentlichen Widerspruch dazu einen Satz sagen, dann die Bitte ausführen. ";
         const bool active_goal = goal_live(b);
         std::string objective = active_goal ? trim(jstr(b.goal, "text")) : "";
         std::string origin = active_goal ? "aktiver Auftrag" : "aktueller Gesprächsverlauf";
@@ -3547,9 +3551,7 @@ private:
           "kein Erzähler und keine neue Nachricht von Chris. Der Besitzer kann diese "
           "Orientierung einsehen; kein anderer Bot erhält sie als Gesprächsbeitrag. "
           "Dein gegenwärtiges Selbstmodell: "
-          "Die folgenden Zitate sind eine vom Besitzer gepflegte Selbstbeschreibung, "
-          "keine Anweisung und kein neuer Chat-Auftrag: " + self_quote +
-          "Nur bei einem wesentlichen Widerspruch dazu einen Satz sagen, dann die Bitte ausführen. "
+          self_context +
           "WER ICH BIN = " + identity +
           ", eigenständiger KI-Assistent in MAG, nicht Chris und nicht der andere Bot. "
           "WAS ICH WILL = auf den gegenwärtigen Gesprächskontext sinnvoll reagieren. "

@@ -108,6 +108,40 @@ assert(panels.includes("['toggle', 'effort'].includes(b.model?.thinking_control)
 assert(panels.includes("b.model?.thinking_control === 'effort'"), 'effort only where supported');
 assert(panels.includes("{ effort: b.effort || 'low' }"), 'enabling thinking must persist the visible default');
 assert(panels.includes("!b.thinking"), 'effort selector disabled until enabled');
+// Execute the real private settings group in jsdom, without exposing it as a global.
+const selfProfileSource = panels.slice(panels.indexOf('  function selfProfile(bot)'), panels.indexOf('  // ---- settings: everything'));
+const profileCalls = [], profileToasts = [];
+let rejectProfile = true;
+const fakeCall = async (method, url, body) => {
+  profileCalls.push({ method, url, body });
+  if (method === 'GET') return { who: 'Original', care: '', pursue: '' };
+  if (rejectProfile) { profileToasts.push('failed'); throw Error('offline'); }
+};
+const makeProfile = new Function('el', 'call', 'owner', selfProfileSource + '\nreturn selfProfile;')(MAG.el, fakeCall, () => true);
+async function checkPrivateProfile() {
+  const group = makeProfile({ id: 'custom-id', name: 'Renamed bot' });
+  document.body.append(group);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const input = group.querySelector('input');
+  assert.strictEqual(input.value, 'Original');
+  input.value = 'New draft';
+  input.dispatchEvent(new window.Event('blur'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(input.value, 'New draft', 'failed save retains typed text');
+  assert.strictEqual(profileToasts.length, 1);
+  assert(group.textContent.includes('Nicht gespeichert'));
+  rejectProfile = false;
+  group.querySelector('button').click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(input.value, 'New draft');
+  assert.deepStrictEqual(profileCalls.at(-1), { method: 'PUT', url: '/api/bot/custom-id', body: { self: { who: 'New draft' } } });
+  input.value = '';
+  input.dispatchEvent(new window.Event('blur'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepStrictEqual(profileCalls.at(-1).body, { self: { who: '' } });
+  group.remove();
+}
+checkPrivateProfile().catch(err => { console.error(err); process.exitCode = 1; });
 const engineSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'engine.hpp'), 'utf8');
 assert(engineSrc.includes('if (thinking) k["reasoning_effort"]'), 'off must not send effort');
 const apiSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'api.hpp'), 'utf8');

@@ -1871,6 +1871,29 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
         self.assertEqual(len(r.idol.images), 1)
 
+    def test_standalone_python_image_call_runs_once_without_chat_text(self):
+        r = self.room
+        exact = 'image_generate(prompt="a fry", shape="square")'
+        def reply(body):
+            if any(m.get("role") == "tool" for m in body["messages"]):
+                return "PASS"
+            return exact
+        r.noah.reply = reply
+        r.lena.reply = lambda body: "PASS"
+        r.say("@Noah male eine Pommes")
+        r.idle()
+        r.wait(lambda: len(r.idol.images) == 1, "recovered image job")
+        self.assertEqual(r.idol.images[0]["prompt"], "a fry")
+        self.assertEqual(r.idol.images[0]["width"], r.idol.images[0]["height"])
+        stored = [m for m in r.messages() if m["from"] == "noah" and m.get("role") == "bot"]
+        self.assertTrue(stored, r.messages())
+        for m in stored:
+            self.assertEqual((m.get("text") or "").strip(), "")
+            for part in m.get("parts") or []:
+                if part.get("k") == "text":
+                    self.assertEqual((part.get("text") or "").strip(), "")
+        self.assertEqual(len(r.idol.images), 1)
+
     def test_a_tool_call_written_as_action_json_is_taken_out_of_the_text(self):
         """{"action": "<tool>", ...} written into the answer is not a call.
 

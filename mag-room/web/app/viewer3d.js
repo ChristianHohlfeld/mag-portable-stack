@@ -9,8 +9,8 @@
   const { MAG } = window;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  async function load(url) {
-    const res = await fetch(url, { credentials: 'same-origin' });
+  async function load(url, signal) {
+    const res = await fetch(url, { credentials: 'same-origin', signal });
     if (!res.ok) throw new Error('Modell nicht ladbar (' + res.status + ')');
     const buffer = await res.arrayBuffer(), view = new DataView(buffer);
     if (view.getUint32(0, true) !== 0x46546c67) throw new Error('Keine GLB-Datei');
@@ -45,6 +45,10 @@
       return pictures.get(index);
     };
 
+    // If the canvas disappears during asynchronous bitmap decoding, close
+    // every bitmap that this load produced, including ones still in flight.
+    const closePictures = () => { for (const bitmap of pictures.values()) bitmap.then(b => b?.close(), () => {}); };
+    try {
     // The nodes of the scene, parents before their children.
     const nodes = (json.nodes || []).map((n) => ({ t: n.translation || [0, 0, 0], r: n.rotation || [0, 0, 0, 1], s: n.scale || [1, 1, 1],
       fixed: n.matrix ? new Float32Array(n.matrix) : null, parent: -1, kids: n.children || [], mesh: n.mesh, skin: n.skin, moves: false }));
@@ -111,7 +115,9 @@
     for (const index of order) if (nodes[index].parent >= 0 && nodes[nodes[index].parent].moves) nodes[index].moves = true;
     // How the scene wants to be seen (a camera move its maker asked for): orbit, high, low, wide, close.
     const shot = String(json.scenes?.[json.scene ?? 0]?.extras?.mag_camera || '');
-    return { nodes, order, draws, clips, duration, shot };
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    return { nodes, order, draws, clips, duration, shot, closePictures };
+    } catch (err) { closePictures(); throw err; }
   }
 
   // 4x4 matrices, column-major like WebGL.
@@ -136,11 +142,33 @@
   // A model turns slowly until the first touch; a scene plays instead. In the
   // timeline a finger turns sideways and the page still scrolls; fullscreen
   // gives every axis, pinch zoom and two-finger pan.
-  function start(canvas, scene) {
+  function start(canvas, scene, record) {
     const gl = canvas.getContext('webgl2', { antialias: true, alpha: true });
     if (!gl) throw new Error('WebGL2 fehlt auf diesem Gerät');
-    const compile = (type, code) => { const s = gl.createShader(type); gl.shaderSource(s, code); gl.compileShader(s); return s; };
-    const program = gl.createProgram();
+    // Own every GPU resource from its creation, including partial shader/
+    // upload failures. On ordinary disposal explicitly lose the context.
+    const shaders = [], buffers = [], vaos = [], textures = new Map(), cleanup = [];
+    let disposed = false, program = null;
+    const dispose = (force = true) => {
+      if (disposed) return;
+      disposed = true;
+      for (const fn of cleanup.splice(0).reverse()) fn();
+      delete canvas._viewer;
+      for (const vao of vaos) gl.deleteVertexArray(vao);
+      for (const buffer of buffers) gl.deleteBuffer(buffer);
+      for (const tex of textures.values()) gl.deleteTexture(tex);
+      if (program) gl.deleteProgram(program);
+      for (const shader of shaders) gl.deleteShader(shader);
+      textures.clear();
+      if (force) gl.getExtension('WEBGL_lose_context')?.loseContext();
+    };
+    record.release = dispose;
+    const compile = (type, code) => {
+      const shader = gl.createShader(type); shaders.push(shader);
+      gl.shaderSource(shader, code); gl.compileShader(shader); return shader;
+    };
+    const buffer = () => { const made = gl.createBuffer(); buffers.push(made); return made; };
+    program = gl.createProgram();
     gl.attachShader(program, compile(gl.VERTEX_SHADER,
       '#version 300 es\nin vec3 p;in vec3 c;in vec2 t;in vec4 j;in vec4 g;out vec3 vc;out vec2 vt;out vec3 vp;out vec3 vw;uniform mat4 wm;uniform mat4 vm;uniform mat4 pr;' +
       'uniform bool skinned;uniform mat4 bones[' + BONES + '];' +
@@ -162,10 +190,10 @@
     const uniform = (name) => gl.getUniformLocation(program, name);
     const uWm = uniform('wm'), uVm = uniform('vm'), uPr = uniform('pr'), uTex = uniform('useTex'), uTint = uniform('tint'), uBlobs = uniform('blobs'), uBlob = uniform('blob'), uAxes = uniform('axes'), uSkinned = uniform('skinned'), uBones = uniform('bones');
     gl.uniform1i(uniform('base'), 0);
-    const textures = new Map(); // bitmap -> texture
     const texture = (image) => {
       if (textures.has(image)) return textures.get(image);
       const made = gl.createTexture();
+      textures.set(image, made);
       gl.bindTexture(gl.TEXTURE_2D, made);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -173,16 +201,16 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.generateMipmap(gl.TEXTURE_2D);
-      textures.set(image, made);
       return made;
     };
     const items = scene.draws.map((mesh) => {
       const vao = gl.createVertexArray();
+      vaos.push(vao);
       gl.bindVertexArray(vao);
       const attribute = (name, values, size) => {
         const loc = gl.getAttribLocation(program, name);
         if (loc < 0) return;
-        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer());
         gl.bufferData(gl.ARRAY_BUFFER, values, gl.STATIC_DRAW);
         gl.enableVertexAttribArray(loc);
         gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
@@ -193,7 +221,7 @@
       if (mesh.skin) { attribute('j', mesh.skin.bones, 4); attribute('g', mesh.skin.weights, 4); }
       let count = mesh.pos.length / 3;
       if (mesh.indices) {
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer());
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
         count = mesh.indices.length;
       }
@@ -306,6 +334,7 @@
     const rest = 0.9; // the last picture stays for a moment before the film starts again
 
     function draw() {
+      if (disposed || lost || !canvas.isConnected) return;
       const rect = canvas.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
       const w = clamp(Math.round((rect.width || 600) * dpr), 1, 2600), h = clamp(Math.round((rect.height || 400) * dpr), 1, 2600);
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
@@ -379,7 +408,7 @@
     // Draws while something moves; otherwise the viewer is idle.
     function tick(now) {
       frame = 0;
-      if (lost) return;
+      if (disposed || lost || !canvas.isConnected) return;
       const dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016);
       last = now;
       const held = pointers.size > 0;
@@ -397,7 +426,7 @@
       if (visible && (held || playing || spin || velYaw || velPitch)) wake();
       else last = 0;
     }
-    function wake() { if (!frame && !lost) frame = requestAnimationFrame(tick); }
+    function wake() { if (!disposed && !frame && !lost && canvas.isConnected) frame = requestAnimationFrame(tick); }
     const show = () => stage()?.classList.toggle('paused', playable && !playing);
     const reset = () => { Object.assign(cam, home); velYaw = velPitch = 0; spin = turn; if (playable) { clock = 0; playing = true; show(); } wake(); };
     // Play or pause; at the end of the film "play" starts it again.
@@ -478,72 +507,169 @@
     };
     canvas.onpointerup = canvas.onpointercancel = canvas.onlostpointercapture = end;
     // The wheel zooms in fullscreen; in the timeline it scrolls the chat.
-    canvas.addEventListener('wheel', (e) => {
+    const wheel = (e) => {
       if (!free()) return;
       e.preventDefault();
       cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * 0.0012), 0.25, 4);
       wake();
-    }, { passive: false });
-    new ResizeObserver(() => { draw(); }).observe(canvas);
-    if ('IntersectionObserver' in window) new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (visible) wake(); }).observe(canvas);
-    canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; });
-    canvas.addEventListener('webglcontextrestored', () => MAG.viewer3d.attach(canvas, canvas.dataset.url, true));
+    };
+    canvas.addEventListener('wheel', wheel, { passive: false });
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(draw);
+    resize?.observe(canvas);
+    const intersection = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+      if (disposed) return;
+      visible = entries[entries.length - 1].isIntersecting;
+      if (visible) wake();
+    }) : null;
+    intersection?.observe(canvas);
+    const onLost = (e) => {
+      e.preventDefault(); lost = true;
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0; last = 0;
+    };
+    const onRestored = () => {
+      if (disposed || !canvas.isConnected || records.get(canvas) !== record) return;
+      // A browser-driven restoration rebuilds exactly one renderer. The
+      // old listeners/objects are removed before new ones are installed.
+      dispose(false);
+      try { start(canvas, scene, record); }
+      catch (err) { fail(canvas, record, err); }
+    };
+    canvas.addEventListener('webglcontextlost', onLost);
+    canvas.addEventListener('webglcontextrestored', onRestored);
+    cleanup.push(() => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      resize?.disconnect();
+      intersection?.disconnect();
+      canvas.removeEventListener('wheel', wheel);
+      canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
+      for (const id of pointers.keys()) {
+        try { canvas.releasePointerCapture(id); } catch {}
+      }
+      pointers.clear();
+      canvas.onpointerdown = canvas.onpointermove = canvas.onpointerup =
+        canvas.onpointercancel = canvas.onlostpointercapture = null;
+    });
     // Where the film is (seconds), for the voices that follow it.
     const state = () => ({ time: playable ? clock % (scene.duration + rest) : 0, duration: scene.duration, playing: playable && playing });
-    canvas._viewer = { reset, toggle, state };
+    canvas._viewer = { reset, toggle, state, dispose: () => drop(canvas) };
     stage()?.classList.add('ready');
     stage()?.classList.toggle('film', playable);
     show();
     wake();
   }
 
-  // Loads the model when its canvas scrolls into view, not before.
+  // Every attached canvas owns exactly one pending load or live renderer.
+  // DOM removal also catches sheet close, chat reset, filter rerenders and
+  // replacements outside this module. A synchronous DOM move is not removal.
+  const records = new Map();
   const watcher = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       watcher.unobserve(entry.target);
-      boot(entry.target);
+      const record = records.get(entry.target);
+      if (record) boot(entry.target, record);
     }
   }, { rootMargin: '300px' }) : null;
-  async function boot(canvas) {
+  function drop(canvas) {
+    watcher?.unobserve(canvas);
+    const record = records.get(canvas);
+    if (!record) return;
+    records.delete(canvas);
+    record.controller.abort();
+    record.stage?._viewerFullscreenLeave?.();
+    record.release?.();
+    record.scene?.closePictures();
+    canvas.dispatchEvent(new Event('magviewerdispose'));
+  }
+  function fail(canvas, record, err) {
+    if (records.get(canvas) !== record) return;
+    const stage = canvas.closest('.stage');
+    drop(canvas);
+    if (!canvas.isConnected) return;
+    stage?.classList.add('ready');
+    canvas.replaceWith(MAG.el('div', { class: 'note err', text: '3D-Vorschau: ' + err.message }));
+  }
+  async function boot(canvas, record) {
+    if (records.get(canvas) !== record || record.loading || record.release) return;
+    if (!canvas.isConnected) return drop(canvas);
+    record.loading = true;
     try {
-      start(canvas, await load(canvas.dataset.url));
+      const scene = await load(record.url, record.controller.signal);
+      if (records.get(canvas) !== record || !canvas.isConnected) {
+        scene.closePictures();
+        if (records.get(canvas) === record) drop(canvas);
+        return;
+      }
+      record.scene = scene;
+      start(canvas, scene, record);
     } catch (err) {
-      canvas.closest('.stage')?.classList.add('ready');
-      canvas.replaceWith(MAG.el('div', { class: 'note err', text: '3D-Vorschau: ' + err.message }));
-    }
+      if (!record.controller.signal.aborted) fail(canvas, record, err);
+    } finally { record.loading = false; }
+  }
+  const sweep = () => {
+    for (const canvas of records.keys()) if (!canvas.isConnected) drop(canvas);
+  };
+  if ('MutationObserver' in window) {
+    new MutationObserver(sweep).observe(document.documentElement, { childList: true, subtree: true });
   }
 
   MAG.viewer3d = {
     reset(canvas) { canvas._viewer?.reset(); },
     toggle(canvas) { canvas._viewer?.toggle(); },
     attach(canvas, url, now) {
+      const prior = records.get(canvas);
+      if (prior?.url === url) return;
+      if (prior) drop(canvas);
       canvas.dataset.url = url;
-      if (now || !watcher) boot(canvas);
-      else watcher.observe(canvas);
+      const record = { url, controller: new AbortController(), stage: canvas.closest('.stage'), loading: false };
+      records.set(canvas, record);
+      // Chat cards call attach while assembling their DOM subtree. Let the
+      // caller insert it before observing or opening a WebGL context.
+      queueMicrotask(() => {
+        if (records.get(canvas) !== record) return;
+        if (!canvas.isConnected) return drop(canvas);
+        record.stage = canvas.closest('.stage');
+        if (now || !watcher) boot(canvas, record);
+        else watcher.observe(canvas);
+      });
     },
-    // A canvas that never made it into the page.
-    drop(canvas) { watcher?.unobserve(canvas); },
+    drop,
     // Fullscreen: the native API where it exists, a fixed overlay elsewhere
     // (iOS Safari). The back gesture closes it.
     fullscreen(stage) {
-      const on = !stage.classList.contains('fs');
+      if (stage._viewerFullscreenLeave) {
+        if (history.state?.mag3d) history.back(); else stage._viewerFullscreenLeave();
+        return;
+      }
       const leave = () => {
+        if (stage._viewerFullscreenLeave !== leave) return;
+        delete stage._viewerFullscreenLeave;
         stage.classList.remove('fs');
         document.body.style.overflow = '';
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         window.removeEventListener('popstate', leave);
         document.removeEventListener('keydown', key);
+        stage.removeEventListener('fullscreenchange', changed);
+        if (document.fullscreenElement === stage) document.exitFullscreen?.().catch(() => {});
+        if (history.state?.mag3d) {
+          const state = { ...history.state }; delete state.mag3d;
+          history.replaceState(state, '');
+        }
       };
       const key = (e) => e.key === 'Escape' && (history.state?.mag3d ? history.back() : leave());
-      if (!on) return history.state?.mag3d ? history.back() : leave();
+      const changed = () => {
+        if (!document.fullscreenElement && stage.classList.contains('fs') && history.state?.mag3d) history.back();
+      };
+      stage._viewerFullscreenLeave = leave;
       stage.classList.add('fs');
       document.body.style.overflow = 'hidden';
       stage.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => {});
       history.pushState({ mag3d: true }, '');
       window.addEventListener('popstate', leave);
       document.addEventListener('keydown', key);
-      stage.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && stage.classList.contains('fs') && history.state?.mag3d) history.back(); }, { once: true });
+      stage.addEventListener('fullscreenchange', changed);
     },
   };
 })();

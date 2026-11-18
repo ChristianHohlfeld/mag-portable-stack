@@ -1050,6 +1050,56 @@ class RoomContract(unittest.TestCase):
         self.assertEqual("".join(e["text"] for e in deltas if e["part"] == 0), "Ich merke mir das.")
         self.assertEqual([e["seq"] for e in r.events], sorted(e["seq"] for e in r.events))
 
+    def test_private_self_profile_is_partial_persistent_and_request_local(self):
+        r = self.room
+        base = "/api/bot/lena"
+        empty = {"who": "", "care": "", "pursue": ""}
+        self.assertEqual(r.api("GET", base + "/self"), (200, empty))
+        self.assertEqual(r.api("PUT", base, {"self": {"who": "  private-identity\nmarker  ", "care": "private-care-marker", "pursue": "private-pursuit-marker"}})[0], 200)
+        profile = {"who": "private-identity marker", "care": "private-care-marker", "pursue": "private-pursuit-marker"}
+        self.assertEqual(r.api("GET", base + "/self"), (200, profile))
+        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, empty))
+        self.assertEqual(r.api("PUT", base, {"self": {"care": 123}})[0], 400)
+        self.assertEqual(r.api("GET", base + "/self"), (200, profile))
+        self.assertTrue(all("self" not in bot for bot in r.state()["bots"]))
+        r.wait(lambda: any(e["t"] == "bots" for e in r.events), "bots event")
+        self.assertTrue(all("self" not in bot for e in r.events if e["t"] == "bots" for bot in e["bots"]))
+        r.lena.reply = lambda body: "Eine Antwort."
+        r.noah.reply = lambda body: "Eine andere Antwort."
+        r.say("@Lena kurze Antwort bitte")
+        r.idle()
+        messages = r.lena.chats()[-1]["messages"]
+        cue = [m for m in messages if isinstance(m.get("content"), str) and "PRIVATE SELBSTORIENTIERUNG" in m["content"]]
+        self.assertEqual(len(cue), 1)
+        for value in profile.values():
+            self.assertIn(value, cue[0]["content"])
+        self.assertNotIn("private-care-marker", json.dumps(messages[:-1]))
+        visible = [m for m in r.messages() if m["from"] == "lena"][-1]
+        sidecar = r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]
+        self.assertEqual(sidecar["self"], profile)
+        r.say("@Noah kurze Antwort bitte")
+        r.idle()
+        self.assertNotIn("private-care-marker", json.dumps(r.noah.chats()[-1]["messages"]))
+        self.assertNotIn("private-care-marker", (r.tmp / "state" / "wire" / "lena.json").read_text())
+        self.assertEqual(r.api("PUT", base, {"self": {"care": ""}})[0], 200)
+        profile["care"] = ""
+        self.assertEqual(r.api("GET", base + "/self"), (200, profile))
+        saved = json.loads((r.tmp / "state" / "bots.json").read_text())
+        self.assertEqual(next(b for b in saved if b["id"] == "lena")["self"], profile)
+        r.say("@Lena noch eine kurze Antwort")
+        r.idle()
+        self.assertNotIn("private-care-marker", json.dumps(r.lena.chats()[-1]["messages"]))
+        self.assertIn("private-pursuit-marker", json.dumps(r.lena.chats()[-1]["messages"]))
+        self.assertEqual(r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]["self"]["care"], "private-care-marker")
+
+    def test_private_self_profile_rejects_local_non_owner(self):
+        r = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
+        self.addCleanup(r.close)
+        self.assertEqual(r.state()["you"]["role"], "local")
+        self.assertEqual(r.api("GET", "/api/bot/lena/self")[0], 403)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"who": "not allowed"}})[0], 403)
+        self.assertTrue(all("self" not in bot for bot in r.state()["bots"]))
+
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room
         lena = "/api/bot/lena/memory"

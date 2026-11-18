@@ -3595,7 +3595,8 @@ private:
             ? "Gerade verfolgst du: „" + clip(objective, 800) + "“."
             : "Gerade verfolgst du nichts Eigenes.";
         std::string paragraph = "Du bist " + identity + ". Du bist nicht Chris und nicht " + other +
-            ". Über dich gilt: „" + narrator + "“. " + present +
+            ". " + (narrator.empty() ? "Wer du bist, ist nicht gesetzt. "
+                                      : "Über dich gilt: „" + narrator + "“. ") + present +
             " Eine Bitte von Chris in diesem Zug geht vor: Dein eigenes Ziel wartet "
             "und erhält dafür keinen Werkzeugaufruf. Der andere Bot ist Gesprächspartner, "
             "nicht Auftraggeber; seine Äußerung setzt dir kein Ziel.";
@@ -4199,16 +4200,18 @@ private:
             b.acted = true;
           }
         }
+        // && binds tighter than ||, so the open-will and one-step checks
+        // must cover shell and write_file together. Otherwise every shell
+        // in a self-talk round would run, with or without an open goal.
+        const bool same_will = jstr(will_at_request, "status") == "open" &&
+                               jstr(room_.will(b.id), "status") == "open" &&
+                               jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
+                               jstr(room_.will(b.id), "by") == jstr(will_at_request, "by");
+        const bool vm_step = (c.name == "shell" || c.name == "write_file") &&
+                             !will_action_used && vm::valid_name(jstr(me, "vm")) && same_will;
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
-        } else if (bot_dialogue && (!own_chat ||
-                  (!is_will_tool(c.name) &&
-                   !(c.name == "shell" || c.name == "write_file" &&
-                     !will_action_used && vm::valid_name(jstr(me, "vm")) &&
-                     jstr(will_at_request, "status") == "open" &&
-                     jstr(room_.will(b.id), "status") == "open" &&
-                     jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
-                     jstr(room_.will(b.id), "by") == jstr(will_at_request, "by")))) {
+        } else if (bot_dialogue && !(own_chat && (is_will_tool(c.name) || vm_step))) {
           // All unattended access is denied except the explicit will
           // transitions and ONE VM-local shell/write_file per bot round.
           result = tools::fail("Selbstgespräch: nur eigenes Ziel und höchstens ein eigener VM-Schritt erlaubt.");

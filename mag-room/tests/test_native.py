@@ -674,7 +674,7 @@ class RoomContract(unittest.TestCase):
                              for m in r.messages()
                              for p in m.get("parts", [])),
                          "no unattended tool action can reach room history")
-        self.assertTrue(any("Werkzeuge sind in diesem eigenständigen Bot-Dialog" in
+        self.assertTrue(any("Dieser Werkzeugaufruf ist im Bot-Gespräch" in
                             str(msg.get("content", "")) for req in r.lena.chats()
                             for msg in req["messages"]),
                         "one corrected request must have a grounded no-tool instruction; last requests=" +

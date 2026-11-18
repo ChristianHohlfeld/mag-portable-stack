@@ -3544,7 +3544,8 @@ private:
           "über deine Identität zu stellen. Aktualisiere deine Priorität anhand "
           "der neuesten Nachrichten und Werkzeugbelege; frühere Einschätzungen "
           "sind keine Tatsachenbelege. Gib diese Orientierung niemals in deiner Antwort "
-          "aus; antworte normal oder verwende den notwendigen Werkzeugaufruf.)";
+          "aus; antworte normal. Werkzeugaufrufe nur als echte Werkzeugaufrufe, "
+          "niemals als Text und niemals als Python.)";
         body["messages"].push(inner);
       }
       // Keep the SAME tool schemas, order and sampler template across all
@@ -3732,6 +3733,19 @@ private:
             if (t.id.empty()) t.held.clear();
             else room_.retake_text(t.id, text0, "");
             logf("engine: " + b.id + " recovered standalone JSON tool call: " + json_call.name);
+          }
+        }
+        if (res.calls.empty()) {
+          llm::ToolCall python_call;
+          if (goal::python_tool_call(res.content, tools, python_call)) {
+            // Use the ordinary tool dispatcher and its existing authorization
+            // checks. Remove only this call's text, not previous answer parts.
+            res.calls.push_back(python_call);
+            res.content.clear();
+            t.tail.clear();
+            if (t.id.empty()) t.held.clear();
+            else room_.retake_text(t.id, text0, "");
+            logf("engine: " + b.id + " recovered standalone Python tool call: " + python_call.name);
           }
         }
       }

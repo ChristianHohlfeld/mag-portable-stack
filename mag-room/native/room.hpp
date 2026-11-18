@@ -771,6 +771,9 @@ private:
     // Optional voluntary PASS in bot-to-bot dialogue (legacy default: on).
     if (!settings_.find("pass_enabled")) settings_["pass_enabled"] = true;
     if (!settings_.find("show_self_orientation")) settings_["show_self_orientation"] = false;
+    // The will line in the chat is owner display only. Missing means visible,
+    // so an older "Gedanken" flag that defaulted to off does not hide it.
+    if (!settings_.find("show_will_line")) settings_["show_will_line"] = true;
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");

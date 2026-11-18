@@ -1099,6 +1099,174 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("POST", "/api/stop", {"bot": "lena"})[0], 200)
         self.assertEqual(r.api("GET", base)[1]["status"], "none")
 
+    def test_narrator_and_will_stay_with_their_own_bot(self):
+        """Blake's narrator, goal and will file never enter Noah's prompt, and the reverse.
+        The owner-only orientation line is not a room message."""
+        r = self.room
+        lena_narr, noah_narr = "LENA-ERZAEHLER-NUR-FUER-LENA", "NOAH-ERZAEHLER-NUR-FUER-NOAH"
+        lena_goal, noah_goal = "LENA-ZIEL-NUR-FUER-LENA", "NOAH-ZIEL-NUR-FUER-NOAH"
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": lena_narr}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"self": {"narrator": noah_narr}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/lena/will", {"text": lena_goal, "done_when": "lena fertig"})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/noah/will", {"text": noah_goal, "done_when": "noah fertig"})[0], 200)
+        r.lena.reply = lambda body: "Lena spricht nur ihren Satz."
+        r.noah.reply = lambda body: "Noah spricht nur seinen Satz."
+        r.say("@Lena bitte kurz")
+        r.idle()
+        r.say("@Noah bitte kurz")
+        r.idle()
+        lena_prompt = json.dumps(r.lena.chats(), ensure_ascii=False)
+        noah_prompt = json.dumps(r.noah.chats(), ensure_ascii=False)
+        self.assertIn(lena_narr, lena_prompt)
+        self.assertIn(lena_goal, lena_prompt)
+        self.assertNotIn(noah_narr, lena_prompt)
+        self.assertNotIn(noah_goal, lena_prompt)
+        self.assertIn(noah_narr, noah_prompt)
+        self.assertIn(noah_goal, noah_prompt)
+        self.assertNotIn(lena_narr, noah_prompt)
+        self.assertNotIn(lena_goal, noah_prompt)
+        shared = json.dumps(r.messages(), ensure_ascii=False)
+        for secret in (lena_narr, noah_narr, lena_goal, noah_goal, "PRIVATE SELBSTORIENTIERUNG"):
+            self.assertNotIn(secret, shared)
+        wires = r.tmp / "state" / "wire"
+        lena_wire, noah_wire = (wires / "lena.json").read_text(), (wires / "noah.json").read_text()
+        self.assertNotIn(noah_narr, lena_wire)
+        self.assertNotIn(noah_goal, lena_wire)
+        self.assertNotIn(lena_narr, lena_wire)
+        self.assertNotIn(lena_narr, noah_wire)
+        self.assertNotIn(lena_goal, noah_wire)
+        self.assertNotIn(noah_narr, noah_wire)
+        lena_will = json.loads((r.tmp / "state" / "will" / "lena.json").read_text())
+        noah_will = json.loads((r.tmp / "state" / "will" / "noah.json").read_text())
+        self.assertEqual(lena_will["text"], lena_goal)
+        self.assertEqual(noah_will["text"], noah_goal)
+        self.assertNotIn(noah_goal, json.dumps(lena_will))
+        self.assertNotIn(lena_goal, json.dumps(noah_will))
+
+    def test_self_talk_steps_and_will_tools_stay_with_their_bot(self):
+        """A self-talk round may run will_* and one VM step only on the caller's id.
+        The other bot's later prompt, including the shared timeline, never receives
+        the narrator, the goal, the step or the owner will line."""
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        r.stop()
+        bots = json.loads((r.tmp / "state" / "bots.json").read_text())
+        for bot in bots:
+            if bot["id"] == "noah":
+                bot["vm"] = "agent2"
+        (r.tmp / "state" / "bots.json").write_text(json.dumps(bots))
+        r.start()
+        lena_narr, noah_narr = "LENA-ERZAEHLER-NUR-FUER-LENA", "NOAH-ERZAEHLER-NUR-FUER-NOAH"
+        lena_goal, noah_goal = "LENA-ZIEL-NUR-FUER-LENA", "NOAH-ZIEL-NUR-FUER-NOAH"
+        lena_note, noah_note = "LENA-FORTSCHRITT-NUR-FUER-LENA", "NOAH-FORTSCHRITT-NUR-FUER-NOAH"
+        lena_file, noah_file = "LENA-DATEI-NUR-FUER-LENA", "NOAH-DATEI-NUR-FUER-NOAH"
+        secrets = (lena_narr, noah_narr, lena_goal, noah_goal, lena_note, noah_note,
+                   lena_file, noah_file, "PRIVATE SELBSTORIENTIERUNG", "Wille ·")
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": lena_narr}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"self": {"narrator": noah_narr}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/lena/will", {"text": lena_goal, "done_when": "lena fertig"})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/noah/will", {"text": noah_goal, "done_when": "noah fertig"})[0], 200)
+
+        def scripted(steps, spoken):
+            planned = iter(steps + [spoken])
+
+            def reply(body):
+                try:
+                    return next(planned)
+                except StopIteration:
+                    return "PASS"
+            return reply
+
+        def call(name, arguments):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": arguments}]}
+
+        r.lena.reply = scripted([
+            call("will_progress", {"progress": lena_note}),
+            call("write_file", {"path": "lena-only.txt", "content": lena_file}),
+        ], "Lena sagt nur ihren Satz.")
+        r.noah.reply = scripted([
+            call("will_progress", {"progress": noah_note}),
+            call("write_file", {"path": "noah-only.txt", "content": noah_file}),
+        ], "Noah sagt nur seinen Satz.")
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": True, "web": False})[0], 200)
+        r.wait(lambda: r.api("GET", "/api/bot/lena/will")[1]["steps"] >= 1 and
+               r.api("GET", "/api/bot/noah/will")[1]["steps"] >= 1,
+               "beide eigenen VM-Schritte", 35)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+        lena_prompt = json.dumps(r.lena.chats(), ensure_ascii=False)
+        noah_prompt = json.dumps(r.noah.chats(), ensure_ascii=False)
+        for own, foreign in ((lena_prompt, (noah_narr, noah_goal, noah_note, noah_file)),
+                             (noah_prompt, (lena_narr, lena_goal, lena_note, lena_file))):
+            for marker in foreign:
+                self.assertNotIn(marker, own)
+        self.assertIn(lena_narr, lena_prompt)
+        self.assertIn(lena_goal, lena_prompt)
+        self.assertIn(lena_note, lena_prompt)
+        self.assertIn(lena_file, lena_prompt)
+        self.assertIn(noah_narr, noah_prompt)
+        self.assertIn(noah_goal, noah_prompt)
+        self.assertIn(noah_note, noah_prompt)
+        self.assertIn(noah_file, noah_prompt)
+        self.assertNotIn("Wille ·", lena_prompt)
+        self.assertNotIn("Wille ·", noah_prompt)
+        shared_text = "\n".join(m.get("text", "") for m in r.messages())
+        for secret in secrets:
+            self.assertNotIn(secret, shared_text)
+        lena_will = json.loads((r.tmp / "state" / "will" / "lena.json").read_text())
+        noah_will = json.loads((r.tmp / "state" / "will" / "noah.json").read_text())
+        self.assertEqual(lena_will["text"], lena_goal)
+        self.assertEqual(noah_will["text"], noah_goal)
+        self.assertEqual(lena_will["last_tool"], "write_file")
+        self.assertEqual(noah_will["last_tool"], "write_file")
+        self.assertNotIn(noah_goal, json.dumps(lena_will))
+        self.assertNotIn(noah_note, json.dumps(lena_will))
+        self.assertNotIn(noah_file, json.dumps(lena_will))
+        self.assertNotIn(lena_goal, json.dumps(noah_will))
+        self.assertNotIn(lena_note, json.dumps(noah_will))
+        self.assertNotIn(lena_file, json.dumps(noah_will))
+        guests = r.tmp / "guests"
+        self.assertEqual((guests / "agent1" / "lena-only.txt").read_text(), lena_file)
+        self.assertEqual((guests / "agent2" / "noah-only.txt").read_text(), noah_file)
+        self.assertFalse((guests / "agent1" / "noah-only.txt").exists())
+        self.assertFalse((guests / "agent2" / "lena-only.txt").exists())
+        for message in r.messages():
+            if message.get("role") != "bot":
+                continue
+            sidecar = r.api("GET", "/api/self-orientation?message=" + message["id"])[1]
+            own = lena_narr if message["from"] == "lena" else noah_narr
+            other = noah_narr if message["from"] == "lena" else lena_narr
+        self.assertIn(own, sidecar.get("narrator", ""))
+        self.assertNotIn(other, json.dumps(sidecar, ensure_ascii=False))
+
+    def test_will_line_switch_only_hides_the_display(self):
+        """The settings switch is on by default, survives a restart, and leaves
+        narrator and will untouched. A non-owner cannot change it."""
+        r = self.room
+        self.assertIs(r.state()["settings"]["show_will_line"], True)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": "LENA-BLEIBT"}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/lena/will",
+                               {"text": "ZIEL-BLEIBT", "done_when": "fertig"})[0], 200)
+        code, settings = r.api("PUT", "/api/settings", {"show_will_line": False})
+        self.assertEqual(code, 200)
+        self.assertIs(settings["show_will_line"], False)
+        self.assertEqual(r.api("GET", "/api/bot/lena/self")[1]["narrator"], "LENA-BLEIBT")
+        self.assertEqual(r.api("GET", "/api/bot/lena/will")[1]["text"], "ZIEL-BLEIBT")
+        saved = json.loads((r.tmp / "state" / "settings.json").read_text())
+        self.assertIs(saved["show_will_line"], False)
+        r.stop()
+        r.start()
+        self.assertIs(r.state()["settings"]["show_will_line"], False)
+        self.assertEqual(r.api("GET", "/api/bot/lena/self")[1]["narrator"], "LENA-BLEIBT")
+        will = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((will["text"], will["status"]), ("ZIEL-BLEIBT", "open"))
+        local = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
+        self.addCleanup(local.close)
+        self.assertEqual(local.api("PUT", "/api/settings", {"show_will_line": False})[0], 403)
+        self.assertIs(local.state()["settings"]["show_will_line"], True)
+
     def test_private_self_profile_rejects_local_non_owner(self):
         r = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
         self.addCleanup(r.close)

@@ -114,7 +114,7 @@ const profileCalls = [], profileToasts = [];
 let rejectProfile = true;
 const fakeCall = async (method, url, body) => {
   profileCalls.push({ method, url, body });
-  if (method === 'GET') return { who: 'Original', care: '', pursue: '' };
+  if (method === 'GET') return { narrator: 'Original' };
   if (rejectProfile) { profileToasts.push('failed'); throw Error('offline'); }
 };
 const makeProfile = new Function('el', 'call', 'owner', selfProfileSource + '\nreturn selfProfile;')(MAG.el, fakeCall, () => true);
@@ -122,7 +122,7 @@ async function checkPrivateProfile() {
   const group = makeProfile({ id: 'custom-id', name: 'Renamed bot' });
   document.body.append(group);
   await new Promise(resolve => setTimeout(resolve, 0));
-  const input = group.querySelector('input');
+  const input = group.querySelector('textarea');
   assert.strictEqual(input.value, 'Original');
   input.value = 'New draft';
   input.dispatchEvent(new window.Event('blur'));
@@ -134,11 +134,11 @@ async function checkPrivateProfile() {
   group.querySelector('button').click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.strictEqual(input.value, 'New draft');
-  assert.deepStrictEqual(profileCalls.at(-1), { method: 'PUT', url: '/api/bot/custom-id', body: { self: { who: 'New draft' } } });
+  assert.deepStrictEqual(profileCalls.at(-1), { method: 'PUT', url: '/api/bot/custom-id', body: { self: { narrator: 'New draft' } } });
   input.value = '';
   input.dispatchEvent(new window.Event('blur'));
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepStrictEqual(profileCalls.at(-1).body, { self: { who: '' } });
+  assert.deepStrictEqual(profileCalls.at(-1).body, { self: { narrator: '' } });
   group.remove();
 }
 const engineSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'engine.hpp'), 'utf8');

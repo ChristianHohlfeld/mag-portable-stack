@@ -131,23 +131,47 @@ inline void send_file(int fd, const Request &req, const std::string &path, const
   int code = 200;
   Headers headers = extra;
   headers.push_back({"Accept-Ranges", "bytes"});
-  const std::string range = req.header("range");
-  if (starts_with(range, "bytes=") && range.find(',') == std::string::npos) {
+  // If-Range is a strong validator: a mismatched representation must be
+  // sent in full, never as bytes from a different version.
+  const std::string range = req.header("range"), validator = req.header("if-range");
+  std::string etag;
+  for (const auto &h : extra) if (lower(h.first) == "etag") etag = h.second;
+  if (req.method == "GET" && starts_with(range, "bytes=") &&
+      range.find(',') == std::string::npos &&
+      (validator.empty() || (!etag.empty() && !starts_with(etag, "W/") && validator == etag))) {
     const std::string spec = range.substr(6);
     const size_t dash = spec.find('-');
+    // Decimal ranges must not wrap, become negative, or accept trailing
+    // junk. Saturation treats huge positive endpoints as beyond EOF.
+    const auto decimal = [](const std::string &s, long long &value) {
+      if (s.empty()) return false;
+      value = 0;
+      for (const char c : s) {
+        if (c < '0' || c > '9') return false;
+        if (value > (0x7fffffffffffffffLL - (c - '0')) / 10)
+          value = 0x7fffffffffffffffLL;
+        else value = value * 10 + (c - '0');
+      }
+      return true;
+    };
     if (dash != std::string::npos) {
       const std::string a = spec.substr(0, dash), b = spec.substr(dash + 1);
-      bool ok = true;
-      if (a.empty() && !b.empty()) { from = std::max(0LL, total - atoll(b.c_str())); }
-      else if (!a.empty()) { from = atoll(a.c_str()); if (!b.empty()) to = std::min(total - 1, atoll(b.c_str())); }
-      else ok = false;
-      if (!ok || from > to || from >= total) {
-        close(file);
-        send(fd, 416, "", "", {{"Content-Range", "bytes */" + std::to_string(total)}});
-        return;
+      long long first = 0, last = 0;
+      const bool valid = (!a.empty() || !b.empty()) &&
+          (a.empty() || decimal(a, first)) && (b.empty() || decimal(b, last));
+      if (valid) {
+        if (a.empty()) from = last >= total ? 0 : total - last;
+        else { from = first; if (!b.empty()) to = std::min(total - 1, last); }
+        if (total == 0 || from > to || from >= total) {
+          close(file);
+          headers.push_back({"Content-Range", "bytes */" + std::to_string(total)});
+          send(fd, 416, "", "", headers);
+          return;
+        }
+        code = 206;
+        headers.push_back({"Content-Range", "bytes " + std::to_string(from) + "-" +
+                           std::to_string(to) + "/" + std::to_string(total)});
       }
-      code = 206;
-      headers.push_back({"Content-Range", "bytes " + std::to_string(from) + "-" + std::to_string(to) + "/" + std::to_string(total)});
     }
   }
   timeval tv{180, 0};
@@ -157,8 +181,8 @@ inline void send_file(int fd, const Request &req, const std::string &path, const
     long long left = to - from + 1;
     while (left > 0) {
       const ssize_t n = sendfile(fd, file, &offset, (size_t)std::min<long long>(left, 1 << 20));
-      if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-      if (n <= 0) break;
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) break; // socket timeout: the client can resume the same archive
       left -= n;
     }
   }

@@ -1053,12 +1053,17 @@ class RoomContract(unittest.TestCase):
     def test_private_self_profile_is_partial_persistent_and_request_local(self):
         r = self.room
         base = "/api/bot/lena"
-        empty = {"who": "", "care": "", "pursue": ""}
-        self.assertEqual(r.api("GET", base + "/self"), (200, empty))
+        defaults = {
+            "who": "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.",
+            "care": "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen.",
+            "pursue": "Ich bearbeite aktuelle Bitten; im Austausch mit anderen Bots führe ich Gespräche, ohne eigenmächtig alte Aufgaben wiederaufzunehmen.",
+        }
+        self.assertEqual(r.api("GET", base + "/self"), (200, defaults))
+        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))
         self.assertEqual(r.api("PUT", base, {"self": {"who": "  private-identity\nmarker  ", "care": "private-care-marker", "pursue": "private-pursuit-marker"}})[0], 200)
         profile = {"who": "private-identity marker", "care": "private-care-marker", "pursue": "private-pursuit-marker"}
         self.assertEqual(r.api("GET", base + "/self"), (200, profile))
-        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, empty))
+        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))
         self.assertEqual(r.api("PUT", base, {"self": {"care": 123}})[0], 400)
         self.assertEqual(r.api("GET", base + "/self"), (200, profile))
         self.assertTrue(all("self" not in bot for bot in r.state()["bots"]))
@@ -1091,6 +1096,13 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("private-care-marker", json.dumps(r.lena.chats()[-1]["messages"]))
         self.assertIn("private-pursuit-marker", json.dumps(r.lena.chats()[-1]["messages"]))
         self.assertEqual(r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]["self"]["care"], "private-care-marker")
+        r.stop()
+        r.start()
+        kept = r.api("GET", base + "/self")[1]
+        self.assertEqual(kept["who"], profile["who"])
+        self.assertEqual(kept["care"], "")
+        self.assertEqual(kept["pursue"], profile["pursue"])
+        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))
 
     def test_private_self_profile_rejects_local_non_owner(self):
         r = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")

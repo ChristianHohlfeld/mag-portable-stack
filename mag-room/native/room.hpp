@@ -639,6 +639,19 @@ private:
     write_json(cfg.state_dir + "/agents.json", agents);
   }
 
+  // A missing self gets this description once. An existing self, including
+  // fields the owner cleared, stays. Both bots share it; it names no model.
+  static bool ensure_self(Val &b) {
+    if (const Val *have = b.find("self"); have && have->isObj()) return false;
+    const bool known = jstr(b, "id") == "lena" || jstr(b, "id") == "noah";
+    Val self = Val::object();
+    self["who"] = known ? "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber." : "";
+    self["care"] = known ? "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen." : "";
+    self["pursue"] = known ? "Ich bearbeite aktuelle Bitten; im Austausch mit anderen Bots führe ich Gespräche, ohne eigenmächtig alte Aufgaben wiederaufzunehmen." : "";
+    b["self"] = self;
+    return true;
+  }
+
   static Val default_bot(const char *id, const char *name) {
     Val b = Val::object();
     b["id"] = id;
@@ -647,8 +660,7 @@ private:
     b["enabled"] = true;
     b["thinking"] = false;
     b["persona"] = "";
-    b["self"] = Val::object();
-    for (const char *key : {"who", "care", "pursue"}) b["self"][key] = "";
+    ensure_self(b);
     b["memory"] = Val::array();
     return b;
   }
@@ -718,6 +730,10 @@ private:
       bots_.push(lena);
       bots_.push(noah);
       save_bots_locked();
+    } else {
+      bool fill = false;
+      for (auto &b : *bots_.arr) fill = ensure_self(b) || fill;
+      if (fill) save_bots_locked();
     }
   }
 };

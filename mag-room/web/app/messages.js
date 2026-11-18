@@ -27,7 +27,11 @@
     const box = el('div', { class: 'md', html });
     box.querySelectorAll('a').forEach((a) => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
     MAG.mentions?.decorate(box);
-    box.querySelectorAll('img').forEach((img) => { img.loading = 'lazy'; });
+    box.querySelectorAll('img').forEach((img) => {
+      const local = ownSiteSrc(img.getAttribute('src') || '');
+      if (local) img.setAttribute('src', local);
+      img.loading = 'lazy';
+    });
     box.querySelectorAll('pre').forEach((pre, index) => {
       const code = pre.querySelector('code');
       const rawLang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
@@ -469,7 +473,29 @@
     goalPhases.set(groupKey(m), groupInfo(m).state);
   }
 
-  // ---- pages: a bot's HTML, running in a frame from the bot's own site -----
+  // A picture the answer names on a bot's own site (noah.bot.…/images/…) is
+  // loaded from this origin, so the page CSP (img-src 'self') allows it.
+  function ownSiteSrc(url) {
+    let parsed;
+    try { parsed = new URL(url, location.href); } catch { return ''; }
+    if (parsed.protocol !== 'https:') return '';
+    const zone = String(S.zone || 'bot.stardenburg.de').toLowerCase();
+    const host = parsed.hostname.toLowerCase();
+    if (!host.endsWith('.' + zone)) return '';
+    const slug = host.slice(0, -(zone.length + 1));
+    if (!slug || slug.includes('.')) return '';
+    const bot = (S.bots || []).find((b) => b.id === slug || String(b.name || '').toLowerCase() === slug ||
+      (b.aliases || []).includes(slug) || b.vm === slug);
+    if (!bot?.id) return '';
+    const parts = parsed.pathname.split('/').filter((part) => part && part !== '.' && part !== '..' && !part.startsWith('.'));
+    if (!parts.length) return '';
+    return '/api/site/' + encodeURIComponent(bot.id) + '/' + parts.map(encodeURIComponent).join('/') + parsed.search;
+  }
+  function siteFile(botId, path, query) {
+    const parts = String(path || '').split('/').filter((part) => part && part !== '.' && part !== '..');
+    return '/api/site/' + encodeURIComponent(botId) + '/' + parts.map(encodeURIComponent).join('/') + (query || '');
+  }
+  // ---- pages: a bot's HTML, framed from this origin (the files are the site's) -----
   // Same fingerprint as the server (FNV-1a over the bytes without whitespace):
   // it tells which code block of the answer a published page came from.
   function sigOf(text) {
@@ -499,13 +525,14 @@
     const frame = edited
       ? MAG.codeEditor.frame(card._title, () => MAG.codeEditor.html('html', card._editable.get(), card._base))
       : el('iframe', { title: card._title, src: card._src });
+    // Same-origin URL, opaque origin: the page's scripts must not become the room.
     if (!edited)
-      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
     frame.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; accelerometer; gyroscope; gamepad; xr-spatial-tracking');
     frame.setAttribute('referrerpolicy', 'no-referrer');
     if (!edited) frame.setAttribute('credentialless', '');
     // Edited frames GET a same-origin shell under the normal viewer's
-    // authentication, but run with an opaque origin (no allow-same-origin).
+    // authentication, but run with an opaque origin so they are not the room.
     card._frame = frame;
     card._stage.replaceChildren(frame);
     framed.push(card);
@@ -527,6 +554,7 @@
     const base = MAG.bot(botId)?.site;
     if (!base || !page.path) return null;
     const href = base + '/' + page.path.split('/').map(encodeURIComponent).join('/');
+    const local = siteFile(botId, page.path);
     const stage = el('div', { class: 'stage' }), code = el('div', { class: 'code', hidden: true });
     const original = pre ? (pre.querySelector('code') || pre).textContent
       : m.parts?.[page.part]?.input?.content || '';
@@ -566,8 +594,8 @@
       el('a', { class: 'addr', href, target: '_blank', rel: 'noopener',
         text: href.replace(/^https?:\/\//, '') + ' · lokale Änderungen werden nicht veröffentlicht' }));
     Object.assign(card, {
-      _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path,
-      _sourceOriginal: original, _base: base, _editable: editor,
+      _src: local + '?v=' + encodeURIComponent(page.v || m.ts), _title: page.title || page.path,
+      _sourceOriginal: original, _base: location.origin + local.replace(/[^/]*$/, ''), _editable: editor,
       _stage: stage, _mode: 'preview', _visible: false, _frame: null
     });
     card.classList.toggle('code-edited', editor.changed());

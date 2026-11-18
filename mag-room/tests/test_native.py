@@ -1050,6 +1050,58 @@ class RoomContract(unittest.TestCase):
         self.assertEqual("".join(e["text"] for e in deltas if e["part"] == 0), "Ich merke mir das.")
         self.assertEqual([e["seq"] for e in r.events], sorted(e["seq"] for e in r.events))
 
+    def test_owner_only_self_description_is_private_and_applies_next_turn(self):
+        r = self.room
+        url = "/api/bot/lena/self"
+        self.assertEqual(r.api("GET", url)[1]["self"], {"who": "", "care": "", "pursue": ""})
+        payload = {"who": "  Beobachterin\\nmit Haltung  ",
+                   "care": "  Wahrheit  ",
+                   "pursue": "  Nur Lena untersucht Sternenlicht.  "}
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": payload})[0], 200)
+        stored = r.api("GET", url)[1]["self"]
+        self.assertEqual(stored, {"who": "Beobachterin mit Haltung", "care": "Wahrheit",
+                                  "pursue": "Nur Lena untersucht Sternenlicht."})
+        self.assertEqual(r.api("GET", "/api/bot/noah/self")[1]["self"],
+                         {"who": "", "care": "", "pursue": ""})
+        self.assertNotIn("self", json.dumps(r.state()["bots"]))
+        self.assertNotIn("Nur Lena untersucht Sternenlicht.", json.dumps(r.state(), ensure_ascii=False))
+        self.assertNotIn("self", json.dumps([e for e in r.events if e.get("t") == "bots"]))
+
+        r.lena.reply = r.noah.reply = lambda body: "Eine kurze Antwort."
+        r.say("@Lena Bitte antworten")
+        r.idle()
+        lena_calls = r.lena.chats()
+        self.assertTrue(lena_calls)
+        prompt = lena_calls[-1]["messages"]
+        self.assertNotIn("Nur Lena untersucht Sternenlicht.", prompt[0]["content"])
+        orientation = [m["content"] for m in prompt if m["role"] == "user" and
+                       isinstance(m["content"], str) and "PRIVATE SELBSTORIENTIERUNG" in m["content"]]
+        self.assertTrue(orientation)
+        self.assertIn('Was ich verfolge: "Nur Lena untersucht Sternenlicht."', orientation[-1])
+        self.assertIn("Nur bei einem wesentlichen Widerspruch", orientation[-1])
+        r.say("@Noah Bitte antworten")
+        r.idle()
+        for call in r.noah.chats():
+            self.assertNotIn("Nur Lena untersucht Sternenlicht.", json.dumps(call["messages"], ensure_ascii=False))
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"pursue": ""}})[0], 200)
+        self.assertEqual(r.api("GET", url)[1]["self"],
+                         {"who": "Beobachterin mit Haltung", "care": "Wahrheit", "pursue": ""})
+        saved = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "bots.json").read_text())
+        self.assertEqual(next(b for b in saved if b["id"] == "lena")["self"]["pursue"], "")
+        r.say("@Lena Nochmal antworten")
+        r.idle()
+        fresh = json.dumps(r.lena.chats()[-1]["messages"], ensure_ascii=False)
+        self.assertNotIn("Nur Lena untersucht Sternenlicht.", fresh)
+        self.assertIn("Was mir wichtig ist", fresh)
+
+        # A separate local (non-owner) session must not read or mutate either
+        # bot's private self-description, even via an existing bot endpoint.
+        guest = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
+        self.addCleanup(guest.close)
+        self.assertEqual(guest.api("GET", "/api/bot/lena/self")[0], 403)
+        self.assertEqual(guest.api("PUT", "/api/bot/lena", {"self": {"who": "fremd"}})[0], 403)
+        self.assertNotIn("self", json.dumps(guest.state()["bots"]))
+
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room
         lena = "/api/bot/lena/memory"

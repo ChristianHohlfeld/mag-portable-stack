@@ -1187,8 +1187,8 @@ private:
     const std::string done = trim(jstr(args, "done_when"));
     if (action == "will_set") {
       if (goal.empty() || done.empty()) return tools::fail("Ziel und Abschlusskriterium fehlen.");
-      const Val history = room_.all();
-      for (auto it = history.asArr().rbegin(); it != history.asArr().rend(); ++it) {
+      const auto history = room_.all();
+      for (auto it = history.rbegin(); it != history.rend(); ++it) {
         if (jstr(*it, "role") != "bot" || jstr(*it, "from") == id) continue;
         const std::string peer = group_chat::norm_reply(jstr(*it, "text"));
         const std::string proposed = group_chat::norm_reply(goal);
@@ -3832,6 +3832,33 @@ private:
         save_wire(b);
         logf("engine: " + b.id + " tool decision hit finish_reason=length; raising max_tokens " +
              std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
+        continue;
+      }
+      // A spoken promise is not a VM step. Retry once with a request-only
+      // correction; the second announcement blocks the goal.
+      if ((reason == "bot" || reason == "autonomous") && !will_owner_interrupted &&
+          !res.cancelled && res.calls.empty() && !goal_live(b) &&
+          jstr(room_.will(b.id), "status") == "open" && announces(res.content)) {
+        ++will_announcements;
+        t.held.clear();
+        t.tail.clear();
+        if (t.id.empty()) {
+          // The provisional announcement has not entered room messages.
+        } else room_.retake_text(t.id, text0, "");
+        if (will_announcements >= 2) {
+          room_.update_will(b.id, [&](Val &w) {
+            if (jstr(w, "status") != "open") return false;
+            w["status"] = "blocked";
+            w["progress"] = "Zweimal nur angekündigt, kein echter Werkzeugaufruf";
+            return true;
+          });
+          failed = true;
+          error = "Eigenes Ziel blockiert: zweimal nur angekündigt.";
+          break;
+        }
+        will_retry_note = "(Notiz des Raums, nicht von Chris: Eine Ankündigung ist kein "
+                          "Fortschritt. Nutze jetzt genau EINEN echten shell- oder "
+                          "write_file-Aufruf in deiner VM oder gib das Ziel mit will_drop auf.)";
         continue;
       }
       // PASS-off means no voluntary end decision, not merely a suggestion.

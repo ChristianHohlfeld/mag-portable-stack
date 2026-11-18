@@ -641,11 +641,14 @@
     // (iOS Safari). The back gesture closes it.
     fullscreen(stage) {
       if (stage._viewerFullscreenLeave) {
-        if (history.state?.mag3d) history.back(); else stage._viewerFullscreenLeave();
+        stage._viewerFullscreenLeave();
         return;
       }
+      // Every exit source shares one latch. Escape can also trigger native
+      // fullscreenchange before the asynchronous history traversal finishes.
+      let closing = false;
       const leave = () => {
-        if (stage._viewerFullscreenLeave !== leave) return;
+        if (stage._viewerFullscreenLeave !== close) return;
         delete stage._viewerFullscreenLeave;
         stage.classList.remove('fs');
         document.body.style.overflow = '';
@@ -653,23 +656,31 @@
         document.removeEventListener('keydown', key);
         stage.removeEventListener('fullscreenchange', changed);
         if (document.fullscreenElement === stage) document.exitFullscreen?.().catch(() => {});
+      };
+      const close = () => {
+        if (closing || stage._viewerFullscreenLeave !== close) return;
+        closing = true;
         if (history.state?.mag3d) {
-          const state = { ...history.state }; delete state.mag3d;
-          history.replaceState(state, '');
-        }
+          // Keep the latch until popstate; further exit events are no-ops.
+          // A detached stage must release its UI/listeners immediately.
+          if (!stage.isConnected) leave();
+          history.back();
+        } else leave();
       };
-      const key = (e) => e.key === 'Escape' && (history.state?.mag3d ? history.back() : leave());
+      const key = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); close(); }
+      };
       const changed = () => {
-        if (!document.fullscreenElement && stage.classList.contains('fs') && history.state?.mag3d) history.back();
+        if (!document.fullscreenElement && stage.classList.contains('fs')) close();
       };
-      stage._viewerFullscreenLeave = leave;
+      stage._viewerFullscreenLeave = close;
       stage.classList.add('fs');
       document.body.style.overflow = 'hidden';
-      stage.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => {});
-      history.pushState({ mag3d: true }, '');
+      history.pushState({ ...history.state, mag3d: true }, '');
       window.addEventListener('popstate', leave);
       document.addEventListener('keydown', key);
       stage.addEventListener('fullscreenchange', changed);
+      stage.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => {});
     },
   };
 })();

@@ -267,6 +267,7 @@ public:
     std::string addr = ip(vm);
     if (addr.empty()) addr = ip(vm, true);
     if (addr.empty()) return fail(*start, error, "VM " + vm + " ist nicht erreichbar.");
+    bool busy = false;
     for (int probe = 0; probe < 3; ++probe) {
       const bool recent = start->ok_at && now_s() - start->ok_at < 45;
       const auto st = browser_raw(addr, vm, "GET", "/state", "", recent ? 1 : probe ? 3 : 2, nullptr);
@@ -278,9 +279,17 @@ public:
       // then times out. Replacing it here leaves WebRTC up and the picture
       // gone (the restart seen with the step-card live view). The request
       // waits its turn on the controller that just answered.
-      if (st.status == 0 && st.error.find("Timeout") != std::string::npos && recent) return addr;
+      if (st.status == 0 && st.error.find("Timeout") != std::string::npos) {
+        if (recent) return addr;
+        busy = true;
+      }
       if (probe < 2) usleep(200000);
     }
+    // It did not answer in time and it runs: it is busy (a bot's navigation
+    // waits for a slow page), not dead. Replacing it would end the live view's
+    // picture; it answers when its call is done. Only a controller that is
+    // gone, refuses, or speaks an older protocol is replaced.
+    if (busy && quiet(vm, "pgrep -x mag-browser >/dev/null", 10).code == 0) return addr;
     audit_proxy(vm);
     const std::string keydir = cfg_.state_dir + "/browser-udp-keys", keyfile = keydir + "/" + vm + ".key";
     fs::create_directories(keydir);
@@ -335,7 +344,7 @@ private:
     return argv;
   }
   static bool current(const http::ClientResult &r) {
-    return r.status == 200 && jstr(jparse(r.body), "udp_transport") == "MGB9";
+    return r.status == 200 && jstr(jparse(r.body), "udp_transport") == "MGB10";
   }
   std::string fail(Start &start, std::string &error, const std::string &why) {
     start.failed_at = now_s();

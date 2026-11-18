@@ -176,18 +176,44 @@ public:
     q["params"] = params;
     frame(mj::dump(q));
     auto end = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    auto answer = [](const Val &v) -> Val {
+      if (v.find("error"))
+        throw std::runtime_error(mj::dump(*v.find("error")));
+      return v.find("result") ? *v.find("result") : Val::object();
+    };
     while (std::chrono::steady_clock::now() < end) {
+      // A call made while this one waited (the live view's frame) may have read our answer.
+      if (auto it = stash.find(seq); it != stash.end()) {
+        Val v = it->second;
+        stash.erase(it);
+        return answer(v);
+      }
+      // While Chrome works on a long call (a navigation waits for the page's
+      // server), the live view keeps its picture and its touches: `idle`
+      // sends frames and reads input until an answer is there.
+      if (idle && !idling && pending.empty()) {
+        pollfd w{fd, POLLIN, 0};
+        if (poll(&w, 1, 30) == 0) {
+          idling = true;
+          try { idle(); } catch (...) {}
+          idling = false;
+          continue;
+        }
+      }
       auto v = json(receive());
       if (str(v, "method") == "Network.responseReceived") nav_event(v);
       if (str(v, "method") == "Runtime.executionContextsCleared") world = -1;
-      if (num(v, "id") == seq) {
-        if (v.find("error"))
-          throw std::runtime_error(mj::dump(*v.find("error")));
-        return v.find("result") ? *v.find("result") : Val::object();
-      }
+      if (num(v, "id") == seq)
+        return answer(v);
+      if (v.find("id") && stash.size() < 64)
+        stash[(int)num(v, "id")] = v;   // the answer of the call this one was made inside
     }
     throw std::runtime_error("CDP deadline");
   }
+  // Called while a call waits for Chrome (see call()); never inside itself.
+  std::function<void()> idle;
+  bool idling = false;
+  std::map<int, Val> stash;
   long world = -1;
   std::string world_frame;
   long isolated_world() {
@@ -474,7 +500,7 @@ int main(int argc, char **argv) {
                          "secret:document.activeElement?.type==='password',"
                          "field:(()=>{const e=document.activeElement;if(!e||e===document.body)return null;"
                          "const r=e.getBoundingClientRect();return [Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)]})()})");
-      state["udp_transport"] = "MGB9"; // MGB9: MGB7 and the focused field (editable, secret, its box) in the state
+      state["udp_transport"] = "MGB10"; // MGB10: MGB9, and frames and touches go on while a call waits for Chrome
       state["udp_port"] = 9227;
       try {
         const Val nav = c.call("Page.getNavigationHistory");
@@ -523,6 +549,7 @@ int main(int argc, char **argv) {
         if (nfd == 2 && (wait[1].revents & (POLLIN | POLLHUP | POLLERR))) udp.terminal_output();
       }
     };
+    c.idle = [&] { pump(40); };
     for (;;) {
       // CDP and UDP input run against exactly the same hot tab on one thread.
       // Do not race a second CDP connection from an auxiliary process.

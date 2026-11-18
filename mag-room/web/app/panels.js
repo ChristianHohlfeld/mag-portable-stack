@@ -484,9 +484,48 @@
       content.append(el('h3', { text: 'Netzzugriff' }), el('div', { class: 'card' },
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 
-      if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
-        row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
-          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v })))));
+      if (owner()) {
+        const thoughts = el('div', { class: 'card' },
+          row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
+            toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v }))));
+        content.append(el('h3', { text: 'Gedanken' }), thoughts);
+        // The roster is the source of names; the persisted ID never changes.
+        for (const bot of S.bots) {
+          const keys = [['who', 'Wer ich bin'], ['care', 'Was mir wichtig ist'], ['pursue', 'Was ich verfolge']];
+          const fields = {};
+          const group = el('div', { class: 'set col' },
+            el('div', { class: 'txt' }, el('b', { text: bot.name })));
+          for (const [key, label] of keys) {
+            const input = el('input', { type: 'text', maxLength: 400, autocomplete: 'off',
+              'aria-label': bot.name + ' · ' + label, placeholder: label });
+            fields[key] = input;
+            group.append(el('label', { class: 'txt' }, label, input));
+            input.addEventListener('change', () => {
+              // Each field patches only itself; a failure leaves the edit
+              // untouched so it can be retried without losing the other edits.
+              const value = input.value;
+              call('PUT', '/api/bot/' + encodeURIComponent(bot.id),
+                { self: { [key]: value } }).then(() => {
+                if (input.value === value) input.dataset.saved = value;
+              }).catch(() => {});
+            });
+            input.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            });
+          }
+          thoughts.append(group);
+          call('GET', '/api/bot/' + encodeURIComponent(bot.id) + '/self').then((out) => {
+            for (const [key] of keys) {
+              const input = fields[key];
+              // An owner may already be typing before the GET completes.
+              if (document.activeElement !== input && !input.dataset.dirty)
+                input.value = out.self?.[key] || '';
+            }
+          }).catch(() => {});
+          for (const [key] of keys)
+            fields[key].addEventListener('input', () => { fields[key].dataset.dirty = '1'; });
+        }
+      }
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),

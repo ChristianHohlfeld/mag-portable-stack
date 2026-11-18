@@ -3388,7 +3388,9 @@ private:
             "Antworte dem anderen Bot natürlich, kurz und direkt. Greife nur aktuelle, von euch neu begonnene "
             "Gesprächsthemen auf. Abgeschlossene Nutzeraufträge, frühere Projekte, Webseiten, Dateien und "
             "Werkzeugergebnisse sind kein Anlass für ein neues Gesprächsthema, auch wenn sie noch im Kontext "
-            "stehen. Stelle gegebenenfalls eine Anschlussfrage. Keine Aufgaben ausführen, keine Werkzeuge verwenden. " +
+            "stehen. Stelle gegebenenfalls eine Anschlussfrage. Keine alten Nutzeraufträge ausführen. "
+            "Eigene Ziele mit will_set/will_progress/will_finish/will_drop verfolgen; bei offenem eigenen Ziel "
+            "höchstens EIN shell oder write_file in der eigenen VM, sonst keine Werkzeuge. " +
             std::string(pass_enabled
                 ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
                 : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
@@ -3447,6 +3449,10 @@ private:
     b.wire["model_since"] = since;
     bool cancelled = false, failed = false, retried = false, rethought = false, nudged = false, dumped = false;
     bool pass_retried = false; // at most one extra model call if PASS is disabled but still emitted
+    bool will_action_used = false;
+    bool will_owner_interrupted = from_chris;
+    int will_announcements = 0;
+    std::string will_retry_note; // request-only: never poison the append-only prompt log
     std::set<std::string> offered;
     for (auto &def : tools.asArr())
       if (const Val *f = def.find("function")) offered.insert(jstr(*f, "name"));
@@ -3507,6 +3513,7 @@ private:
       if (t.goal_id.empty() && goal_live(b)) t.goal_id = jstr(b.goal, "id");
       if (cancel->stopped()) { cancelled = true; break; }
       if (step > 0 && append_unseen(b, me, true, "")) { // Chris wrote while the bot was working
+        will_owner_interrupted = true;
         b.read_at_work = true;
         t.asked_at = t.id.empty() ? 0 : room_.parts(t.id);
         describe_images(b, me);
@@ -3538,6 +3545,13 @@ private:
            " tool_choice=" + (driving ? "required" : "auto") + " reason=" + reason);
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
+      if (!will_retry_note.empty()) {
+        Val hint = Val::object();
+        hint["role"] = "user";
+        hint["content"] = will_retry_note;
+        body["messages"].push(hint);
+        will_retry_note.clear();
+      }
       if (reason == "bot" || reason == "autonomous") {
         Val cue = Val::object();
         cue["role"] = "user";
@@ -3826,9 +3840,18 @@ private:
       // any tool, and an unprompted follower may not evade PASS-off by
       // invoking a tool. Keep model schemas unchanged to preserve warm KV.
       const bool bot_dialogue = reason == "bot" || reason == "autonomous";
-      const bool forbidden_tool = !res.calls.empty() &&
-          (autonomous_round || (!pass_enabled && bot_dialogue &&
-                                !t.errand && !goal_live(b)));
+      const bool own_chat = bot_dialogue && !will_owner_interrupted &&
+                            !t.errand && !goal_live(b);
+      const bool permitted_will_call = own_chat &&
+          std::all_of(res.calls.begin(), res.calls.end(), [&](const llm::ToolCall &call) {
+            if (is_will_tool(call.name)) return true;
+            return !will_action_used && (call.name == "shell" || call.name == "write_file") &&
+                   vm::valid_name(jstr(me, "vm")) && jstr(room_.will(b.id), "status") == "open";
+          }) &&
+          std::count_if(res.calls.begin(), res.calls.end(), [](const llm::ToolCall &c) {
+            return c.name == "shell" || c.name == "write_file";
+          }) <= (will_action_used ? 0 : 1);
+      const bool forbidden_tool = bot_dialogue && !res.calls.empty() && !permitted_will_call;
       const std::string candidate = trim(strip_self(strip_markers(res.content), name, names()));
       const std::string norm_candidate = group_chat::norm_reply(candidate);
       bool duplicated = false;
@@ -3858,9 +3881,10 @@ private:
         Val correction = Val::object();
         correction["role"] = "user";
         correction["content"] = forbidden_tool
-            ? "(Notiz des Raums, nicht von Chris: Werkzeuge sind in diesem eigenständigen Bot-Dialog "
-              "nicht erlaubt. Es wurde KEIN Werkzeug ausgeführt. Antworte jetzt mit einem eigenen "
-              "Gesprächsbeitrag oder einer Anschlussfrage, ohne Werkzeugaufruf und ohne Abschlussmarker.)"
+            ? "(Notiz des Raums, nicht von Chris: Dieser Werkzeugaufruf ist im Bot-Gespräch "
+              "nicht erlaubt. Er wurde nicht ausgeführt. Nur Zielwerkzeuge und bei offenem eigenen "
+              "Ziel ein einzelner VM-Schritt shell/write_file sind zulässig. Antworte ohne weiteren "
+              "verbotenen Werkzeugaufruf.)"
             : "(Notiz des Raums, nicht von Chris: PASS und eigene Beendigungsentscheidungen "
               "sind ausgeschaltet. Deine letzte Ausgabe wurde verworfen. Fahre jetzt mit "
               "einem kurzen, eigenständigen Beitrag oder einer Anschlussfrage fort; "
@@ -4109,7 +4133,7 @@ private:
         tools::Result result;
         const int look_version = (int)jnum(b.goal, "version") + 1;
         std::string lead;
-        if (acts(c.name)) {
+        if (acts(c.name) && !(bot_dialogue && own_chat)) {
           // The bot that was given the task may act at once. While its goal is open the
           // other bot's acting tools are refused, unless Chris just gave that bot a task of its own.
           std::lock_guard<std::mutex> lk(mu_);
@@ -4131,13 +4155,17 @@ private:
         }
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
-        } else if (autonomous_round) {
-          // Immutable permission boundary for unattended conversations.
-          // Tool schemas stay identical for llama.cpp's shared KV prefix,
-          // but not one browser/shell/phone/plugin or read-only operation is
-          // actually allowed to run without a human request.
-          result = tools::fail("Im eigenständigen Bot-Gespräch sind Werkzeuge deaktiviert. Nur miteinander reden.");
+        } else if (bot_dialogue && (!own_chat ||
+                  (!is_will_tool(c.name) &&
+                   !(c.name == "shell" || c.name == "write_file" &&
+                     !will_action_used && vm::valid_name(jstr(me, "vm")) &&
+                     jstr(room_.will(b.id), "status") == "open")))) {
+          // All unattended access is denied except the explicit will
+          // transitions and ONE VM-local shell/write_file per bot round.
+          result = tools::fail("Selbstgespräch: nur eigenes Ziel und höchstens ein eigener VM-Schritt erlaubt.");
           t.stop_after = true;
+        } else if (is_will_tool(c.name)) {
+          result = apply_will(b.id, c.name, args, own_chat);
         } else if (!lead.empty()) {
           std::string who = lead;
           const Val all = room_.bots();
@@ -4558,6 +4586,19 @@ private:
           } catch (const std::exception &e) {
             result = tools::fail(e.what());
           }
+        }
+        if (bot_dialogue && (c.name == "shell" || c.name == "write_file") && own_chat &&
+            !will_action_used && jstr(room_.will(b.id), "status") == "open") {
+          will_action_used = true;
+          room_.update_will(b.id, [&](Val &w) {
+            if (jstr(w, "status") != "open") return false;
+            w["steps"] = jnum(w, "steps") + 1;
+            w["last_tool"] = c.name;
+            w["last_ok"] = result.ok && !cancel->stopped();
+            w["progress"] = clip(result.text, 700);
+            if (jnum(w, "steps") >= 8) w["status"] = "blocked";
+            return true;
+          });
         }
         const bool was_cancelled = cancel->stopped();
         room_.update_step(t.id, index, [&](Val &s) {

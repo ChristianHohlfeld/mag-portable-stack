@@ -1238,8 +1238,34 @@ class RoomContract(unittest.TestCase):
             sidecar = r.api("GET", "/api/self-orientation?message=" + message["id"])[1]
             own = lena_narr if message["from"] == "lena" else noah_narr
             other = noah_narr if message["from"] == "lena" else lena_narr
-            self.assertIn(own, sidecar.get("narrator", ""))
-            self.assertNotIn(other, json.dumps(sidecar, ensure_ascii=False))
+        self.assertIn(own, sidecar.get("narrator", ""))
+        self.assertNotIn(other, json.dumps(sidecar, ensure_ascii=False))
+
+    def test_will_line_switch_only_hides_the_display(self):
+        """The settings switch is on by default, survives a restart, and leaves
+        narrator and will untouched. A non-owner cannot change it."""
+        r = self.room
+        self.assertIs(r.state()["settings"]["show_will_line"], True)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": "LENA-BLEIBT"}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/lena/will",
+                               {"text": "ZIEL-BLEIBT", "done_when": "fertig"})[0], 200)
+        code, settings = r.api("PUT", "/api/settings", {"show_will_line": False})
+        self.assertEqual(code, 200)
+        self.assertIs(settings["show_will_line"], False)
+        self.assertEqual(r.api("GET", "/api/bot/lena/self")[1]["narrator"], "LENA-BLEIBT")
+        self.assertEqual(r.api("GET", "/api/bot/lena/will")[1]["text"], "ZIEL-BLEIBT")
+        saved = json.loads((r.tmp / "state" / "settings.json").read_text())
+        self.assertIs(saved["show_will_line"], False)
+        r.stop()
+        r.start()
+        self.assertIs(r.state()["settings"]["show_will_line"], False)
+        self.assertEqual(r.api("GET", "/api/bot/lena/self")[1]["narrator"], "LENA-BLEIBT")
+        will = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((will["text"], will["status"]), ("ZIEL-BLEIBT", "open"))
+        local = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
+        self.addCleanup(local.close)
+        self.assertEqual(local.api("PUT", "/api/settings", {"show_will_line": False})[0], 403)
+        self.assertIs(local.state()["settings"]["show_will_line"], True)
 
     def test_private_self_profile_rejects_local_non_owner(self):
         r = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")

@@ -87,8 +87,15 @@ function boot(role) {
     }
     return {};
   };
+  window.__snap = snap;
   window.MAG.connect();
   return window;
+}
+
+async function show(window, on) {
+  window.__snap.settings = Object.assign({}, window.__snap.settings, { show_will_line: on });
+  window.MAG.connect();
+  await settle();
 }
 
 async function settle() {
@@ -123,6 +130,22 @@ function lines(window) {
   await settle();
   assert.equal(lines(guest).length, 0, 'a non-owner does not get the will line');
 
+  await show(owner, false);
+  assert.equal(lines(owner).length, 0, 'the settings switch hides the will line');
+  const hidden = owner.document.querySelector('#list').textContent;
+  assert.ok(hidden.includes('Ich prüfe die Datei.'), 'the answer stays');
+  assert.ok(hidden.includes('echo blake-datei'), 'the step stays in the message');
+  assert.ok(!hidden.includes('Blake-Erzähler sichtbar.'), 'the narrator line is display only');
+  const offList = owner.document.querySelector('#list').outerHTML;
+
+  await show(owner, true);
+  const again = lines(owner);
+  assert.equal(again.length, 2, 'turning the switch on brings both lines back');
+  for (const d of again) d.open = true;
+  const back = again.map((d) => d.querySelector('.self-orientation-body').textContent);
+  assert.ok(back.some((t) => t.includes('Blake-Erzähler sichtbar.')), back.join('\n'));
+  assert.ok(back.some((t) => t.includes('Noah-Erzähler sichtbar.')), back.join('\n'));
+
   if (process.env.MAG_SKIP_CHROME === '1') {
     owner.close();
     guest.close();
@@ -140,20 +163,24 @@ function lines(window) {
   for (const d of shown) d.open = true;
   const shotDir = process.env.MAG_WILL_SHOT || '/opt/cursor/artifacts';
   fs.mkdirSync(shotDir, { recursive: true });
-  const page = path.join(shotDir, 'will-line-blake-noah.html');
-  const png = path.join(shotDir, 'will-line-blake-noah.png');
-  const list = owner.document.querySelector('#list').outerHTML;
-  fs.writeFileSync(page, `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body style="background:#17181b;margin:24px"><main id="scroll" style="height:auto">${list}</main></body></html>`);
-  const shot = spawnSync(chrome, [
-    '--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--hide-scrollbars',
-    '--force-device-scale-factor=2', '--window-size=900,1100', '--screenshot=' + png, 'file://' + page,
-  ], { encoding: 'utf8', timeout: 20000 });
+  const shoot = (name, listHtml, height) => {
+    const page = path.join(shotDir, name + '.html');
+    const png = path.join(shotDir, name + '.png');
+    fs.writeFileSync(page, `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body style="background:#17181b;margin:24px"><main id="scroll" style="height:auto">${listHtml}</main></body></html>`);
+    const shot = spawnSync(chrome, [
+      '--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--hide-scrollbars',
+      '--force-device-scale-factor=2', '--window-size=900,' + height, '--screenshot=' + png, 'file://' + page,
+    ], { encoding: 'utf8', timeout: 20000 });
+    if (shot.status !== 0 || !fs.existsSync(png))
+      throw new Error(name + ' screenshot failed: ' + (shot.stderr || shot.stdout));
+    return png;
+  };
+  const onPng = shoot('will-line-blake-noah', owner.document.querySelector('#list').outerHTML, 1100);
+  const offPng = shoot('will-line-off', offList, 700);
   owner.close();
   guest.close();
-  if (shot.status !== 0 || !fs.existsSync(png)) {
-    throw new Error('screenshot failed: ' + (shot.stderr || shot.stdout));
-  }
-  console.log('will line visible for Blake and Noah; screenshot ' + png);
+  console.log('will line on ' + onPng);
+  console.log('will line off ' + offPng);
   process.exit(0);
 })().catch((err) => {
   console.error(err);

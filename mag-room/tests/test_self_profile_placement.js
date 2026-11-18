@@ -20,7 +20,9 @@ assert(bot.includes("'Art', el('small', { text: 'Wie dieser Bot arbeiten soll. D
 assert(bot.includes("{ persona: e.target.value }"), 'existing persona stored separately');
 assert(bot.includes("willCard(b)"), 'owner goal card belongs to bot sheet');
 assert(!global.includes('S.bots.map(selfProfile)') && !global.includes('selfProfile(b)'), 'self is not global');
-assert(global.includes("'Inneres Selbstgespräch'"), 'room-wide switch remains');
+assert(global.includes("'Wille-Zeile'"), 'room-wide will-line switch remains in settings');
+assert(global.includes('show_will_line'), 'the switch is the stored room setting');
+assert(!global.includes('mag-will-line'), 'the will line is not a per-browser flag');
 assert(src.includes("call('GET', path + '/self')"), 'owner-only self API preserved');
 assert(src.includes("self: { narrator: value }"), 'single multiline narrator field');
 assert(src.includes("call('GET', path).then(render)"), 'private owner will loaded');

@@ -1872,6 +1872,7 @@ private:
       if (const Val *v = in.find("auto_chat_visible"); v && v->type == Val::BOOL) s["auto_chat_visible"] = v->b;
       if (const Val *v = in.find("pass_enabled"); v && v->type == Val::BOOL) s["pass_enabled"] = v->b;
       if (const Val *v = in.find("show_self_orientation"); v && v->type == Val::BOOL) s["show_self_orientation"] = v->b;
+      if (const Val *v = in.find("show_will_line"); v && v->type == Val::BOOL) s["show_will_line"] = v->b;
       if (const Val *v = in.find("web"); v && v->type == Val::BOOL) { s["web"] = v->b; net = true; }
       if (const Val *v = in.find("assist"); v && v->isObj()) s["assist"] = Assist::clean_rules(*v);
     });

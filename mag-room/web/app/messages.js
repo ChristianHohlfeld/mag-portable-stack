@@ -1237,11 +1237,9 @@
   // Never read m.reasoning or display raw model thoughts.
   const orientationCache = new Map(), orientationOpen = new Set();
   const WILL_STEP = new Set(['will_set', 'will_progress', 'will_finish', 'will_drop', 'shell', 'write_file']);
-  // The old switch defaulted to off, which hid the line. It stays visible for
-  // the owner until he turns that switch off in this browser.
-  const willLineOn = () => {
-    try { return localStorage.getItem('mag-will-line') !== 'off'; } catch { return true; }
-  };
+  // Missing or any value other than false keeps the line. The switch only
+  // hides this display; it does not change the narrator, the goal or a step.
+  const willLineOn = () => S.settings?.show_will_line !== false;
   const orientationEnabled = () => S.you?.role === 'owner' && willLineOn();
   const oneLine = (text, n) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, n || 72);
   function stepGlance(p) {

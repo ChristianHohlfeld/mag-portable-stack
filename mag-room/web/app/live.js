@@ -58,7 +58,15 @@
     if (controlOpen && sinceMs >= 5000) return 'wait';
     return 'none';
   }
-  MAG.liveGesture = { onField, keysAction, pinchStep, fingerDrag, pictureFallback };
+  // The PTY rides the console channel. When that channel is not open, the
+  // command shell over HTTPS takes the view after the same two seconds the
+  // browser picture uses. An open channel keeps the real terminal.
+  function terminalFallback(consoleOpen, sinceMs) {
+    if (consoleOpen) return 'pty';
+    if (sinceMs >= 2000) return 'https';
+    return 'wait';
+  }
+  MAG.liveGesture = { onField, keysAction, pinchStep, fingerDrag, pictureFallback, terminalFallback };
 
   class Link {
     constructor(bot) {
@@ -926,19 +934,34 @@
     const keep = (e) => e.preventDefault();
     const keys = el('div', { class: 'keys', onpointerdown: keep, onmousedown: keep },
       key('Esc', '\x1b'), key('Tab', '\t'), ctrl, key('↑', arrow('A'), 'Pfeil hoch'), key('↓', arrow('B'), 'Pfeil runter'), key('←', arrow('D'), 'Pfeil links'), key('→', arrow('C'), 'Pfeil rechts'));
-    // No PTY after a while: offer the plain way instead of a dead screen.
-    const offer = el('button', { type: 'button', class: 'pill', text: 'Einzelne Befehle', title: 'Ohne UDP-Weg: ein Befehl nach dem anderen über HTTPS', hidden: true, onclick: () => {
-      done();
-      full.close();
-      plain = shell(bot);
-      node.replaceChildren(plain.node, el('div', { class: 'foot' }, el('div', { class: 'note', text: 'Befehlsmodus über HTTPS, ohne PTY. Das echte Terminal braucht den UDP-Weg zur VM.' })));
-    } });
     const node = el('div', { class: 'term-box' });
     // In fullscreen there is room for a size that reads well on a desk.
     const full = fullscreen(node, (on) => { if (entry) entry.term.options.fontSize = on && innerWidth >= 900 ? 14 : 12; fit(); });
-    node.append(box, keys, el('div', { class: 'foot' }, status, offer,
+    const showPty = () => node.replaceChildren(box, keys, foot);
+    // No console channel: the command shell is the terminal, not a hidden pill.
+    const usePlain = (why) => {
+      if (plain || stopped || !held || link.console?.readyState === 'open') return;
+      done();
+      full.close();
+      plain = shell(bot);
+      const again = el('button', { type: 'button', class: 'pill', text: 'Echtes Terminal', title: 'UDP-Terminal noch einmal versuchen', onclick: () => {
+        plain?.stop();
+        plain = null;
+        held = true;
+        started = performance.now();
+        showPty();
+        link.use();
+        if (xtermReady) openXterm();
+        else loadXterm().then(() => { xtermReady = true; openXterm(); }, (err) => usePlain('xterm.js konnte nicht geladen werden (' + err.message + '). Befehle gehen über HTTPS.'));
+      } });
+      node.replaceChildren(plain.node, el('div', { class: 'foot' }, again,
+        el('div', { class: 'note', text: why || 'Befehle über HTTPS. Das echte Terminal braucht den UDP-Weg zur VM.' })));
+    };
+    const offer = el('button', { type: 'button', class: 'pill', text: 'Einzelne Befehle', title: 'Ohne UDP-Weg: ein Befehl nach dem anderen über HTTPS', hidden: true, onclick: () => usePlain() });
+    const foot = el('div', { class: 'foot' }, status, offer,
       el('button', { type: 'button', class: 'pill', text: 'Leeren', onclick: () => entry?.term.clear() }),
-      el('button', { type: 'button', class: 'pill', 'aria-label': 'Vollbild', title: 'Vollbild', html: fullIcon, onclick: () => { full.toggle(); entry?.term.focus(); } })));
+      el('button', { type: 'button', class: 'pill', 'aria-label': 'Vollbild', title: 'Vollbild', html: fullIcon, onclick: () => { full.toggle(); entry?.term.focus(); } }));
+    showPty();
     box.addEventListener('click', () => entry?.term.focus());
     // Esc belongs to the shell (vim), not to the sheet around the terminal.
     box.addEventListener('keydown', (e) => { if (e.key === 'Escape') e.stopPropagation(); });
@@ -956,8 +979,8 @@
     }, { capture: true, passive: false });
 
     link.use();
-    const timer = setTimeout(() => { if (held && link.console?.readyState !== 'open') offer.hidden = false; }, 9000);
-    loadXterm().then(() => {
+    let started = performance.now(), xtermReady = false;
+    const openXterm = () => {
       if (stopped || !held) return;
       entry = makeTerminal(bot);
       entry.ctrl = false;
@@ -968,13 +991,21 @@
       status.textContent = 'Verbinde VM-Terminal …';
       link.attachTerminal(view);
       fit();
-      observer = new ResizeObserver(() => { if (box.getBoundingClientRect().width > 0) fit(); });
-      observer.observe(box);
-    }, (err) => { status.textContent = 'xterm.js konnte nicht geladen werden (' + err.message + ').'; offer.hidden = false; });
+      if (!observer) {
+        observer = new ResizeObserver(() => { if (box.getBoundingClientRect().width > 0) fit(); });
+        observer.observe(box);
+      }
+    };
+    const timer = setInterval(() => {
+      if (stopped || plain || !held) return;
+      if (terminalFallback(link.console?.readyState === 'open', performance.now() - started) === 'https')
+        usePlain();
+    }, 400);
+    loadXterm().then(() => { xtermReady = true; openXterm(); }, (err) => { usePlain('xterm.js konnte nicht geladen werden (' + err.message + '). Befehle gehen über HTTPS.'); });
     return { node, stop() {
       if (stopped) return;
       stopped = true;
-      clearTimeout(timer);
+      clearInterval(timer);
       cancelAnimationFrame(frame);
       observer?.disconnect();
       plain?.stop();

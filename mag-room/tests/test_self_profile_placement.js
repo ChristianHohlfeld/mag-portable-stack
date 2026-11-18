@@ -13,6 +13,7 @@ const order = [
   "text: 'Erinnerungen'", "text: 'Jobs'", "text: 'Sicherungen der VM'"
 ].map((label) => within(bot, label));
 assert(order.every((n) => n >= 0), 'every expected per-bot control is present');
+assert(bot.indexOf("terminal: ['Terminal'") < bot.indexOf("text: 'Verhalten'"), 'browser and terminal sit above the long settings');
 assert(order.every((n, i) => i === 0 || n > order[i - 1]), 'bot settings appear in the requested order');
 assert(bot.includes("text: 'Selbstbild'"), 'self profile has its own title');
 assert(bot.includes("'Art', el('small', { text: 'Wie dieser Bot arbeiten soll. Das ist eine Vorgabe.' })"),

@@ -326,6 +326,22 @@
       content.append(el('h3', { text: 'Status' }), status, actsTitle, acts, actsHint);
       sheet.refresh();
 
+      // Browser and shell first: the same controls for every bot, before the
+      // long settings. The view starts when a tab is chosen, not on open.
+      if (b.vm && MAG.liveView) {
+        const box = el('div', { class: 'vm-view' }), tabs = el('div', { class: 'seg vm-tabs' });
+        const views = { browser: ['Browser', MAG.liveView], terminal: ['Terminal', MAG.terminal], files: ['Dateien', MAG.files] };
+        const show = (key) => {
+          live?.stop();
+          live = views[key][1](id);
+          box.replaceChildren(live.node);
+          for (const tab of tabs.children) tab.classList.toggle('on', tab.dataset.key === key);
+        };
+        for (const [key, [label]] of Object.entries(views))
+          if (key === 'browser' || owner()) tabs.append(el('button', { type: 'button', text: label, dataset: { key }, onclick: () => show(key) }));
+        content.append(el('h3', { text: 'VM ' + b.vm }), tabs, box);
+      }
+
       if (owner()) {
         // The name is the address: the site follows it, earlier names lead there.
         const zone = S.zone ? '.' + S.zone : '';
@@ -469,21 +485,6 @@
           }).catch(() => list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Sicherungen nicht lesbar.' })))));
         };
         sheet.saves();
-      }
-
-      // The bot's own VM: its browser, a terminal and its files.
-      if (b.vm && MAG.liveView) {
-        const box = el('div', { class: 'vm-view' }), tabs = el('div', { class: 'seg vm-tabs' });
-        const views = { browser: ['Browser', MAG.liveView], terminal: ['Terminal', MAG.terminal], files: ['Dateien', MAG.files] };
-        const show = (key) => {
-          live?.stop();
-          live = views[key][1](id);
-          box.replaceChildren(live.node);
-          for (const tab of tabs.children) tab.classList.toggle('on', tab.dataset.key === key);
-        };
-        for (const [key, [label]] of Object.entries(views))
-          if (key === 'browser' || owner()) tabs.append(el('button', { text: label, dataset: { key }, onclick: () => show(key) }));
-        content.append(el('h3', { text: 'VM ' + b.vm }), tabs, box);
       }
     });
     opened.addEventListener('closed', () => live?.stop());

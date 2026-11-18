@@ -375,7 +375,8 @@
         // not among the room-wide switches in Einstellungen.
         content.append(el('h3', { text: 'Selbstbild' }),
           el('div', { class: 'card' }, selfProfile(b)),
-          el('p', { class: 'fine', text: 'Die Aufgabe ist die Nachricht im Chat.' }));
+          el('p', { class: 'fine', text: 'Die Aufgabe ist die Nachricht im Chat.' }),
+          el('h3', { text: 'Eigenes Ziel' }), willCard(b));
         // One voice and playback rate per bot, using the existing per-speaker
         // browser preferences. Nothing is copied to server-side bot settings.
         const voiceCard = el('div', { class: 'card' });
@@ -490,53 +491,100 @@
     opened.addEventListener('closed', () => live?.stop());
   }
 
-  // Owner-only profile controls: load privately, preserve unsaved edits on
-  // failure, and serialize per-field changes to avoid out-of-order saves.
+  // Owner-only narrator, using the existing bot self API. A failed save
+  // leaves the draft untouched; no old fields are copied by the browser.
   function selfProfile(bot) {
     const path = '/api/bot/' + encodeURIComponent(bot.id);
     const group = el('div', { class: 'self-profile' });
-    const fields = [['who', 'Wer ich bin'], ['care', 'Was mir wichtig ist'], ['pursue', 'Was ich verfolge']];
-    const inputs = new Map(), saved = {};
-    let loaded = false, pending = Promise.resolve();
+    const field = el('textarea', { rows: 6, maxLength: 1200, disabled: true,
+      'aria-label': 'Innerer Erzähler', placeholder: 'Wie dieser Bot sich selbst beschreibt' });
     const status = el('small', { class: 'fine', text: 'Wird geladen …', role: 'status' });
-    const save = (key, input) => {
+    let loaded = false, saved = '', pending = Promise.resolve(), changed = false;
+    const save = () => {
       if (!loaded) return;
-      const value = input.value;
+      const value = field.value;
       pending = pending.then(async () => {
-        if (saved[key] === value) return;
+        if (saved === value) return;
         status.textContent = 'Speichert …';
         try {
-          await call('PUT', path, { self: { [key]: value } });
-          saved[key] = value;
+          await call('PUT', path, { self: { narrator: value } });
+          saved = value;
           status.textContent = 'Gespeichert';
         } catch {
-          // Keep the input as typed. A later blur or a click on retry saves it.
           status.textContent = 'Nicht gespeichert – erneut versuchen';
         }
       });
     };
-    for (const [key, label] of fields) {
-      const input = el('input', { type: 'text', maxLength: 400, disabled: true, 'aria-label': label,
-        onblur: () => save(key, input),
-        onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } } });
-      inputs.set(key, input);
-      group.append(el('label', { class: 'self-profile-field' }, el('span', { text: label }), input));
-    }
-    const retry = el('button', { class: 'pill', text: 'Speichern', onclick: () => {
-      for (const [key, input] of inputs) save(key, input);
-    } });
-    group.append(el('div', { class: 'self-profile-status' }, status, retry));
-    call('GET', path + '/self').then(data => {
+    field.addEventListener('input', () => { changed = true; });
+    field.addEventListener('blur', save);
+    group.append(el('label', { class: 'self-profile-field' },
+      el('span', { text: 'Innerer Erzähler' }), field),
+      el('div', { class: 'self-profile-status' }, status,
+        el('button', { class: 'pill', text: 'Speichern', onclick: save })));
+    call('GET', path + '/self').then((data) => {
       if (!owner()) return;
-      for (const [key, input] of inputs) {
-        saved[key] = typeof data?.[key] === 'string' ? data[key] : '';
-        input.value = saved[key];
-        input.disabled = false;
-      }
+      saved = typeof data?.narrator === 'string' ? data.narrator : '';
+      if (!changed) field.value = saved;
       loaded = true;
+      field.disabled = false;
       status.textContent = '';
     }).catch(() => { status.textContent = 'Nicht geladen – Einstellungen erneut öffnen'; });
     return group;
+  }
+
+  // Durable goal state is separate from the narrator and persona.
+  function willCard(bot) {
+    const path = '/api/bot/' + encodeURIComponent(bot.id) + '/will';
+    const card = el('div', { class: 'card' });
+    const goal = el('textarea', { rows: 2, maxLength: 800, disabled: true, 'aria-label': 'Eigenes Ziel' });
+    const done = el('textarea', { rows: 2, maxLength: 600, disabled: true, 'aria-label': 'Erledigt wenn' });
+    const state = el('small', { text: 'Wird geladen …', role: 'status' });
+    const progress = el('small', { class: 'fine' });
+    const last = el('small', { class: 'fine' });
+    const save = el('button', { class: 'btn', text: 'Speichern', disabled: true });
+    const hold = el('button', { class: 'btn', text: 'Anhalten', disabled: true });
+    const drop = el('button', { class: 'btn danger', text: 'Leeren', disabled: true });
+    const form = el('div', { class: 'set col' },
+      el('label', { class: 'self-profile-field' }, el('span', { text: 'Ziel' }), goal),
+      el('label', { class: 'self-profile-field' }, el('span', { text: 'Erledigt wenn' }), done),
+      el('div', { class: 'self-profile-status' }, state),
+      el('div', { class: 'set col' }, progress, last),
+      el('div', { class: 'btns' }, save, hold, drop));
+    card.append(form);
+    const render = (w, overwrite = true) => {
+      if (overwrite) { goal.value = w.text || ''; done.value = w.done_when || ''; }
+      state.textContent = 'Stand: ' + ({ none: 'Kein eigenes Ziel', open: 'Offen', held: 'Angehalten', blocked: 'Blockiert',
+        done: 'Erledigt / aufgegeben' }[w.status] || w.status || 'Unbekannt') +
+        (w.by ? ' · von ' + (w.by === 'owner' ? 'Chris' : 'diesem Bot') : '');
+      progress.textContent = 'Fortschritt: ' + (w.progress || '–') + ' · Schritte: ' + (w.steps || 0) + '/8';
+      last.textContent = 'Letzter Schritt: ' + (w.last_tool || '–') +
+        (w.last_tool ? ' · ' + (w.last_ok ? 'erfolgreich' : 'fehlgeschlagen') : '');
+      goal.disabled = done.disabled = save.disabled = drop.disabled = false;
+      hold.disabled = w.status !== 'open';
+    };
+    let busy = false;
+    const action = async (kind) => {
+      if (busy) return;
+      busy = true;
+      for (const control of [save, hold, drop]) control.disabled = true;
+      try {
+        const result = await call('PUT', path, { action: kind, ...(kind === 'save'
+          ? { text: goal.value, done_when: done.value } : {}) });
+        render(result);
+      } catch {
+        // Keep the user's text and offer retry.
+        save.disabled = drop.disabled = false;
+        hold.disabled = false;
+      } finally { busy = false; }
+    };
+    save.addEventListener('click', () => action('save'));
+    hold.addEventListener('click', () => action('hold'));
+    drop.addEventListener('click', async () => {
+      if (await MAG.confirm('Eigenes Ziel leeren?', 'Dieses Ziel wird entfernt.', 'Leeren', true))
+        action('drop');
+    });
+    call('GET', path).then(render).catch(() => { state.textContent = 'Ziel nicht lesbar.'; });
+    return card;
   }
 
   // ---- settings: everything in one place ----------------------------------

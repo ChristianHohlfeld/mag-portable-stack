@@ -303,6 +303,15 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"));
     list.push(fn("s23_screenshot", "Take a screenshot of the phone. You are told its size, not shown the picture.", R"({"type":"object","properties":{}})"));
   }
+  // Stable schemas independent of current will state: no KV prefix churn.
+  list.push(fn("will_set", "Choose one own goal in an unattended bot conversation, with a verifiable finish condition.",
+               R"({"type":"object","properties":{"text":{"type":"string"},"done_when":{"type":"string"}},"required":["text","done_when"]})"));
+  list.push(fn("will_progress", "Record factual progress on the existing own goal; do not claim a tool ran unless it did.",
+               R"({"type":"object","properties":{"progress":{"type":"string"}},"required":["progress"]})"));
+  list.push(fn("will_finish", "Finish your own goal only after at least one successful actual step.",
+               R"({"type":"object","properties":{"progress":{"type":"string"}}})"));
+  list.push(fn("will_drop", "Abandon your own goal; it stays closed until explicitly replaced.",
+               R"({"type":"object","properties":{}})"));
   return list;
 }
 
@@ -312,6 +321,10 @@ inline std::string title(const std::string &name, const Val &args) {
     for (auto &c : s) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
     return clip(trim(s), max, "…");
   };
+  if (name == "will_set") return "Setzt eigenes Ziel";
+  if (name == "will_progress") return "Aktualisiert eigenes Ziel";
+  if (name == "will_finish") return "Schließt eigenes Ziel ab";
+  if (name == "will_drop") return "Gibt eigenes Ziel auf";
   if (name == "shell") return "$ " + one(jstr(args, "command"), 140);
   if (name == "delete_file") return "Löscht " + one(jstr(args, "path"), 90);
   if (name == "write_file") return "Schreibt " + one(jstr(args, "path"), 100);

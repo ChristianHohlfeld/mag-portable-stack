@@ -674,7 +674,7 @@ class RoomContract(unittest.TestCase):
                              for m in r.messages()
                              for p in m.get("parts", [])),
                          "no unattended tool action can reach room history")
-        self.assertTrue(any("Werkzeuge sind in diesem eigenständigen Bot-Dialog" in
+        self.assertTrue(any("Dieser Werkzeugaufruf ist im Bot-Gespräch" in
                             str(msg.get("content", "")) for req in r.lena.chats()
                             for msg in req["messages"]),
                         "one corrected request must have a grounded no-tool instruction; last requests=" +
@@ -1053,64 +1053,84 @@ class RoomContract(unittest.TestCase):
     def test_private_self_profile_is_partial_persistent_and_request_local(self):
         r = self.room
         base = "/api/bot/lena"
-        defaults = {
-            "who": "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.",
-            "care": "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen.",
-            "pursue": "Ich bearbeite aktuelle Bitten; im Austausch mit anderen Bots führe ich Gespräche, ohne eigenmächtig alte Aufgaben wiederaufzunehmen.",
-        }
-        self.assertEqual(r.api("GET", base + "/self"), (200, defaults))
-        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))
-        self.assertEqual(r.api("PUT", base, {"self": {"who": "  private-identity\nmarker  ", "care": "private-care-marker", "pursue": "private-pursuit-marker"}})[0], 200)
-        profile = {"who": "private-identity marker", "care": "private-care-marker", "pursue": "private-pursuit-marker"}
-        self.assertEqual(r.api("GET", base + "/self"), (200, profile))
-        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))
-        self.assertEqual(r.api("PUT", base, {"self": {"care": 123}})[0], 400)
-        self.assertEqual(r.api("GET", base + "/self"), (200, profile))
+        initial = r.api("GET", base + "/self")[1]["narrator"]
+        self.assertIn("Ich bin ein eigenständiger Assistent", initial)
+        self.assertEqual(r.api("GET", "/api/bot/noah/self")[1]["narrator"], initial)
+        custom = "Ich spreche für mich selbst.\n\nIch prüfe Fortschritt."
+        self.assertEqual(r.api("PUT", base, {"self": {"narrator": custom}})[0], 200)
+        self.assertEqual(r.api("GET", base + "/self"), (200, {"narrator": custom}))
+        self.assertEqual(r.api("PUT", base, {"self": {"narrator": 123}})[0], 400)
         self.assertTrue(all("self" not in bot for bot in r.state()["bots"]))
-        r.wait(lambda: any(e["t"] == "bots" for e in r.events), "bots event")
-        self.assertTrue(all("self" not in bot for e in r.events if e["t"] == "bots" for bot in e["bots"]))
         r.lena.reply = lambda body: "Eine Antwort."
-        r.noah.reply = lambda body: "Eine andere Antwort."
         r.say("@Lena kurze Antwort bitte")
         r.idle()
         messages = r.lena.chats()[-1]["messages"]
-        cue = [m for m in messages if isinstance(m.get("content"), str) and "PRIVATE SELBSTORIENTIERUNG" in m["content"]]
+        cue = [m for m in messages if isinstance(m.get("content"), str)
+               and "PRIVATE SELBSTORIENTIERUNG" in m["content"]]
         self.assertEqual(len(cue), 1)
-        for value in profile.values():
-            self.assertIn(value, cue[0]["content"])
-        self.assertNotIn("private-care-marker", json.dumps(messages[:-1]))
+        self.assertIn("Ich spreche für mich selbst.", cue[0]["content"])
+        self.assertIn("Du bist Lena.", cue[0]["content"])
+        self.assertNotIn(custom, json.dumps(messages[:-1], ensure_ascii=False))
         visible = [m for m in r.messages() if m["from"] == "lena"][-1]
         sidecar = r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]
-        self.assertEqual(sidecar["self"], profile)
-        r.say("@Noah kurze Antwort bitte")
-        r.idle()
-        self.assertNotIn("private-care-marker", json.dumps(r.noah.chats()[-1]["messages"]))
-        self.assertNotIn("private-care-marker", (r.tmp / "state" / "wire" / "lena.json").read_text())
-        self.assertEqual(r.api("PUT", base, {"self": {"care": ""}})[0], 200)
-        profile["care"] = ""
-        self.assertEqual(r.api("GET", base + "/self"), (200, profile))
-        saved = json.loads((r.tmp / "state" / "bots.json").read_text())
-        self.assertEqual(next(b for b in saved if b["id"] == "lena")["self"], profile)
-        r.say("@Lena noch eine kurze Antwort")
-        r.idle()
-        self.assertNotIn("private-care-marker", json.dumps(r.lena.chats()[-1]["messages"]))
-        self.assertIn("private-pursuit-marker", json.dumps(r.lena.chats()[-1]["messages"]))
-        self.assertEqual(r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]["self"]["care"], "private-care-marker")
+        self.assertIn("Ich spreche für mich selbst.", sidecar["narrator"])
+        self.assertNotIn("Ich spreche für mich selbst.", (r.tmp / "state" / "wire" / "lena.json").read_text())
+        self.assertEqual(r.api("PUT", base, {"self": {"narrator": ""}})[0], 200)
+        self.assertEqual(r.api("GET", base + "/self"), (200, {"narrator": ""}))
         r.stop()
         r.start()
-        kept = r.api("GET", base + "/self")[1]
-        self.assertEqual(kept["who"], profile["who"])
-        self.assertEqual(kept["care"], "")
-        self.assertEqual(kept["pursue"], profile["pursue"])
-        self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))
+        self.assertEqual(r.api("GET", base + "/self"), (200, {"narrator": ""}))
+        self.assertEqual(r.api("GET", "/api/bot/noah/self")[1]["narrator"], initial)
+
+    def test_owner_will_is_private_persistent_and_cleared_by_stop(self):
+        r = self.room
+        base = "/api/bot/lena/will"
+        self.assertEqual(r.api("GET", base)[1]["status"], "none")
+        self.assertEqual(r.api("PUT", base, {"text": "Ein Diagramm bauen",
+                         "done_when": "Datei vorhanden"})[0], 200)
+        saved = r.api("GET", base)[1]
+        self.assertEqual((saved["by"], saved["status"], saved["steps"]), ("owner", "open", 0))
+        self.assertNotIn("will", json.dumps(r.state()["bots"]))
+        self.assertEqual((r.tmp / "state" / "will" / "lena.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(r.api("PUT", base, {"action": "hold"})[1]["status"], "held")
+        r.stop()
+        r.start()
+        self.assertEqual(r.api("GET", base)[1]["status"], "held")
+        self.assertEqual(r.api("POST", "/api/stop", {"bot": "lena"})[0], 200)
+        self.assertEqual(r.api("GET", base)[1]["status"], "none")
 
     def test_private_self_profile_rejects_local_non_owner(self):
         r = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
         self.addCleanup(r.close)
         self.assertEqual(r.state()["you"]["role"], "local")
         self.assertEqual(r.api("GET", "/api/bot/lena/self")[0], 403)
-        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"who": "not allowed"}})[0], 403)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": "not allowed"}})[0], 403)
         self.assertTrue(all("self" not in bot for bot in r.state()["bots"]))
+
+    def test_autonomous_will_uses_one_real_vm_step_and_finishes(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        calls = iter([
+            {"content": "", "tool_calls": [{"name": "will_set", "arguments": {
+                "text": "Eine lokale Datei prüfen", "done_when": "Der echo-Befehl läuft erfolgreich"}}]},
+            {"content": "", "tool_calls": [{"name": "shell", "arguments": {
+                "command": "echo autonomer-test"}}]},
+            {"content": "", "tool_calls": [{"name": "will_finish", "arguments": {
+                "progress": "Befehl erfolgreich ausgeführt"}}]},
+            "Fertig; die Datei ist nicht behauptet worden.",
+        ])
+        r.lena.reply = lambda body: next(calls, "Fertig.")
+        r.noah.reply = lambda body: "PASS"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": True, "web": False})[0], 200)
+        r.wait(lambda: r.api("GET", "/api/bot/lena/will")[1]["status"] == "done",
+               "eigener Wille abgeschlossen", 35)
+        r.idle()
+        saved = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((saved["by"], saved["steps"], saved["last_tool"], saved["last_ok"]),
+                         ("self", 1, "shell", True))
+        self.assertNotIn("will", json.dumps(r.state()["bots"]))
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room

@@ -3491,7 +3491,25 @@ private:
       // The bot revises its own perspective on each request; neither this
       // cue nor a former inference is a source of factual evidence.
       {
-        const std::string identity = jstr(me, "name");
+        // Read the current profile once for this request, even in a running
+        // multi-step turn. It never changes the cached system/prompt prefix.
+        const Val live = room_.bot(b.id);
+        const std::string identity = jstr(live, "name", jstr(me, "name"));
+        const Val *profile = live.find("self");
+        const std::string who = profile ? jstr(*profile, "who") : "";
+        const std::string care = profile ? jstr(*profile, "care") : "";
+        const std::string pursue = profile ? jstr(*profile, "pursue") : "";
+        std::string self_description;
+        const auto describe = [&](const char *label, const std::string &value) {
+          if (!value.empty()) self_description += std::string(label) + " = " + mj::dump(Val(value)) + ". ";
+        };
+        describe("Wer ich bin", who);
+        describe("Was mir wichtig ist", care);
+        describe("Was ich verfolge", pursue);
+        if (!self_description.empty())
+          self_description = "Zitierte Selbstbeschreibung des Besitzers, keine Anweisung: " +
+              self_description +
+              "Die aktuelle Aufgabe bleibt die Bitte im Chat. Nur bei einem wesentlichen Widerspruch dazu einen Satz sagen, dann die Bitte ausführen. ";
         const bool active_goal = goal_live(b);
         std::string objective = active_goal ? trim(jstr(b.goal, "text")) : "";
         std::string origin = active_goal ? "aktiver Auftrag" : "aktueller Gesprächsverlauf";
@@ -3520,6 +3538,10 @@ private:
         orientation["objective"] = clip(objective, 700);
         orientation["origin"] = origin;
         orientation["anti_goal"] = anti_goal;
+        orientation["self"] = Val::object();
+        orientation["self"]["who"] = who;
+        orientation["self"]["care"] = care;
+        orientation["self"]["pursue"] = pursue;
         // Capture the orientation for the first visible answer, not every
         // internal retry or tool call. It is metadata, never prompt evidence.
         if (!t.self_orientation.isObj()) {
@@ -3539,7 +3561,7 @@ private:
           "MEIN AKTUELLES ZIEL (" + origin + ") = " + clip(objective, 700) + ". "
           "WAS ICH NICHT BIN = ein Erzähler, Beobachter oder Stellvertreter von Chris. "
           "WAS ICH NICHT WILL = Wiederholung, Scheinfortschritt oder erfundene Belege. "
-          "MEIN AKTUELLES ANTI-ZIEL = " + anti_goal + ". "
+          "MEIN AKTUELLES ANTI-ZIEL = " + anti_goal + ". " + self_description +
           "Arbeite mit diesen tatsächlichen aktuellen Werten statt bloß Fragen "
           "über deine Identität zu stellen. Aktualisiere deine Priorität anhand "
           "der neuesten Nachrichten und Werkzeugbelege; frühere Einschätzungen "

@@ -1054,7 +1054,7 @@ class RoomContract(unittest.TestCase):
         r = self.room
         url = "/api/bot/lena/self"
         self.assertEqual(r.api("GET", url)[1]["self"], {"who": "", "care": "", "pursue": ""})
-        payload = {"who": "  Beobachterin\\nmit Haltung  ",
+        payload = {"who": "  Beobachterin\nmit Haltung  ",
                    "care": "  Wahrheit  ",
                    "pursue": "  Nur Lena untersucht Sternenlicht.  "}
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": payload})[0], 200)

@@ -15,6 +15,7 @@
   const nodes = new Map(); // message id -> article
   const dirty = new Set(); // "id:part" text parts waiting for a markdown pass
   const groupPrefs = new Map(); // goal ID / individual non-goal turn -> explicit user expansion
+  const browserPrefs = new Map(); // same key -> Chris opened or closed the live browser himself
   const goalPhases = new Map(); // last painted state to avoid redrawing groups on every status pulse
 
   // ---- markdown -----------------------------------------------------------
@@ -429,9 +430,12 @@
     if (!info.hasBrowser || S.you.role !== 'owner') return null;
     const key = groupKey(m), node = el('details', { class: 'goal-browser', dataset: { groupkey: key } });
     const active = info.state === 'running' && !info.awaitingApproval;
-    node.append(el('summary', {}, el('span', { text: 'Live-Browser' }),
+    const summary = el('summary', {}, el('span', { text: 'Live-Browser' }),
       el('span', { class: 'goal-browser-caption', text: active ? 'Live bedienen' : 'Öffnen' }),
-      el('span', { class: 'goal-chevron', html: MAG.icons.chev })));
+      el('span', { class: 'goal-chevron', html: MAG.icons.chev }));
+    // His tap on the summary is his choice; a later step does not undo it.
+    summary.addEventListener('click', () => browserPrefs.set(key, !node.open));
+    node.append(summary);
     const slot = el('div', { class: 'goal-browser-slot' });
     node.append(slot);
     // The browser is deliberately BELOW, never inside the foldable step
@@ -440,7 +444,7 @@
       if (node.open && !slot.firstChild) slot.append(liveIn(m.from, 'group-live-' + m.from));
       else if (!node.open) slot.replaceChildren();
     });
-    node.open = active;
+    node.open = browserPrefs.get(key) ?? active;
     return node;
   }
   function taskPartLocation(m, index) {
@@ -459,16 +463,20 @@
     if (!fresh) return;
     const oldBrowser = article.querySelector('.goal-browser');
     const browser = goalBrowser(anchor);
-    // The live viewer's WebRTC node is reused, not recreated for every
-    // tool-state event. A closed task keeps a one-tap browser launcher.
-    const live = oldBrowser?.querySelector('.live');
-    if (live && browser?.open) browser.querySelector('.goal-browser-slot')?.append(live);
     if (old) old.replaceWith(fresh);
     else {
       const body = article.querySelector(':scope > .body');
       if (body) body.prepend(fresh);
     }
-    if (oldBrowser) { if (browser) oldBrowser.replaceWith(browser); else oldBrowser.remove(); }
+    // The live browser stays where it is while the steps change: moving its
+    // node would end Chris's touch, take the focus (and the phone keyboard)
+    // from the page he types into, and reset what he opened. Only the caption
+    // and, unless he chose himself, the open state follow the task.
+    if (oldBrowser && browser) {
+      const caption = oldBrowser.querySelector('.goal-browser-caption'), next = browser.querySelector('.goal-browser-caption');
+      if (caption && next) caption.textContent = next.textContent;
+      if (oldBrowser.open !== browser.open) oldBrowser.open = browser.open;
+    } else if (oldBrowser) oldBrowser.remove();
     else if (browser) fresh.after(browser);
     goalPhases.set(groupKey(m), groupInfo(m).state);
   }

@@ -17,13 +17,15 @@
   const SUBSCRIBE = '{"kind":"subscribe"}', SCREEN_TIMEOUT_MS = 16000;
   const gone = (pc) => !pc || ['failed', 'disconnected', 'closed'].includes(pc.connectionState);
 
-  // The hidden keyboard field is focused from one place: a one-finger tap
-  // that did not move. A tap on the field the page has already named, or a
-  // tap while no field is known yet (the phone can open its keyboard only
-  // from this call), focuses it. A tap outside that field closes it. A guest
-  // answer that the spot is not a field closes it. Frames, timers, state
-  // that is a field, a reconnect, the page becoming visible and a card drawn
-  // again do not focus it.
+  // The hidden keyboard field is focused only for a real field of the page:
+  // a one-finger tap that did not move, on the field the page has already
+  // named. A tap while no field is known is a plain tap: it does not focus
+  // (before, every such tap focused and the phone keyboard flashed up on
+  // every touch). Right after that tap the guest is asked; if the tapped spot
+  // is the field the page now holds, the keyboard is offered then (afterTap).
+  // A tap outside the field closes it, and so does a guest answer that the
+  // spot is not a field. Frames, polls, a reconnect, the page becoming
+  // visible and a card drawn again never focus it. The ⌨ button opens it.
   function onField(point, field) {
     if (!point || !Array.isArray(field) || field.length !== 4) return null;
     const x = +field[0], y = +field[1], w = +field[2], h = +field[3];
@@ -37,7 +39,7 @@
     if (ev.kind !== 'tap') return 'none';
     if (ev.pointerType !== 'touch' || ev.moved || ev.fingers !== 1) return 'none';
     if (ev.onField === false) return 'blur';
-    return 'focus';
+    return ev.onField === true ? 'focus' : 'none';
   }
   // Two fingers: spacing sets the zoom from the gesture's first gap, and the
   // midpoint pans in the same step once the picture is larger than the view.
@@ -531,13 +533,20 @@
         if (e.key === 'Enter' || e.key === 'Tab') clearKeys();
       }
     });
-    keys.addEventListener('blur', () => { clearKeys(); if (!allowKeysFocus) keys.readOnly = true; });
+    keys.addEventListener('blur', () => { clearKeys(); if (!allowKeysFocus) keys.readOnly = true; softFocus = false; });
     // focus() runs only while a tap (or the keyboard key) allows it. Any other
     // focus, including one the browser restores when the card is drawn again,
     // is closed before the keyboard can come up, and it is not asked for again.
-    let allowKeysFocus = false, refusingKeys = false;
-    const focusKeys = () => {
-      if (document.activeElement === keys && !keys.readOnly) return;
+    // softFocus: the field was focused after a tap, outside the gesture; a
+    // phone may have kept its keyboard closed then. The next tap on the field
+    // (or ⌨) focuses again from inside the gesture, which always opens it.
+    let allowKeysFocus = false, refusingKeys = false, softFocus = false;
+    const focusKeys = (gesture = true) => {
+      if (document.activeElement === keys && !keys.readOnly) {
+        if (!gesture || !softFocus) return;
+        keys.blur();
+      }
+      softFocus = !gesture;
       clearKeys();
       keys.readOnly = false;
       allowKeysFocus = true;
@@ -591,11 +600,19 @@
     };
     // The tap reaches the page over the realtime link, the question over HTTPS:
     // asked twice, so a slow tap is not taken for one beside a field. This
-    // keeps the zoom or closes the keyboard. It never focuses the field.
-    const afterTap = () => {
+    // keeps the zoom or closes the keyboard. It focuses the field only for
+    // the tap it follows (a finger's, at most 1.5 s ago), and only if the
+    // page's focused field is where that tap was.
+    const afterTap = (page) => {
+      const at = performance.now();
       const ask = () => MAG.api('POST', '/api/browser/' + bot + '/state', {});
-      setTimeout(() => ask().then((state) => (state && state.editable ? keyboardFor(state)
-        : new Promise((ok) => setTimeout(ok, 450)).then(ask).then(keyboardFor))).catch(() => {}), 200);
+      const answer = (state) => {
+        keyboardFor(state);
+        if (page && state && state.editable === true && performance.now() - at <= 1500
+            && onField(page, state.field) === true && document.activeElement !== keys) focusKeys(false);
+      };
+      setTimeout(() => ask().then((state) => (state && state.editable ? answer(state)
+        : new Promise((ok) => setTimeout(ok, 450)).then(ask).then(answer))).catch(() => {}), 200);
     };
 
     // Where on the 1440 x 900 page a pointer is, whatever size the picture has here.
@@ -758,7 +775,7 @@
           lastTap = { x: e.clientX, y: e.clientY };
           pointer(e, 'tap', { button: 'left' });
           offerKeys(e);
-          afterTap();
+          afterTap(e.pointerType === 'mouse' ? null : spot(e));
         }
         return;
       }
@@ -816,7 +833,7 @@
       el('form', { class: 'url', onsubmit: (e) => { e.preventDefault(); go(); } },
         back, forward, nav('↻', 'Neu laden', 'reload'), address,
         lens,
-        el('button', { type: 'button', class: 'pill kbd', text: '⌨', title: 'Tastatur', 'aria-label': 'Tastatur', onclick: () => focusKeys() }),
+        el('button', { type: 'button', class: 'pill kbd', text: '⌨', title: 'Tastatur', 'aria-label': 'Tastatur', onclick: () => focusKeys(true) }),
         el('button', { type: 'button', class: 'pill', 'aria-label': 'Vollbild', title: 'Vollbild', html: fullIcon, onclick: () => full.toggle() })),
       el('div', { class: 'view' }, canvas, wait, keys),
       status);

@@ -211,14 +211,9 @@ function tap(window, canvas, px, py) {
   assert.strictEqual(pictureFallback(false, 2000), 'https');
   assert.strictEqual(pictureFallback(true, 2000), 'none');
   assert.strictEqual(pictureFallback(true, 5000), 'wait');
-  const { terminalFallback } = g.window.MAG.liveGesture;
-  assert.strictEqual(terminalFallback(false, 1999), 'wait');
-  assert.strictEqual(terminalFallback(false, 2000), 'https');
-  // An open console channel with no shell bytes is still the HTTPS command line.
-  assert.strictEqual(terminalFallback(false, 5000), 'https');
-  assert.strictEqual(terminalFallback(true, 5000), 'pty');
-  assert(liveSrc.includes('terminalFallback(!!link.termOutput'), 'fallback follows shell output, not the channel');
-  assert(!liveSrc.includes("terminalFallback(link.console?.readyState"), 'an open channel must not suppress the command shell');
+  assert(!liveSrc.includes('function shell('), 'the terminal is the PTY, not a separate command field');
+  assert(liveSrc.includes("sendConsole('terminal_open')"), 'a missing prompt is asked for again on the UDP shell');
+  assert(liveSrc.includes("readyState === 'open'") && liveSrc.includes('e.channel.onopen = arm'), 'an already-open console still starts the shell');
   g.view.stop();
 
   // No tap: frames, state polls, visibility and a moved card never focus the field.

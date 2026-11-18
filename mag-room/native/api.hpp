@@ -1654,7 +1654,8 @@ private:
             le(extra, 0x0001, 2); le(extra, 16, 2);
             le(extra, e.size, 8); le(extra, e.size, 8);
           }
-          le(local, 0x04034b50, 4); le(local, big || far ? 45 : 20, 2);
+          // The local header and descriptor describe the file size, not its archive offset.
+          le(local, 0x04034b50, 4); le(local, big ? 45 : 20, 2);
           le(local, 0x0808, 2); le(local, 0, 2); // stored + descriptor + UTF-8
           le(local, e.when, 4); le(local, 0, 4);
           le(local, big ? LIM32 : 0, 4); le(local, big ? LIM32 : 0, 4);

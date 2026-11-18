@@ -198,6 +198,26 @@ public:
     return true;
   }
 
+  // Private presentation metadata, separate from messages_, the event bus
+  // and all bot context. Only the owner endpoint reads it.
+  void save_self_orientation(const std::string &id, const Val &orientation) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = messages_.find(id);
+    if (it == messages_.end() || jstr(it->second, "role") != "bot" || !orientation.isObj()) return;
+    const std::string dir = cfg.state_dir + "/self-orientation";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return;
+    chmod(dir.c_str(), 0700);
+    write_json(dir + "/" + id + ".json", orientation, 0600);
+  }
+  Val self_orientation(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = messages_.find(id);
+    if (it == messages_.end() || jstr(it->second, "role") != "bot") return Val::object();
+    return read_json(cfg.state_dir + "/self-orientation/" + id + ".json");
+  }
+
   // Applies fn and publishes the whole message. For rare, structural changes
   // (state, attachments, 3D progress); streaming uses the appenders below.
   bool update(const std::string &id, const std::function<void(Val &)> &fn, bool persist = true) {
@@ -355,6 +375,7 @@ public:
     drop_files_locked(it->second);
     messages_.erase(it);
     unlink((cfg.state_dir + "/messages/" + id + ".json").c_str());
+    unlink((cfg.state_dir + "/self-orientation/" + id + ".json").c_str());
     Val ev = Val::object();
     ev["id"] = id;
     bus.publish("gone", ev);
@@ -369,7 +390,7 @@ public:
     for (auto &kv : messages_) gone.push_back(kv.second);
     messages_.clear();
     std::error_code ec;
-    for (const char *sub : {"/messages", "/files", "/uploads", "/vision", "/text"}) {
+    for (const char *sub : {"/messages", "/files", "/uploads", "/vision", "/text", "/self-orientation"}) {
       fs::remove_all(cfg.state_dir + sub, ec);
       fs::create_directories(cfg.state_dir + sub, ec);
     }
@@ -685,6 +706,7 @@ private:
     if (!settings_.find("auto_chat_visible")) settings_["auto_chat_visible"] = true;
     // Optional voluntary PASS in bot-to-bot dialogue (legacy default: on).
     if (!settings_.find("pass_enabled")) settings_["pass_enabled"] = true;
+    if (!settings_.find("show_self_orientation")) settings_["show_self_orientation"] = false;
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");

@@ -493,7 +493,7 @@
   // failure, and serialize per-field changes to avoid out-of-order saves.
   function selfProfile(bot) {
     const path = '/api/bot/' + encodeURIComponent(bot.id);
-    const group = el('div', { class: 'self-profile' }, el('b', { text: bot.name }));
+    const group = el('div', { class: 'self-profile' });
     const fields = [['who', 'Wer ich bin'], ['care', 'Was mir wichtig ist'], ['pursue', 'Was ich verfolge']];
     const inputs = new Map(), saved = {};
     let loaded = false, pending = Promise.resolve();

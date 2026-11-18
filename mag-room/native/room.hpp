@@ -647,6 +647,8 @@ private:
     b["enabled"] = true;
     b["thinking"] = false;
     b["persona"] = "";
+    b["self"] = Val::object();
+    for (const char *key : {"who", "care", "pursue"}) b["self"][key] = "";
     b["memory"] = Val::array();
     return b;
   }

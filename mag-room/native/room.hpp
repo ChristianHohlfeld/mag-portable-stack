@@ -774,6 +774,8 @@ private:
     // The will line in the chat is owner display only. Missing means visible,
     // so an older "Gedanken" flag that defaulted to off does not hide it.
     if (!settings_.find("show_will_line")) settings_["show_will_line"] = true;
+    // The owner's file notification (filewatch.hpp): on unless switched off.
+    if (!settings_.find("file_watch")) settings_["file_watch"] = true;
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");

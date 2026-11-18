@@ -538,6 +538,8 @@ public:
   std::function<void(const std::string &, const std::string &, int64_t, bool)> on_answer;
   // Called when a bot waits for the owner's approval: (bot name, what it wants to do).
   std::function<void(const std::string &, const std::string &)> on_approval;
+  // Called when a tool step of a bot is over (bot id): the owner's file notification looks.
+  std::function<void(const std::string &)> on_tool_done;
 
   // The owner resets one bot: completely back to its first day. Its turn is
   // cut off at once, its prompt log, its slot in the model server and its
@@ -4666,6 +4668,7 @@ private:
           if (jstr(s, "output").empty()) s["output"] = clip(result.shown.empty() ? result.text : result.shown, 16000, "\n…[gekürzt]");
           if (c.name == "shell" && starts_with(result.text, "exit=")) s["exit"] = atoi(result.text.c_str() + 5);
         });
+        if (on_tool_done) on_tool_done(b.id);
         if (result.ok) {
           t.ok_tool = true;
           // A real browser operation or saved criterion is progress. Do not

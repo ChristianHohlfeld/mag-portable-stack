@@ -962,3 +962,19 @@ article.flash { animation: flash 1.6s ease-out; }
 .self-profile-field { display: grid; gap: 4px; color: var(--muted); font-size: .8rem; }
 .self-profile-field input { width: 100%; min-width: 0; }
 .self-profile-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* The owner's file notification (filewatch.js): a quiet count in the header, a list that unfolds. */
+#filewatch { position: relative; }
+#filewatch .fw-count { position: absolute; top: 4px; right: 3px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; }
+#filewatch .fw-count:empty { display: none; }
+.fw-list { display: flex; flex-direction: column; gap: 6px; }
+.fw-row { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+.fw-row summary { display: grid; grid-template-columns: 20px 1fr; column-gap: 8px; cursor: pointer; list-style: none; }
+.fw-row summary::-webkit-details-marker { display: none; }
+.fw-row summary small { grid-column: 2; color: var(--muted); }
+.fw-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all; }
+.fw-kind { grid-row: span 2; font-weight: 700; text-align: center; color: var(--muted); }
+.fw-neu { color: var(--ok); } .fw-geloescht { color: var(--bad); } .fw-geaendert { color: var(--warn); }
+.fw-detail { max-height: 50vh; overflow: auto; padding: 10px; border-radius: 8px; background: var(--code, var(--surface)); font-size: 12px; white-space: pre; margin: 6px 0 2px; }
+.fw-detail .add { color: var(--ok); } .fw-detail .del { color: var(--bad); } .fw-detail .hunk { color: var(--muted); }

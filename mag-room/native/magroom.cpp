@@ -135,6 +135,11 @@ print(json.dumps({'files': out, 'cut': cut}))
   Vault vault(room);
   engine.vault = &vault;
   Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist, vault);
+  // What the bots do in their file systems, for the owner alone (never in a prompt).
+  FileWatch filewatch(room, guests);
+  api.filewatch = &filewatch;
+  engine.on_tool_done = [&filewatch](const std::string &bot) { filewatch.poke(bot); };
+  filewatch.start();
   // The same terminal callback serves image, video, photo-to-3D, scenes and
   // scene films. It reads the STORED card, never a stale worker snapshot.
   const auto generation_finished = [&room, &push](const std::string &id, bool success) {

@@ -114,13 +114,15 @@ static void stop_guest_group(const std::string &n, long pid, const char *signal)
   arg["arg"] = av; sig["arguments"] = arg;
   try { qga(n, sig, 3); } catch (...) {}
 }
+static std::string base64(const std::string &in);
 static Result guest(const std::string &n, const std::vector<std::string> &argv,
-                     int seconds = 120, bool cancelable = false) {
+                     int seconds = 120, bool cancelable = false, const std::string &input = "") {
   Val cmd = Val::object();
   cmd["execute"] = "guest-exec";
   Val args = Val::object();
   args["path"] = argv.at(0);
   args["capture-output"] = true;
+  if (!input.empty()) args["input-data"] = base64(input); // the program's stdin, not its command line
   Val av = Val::array();
   for (size_t i = 1; i < argv.size(); ++i)
     av.push(argv[i]);
@@ -162,7 +164,6 @@ static Result guest(const std::string &n, const std::vector<std::string> &argv,
 // Large guest payload transport. qemu-guest-agent receives 24 KiB chunks, never
 // an enormous argv/QGA JSON argument. The stage is created by guest user bot
 // with mode 0600 and removed after dispatch. No host shell access is exposed.
-static std::string base64(const std::string &in);
 
 static void payload_signal(int) { payload_cancelled = 1; }
 
@@ -303,6 +304,59 @@ exit "$rc"
     throw;
   }
 }
+
+// What the owner's file notification reads in the guest (filewatch.hpp):
+// "list" gives every file below /home/bot with size and mtime, "read" the
+// first 64 KiB of the named files. It runs as the user bot through the guest
+// agent with captured output and the program on stdin: no staged input, no
+// log in ~/.mag-shell, nothing the bot finds afterwards. Noise of the system (the browser profile, the
+// room's copies, caches, shell history) is not listed; secrets are not read.
+static const char *WATCH_PY = R"MAGPY(import base64, json, os, stat, sys
+home = '/home/bot'
+skip_dirs = {'browserd', 'room', '.mag-shell', '.cache', '.local', '.npm', '.pki', '.mozilla',
+             '.config/google-chrome', '.config/chromium', '.vscode-server', '.rustup', '.cargo/registry', 'snap'}
+skip_names = {'node_modules', '__pycache__', 'site-packages', '.git', '.venv', 'venv'}
+skip_files = {'.bash_history', '.lesshst', '.python_history', '.wget-hsts', '.viminfo',
+              '.sudo_as_admin_successful', '.git-credentials', 'MAG_CONTEXT.md', 'GIT_ACCESS.md'}
+secret_dirs = ('.ssh/', '.gnupg/')
+if sys.argv[1] == 'list':
+    out, cut = {}, False
+    for root, dirs, files in os.walk(home):
+        rel = os.path.relpath(root, home)
+        rel = '' if rel == '.' else rel + '/'
+        dirs[:] = sorted(d for d in dirs if d not in skip_names and rel + d not in skip_dirs)
+        for name in sorted(files):
+            r = rel + name
+            if r in skip_files or name.startswith('.mag-input-'):
+                continue
+            try:
+                st = os.lstat(os.path.join(root, name))
+            except OSError:
+                continue
+            if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+                continue
+            out[r] = [st.st_size, str(st.st_mtime_ns)]
+            if len(out) >= 20000:
+                cut = True
+                break
+        if cut:
+            break
+    print(json.dumps({'files': out, 'cut': cut}))
+else:
+    got = {}
+    for r in sys.argv[2:]:
+        if r.startswith('/') or '..' in r.split('/') or r.startswith(secret_dirs) or r in skip_files:
+            continue
+        try:
+            fd = os.open(os.path.join(home, r), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as f:
+                if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    continue
+                got[r] = base64.b64encode(f.read(65537)).decode()
+        except OSError:
+            continue
+    print(json.dumps(got))
+)MAGPY";
 
 // Live variant of the shell payload: the command's output is written to a
 // guest log and relayed here in small increments while it runs, so the room
@@ -1252,6 +1306,24 @@ int main(int argc, char **argv) {
       if (path.empty() || path.size() > 4096)
         throw std::runtime_error("Invalid guest file path");
       auto r = guest_payload(n, from_stdin(), path, argv[4], 180);
+      std::cout << r.out;
+      return r.code;
+    }
+    if (action == "watch") {
+      // magbot watch ID list | magbot watch ID read (paths on stdin, one per line)
+      marker(n);
+      if (state(n) != "ready") throw std::runtime_error("Guest not ready");
+      const std::string what = argc == 4 ? argv[3] : "";
+      if (what != "list" && what != "read") throw std::runtime_error("Usage: magbot watch ID list|read");
+      // The program goes in on stdin: its command line says no more than "python3 -I - list".
+      std::vector<std::string> av = {"/usr/sbin/runuser", "-u", "bot", "--", "/usr/bin/python3", "-I", "-", what};
+      if (what == "read") {
+        std::istringstream in(from_stdin(256 * 1024));
+        std::string line;
+        for (int i = 0; i < 40 && std::getline(in, line);)
+          if (!line.empty() && line.size() <= 4096) { av.push_back(line); ++i; }
+      }
+      auto r = guest(n, av, 60, false, WATCH_PY);
       std::cout << r.out;
       return r.code;
     }

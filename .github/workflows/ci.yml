@@ -73,6 +73,7 @@ jobs:
           node mag-room/tests/test_bot_name_prefix.js
           node mag-room/tests/test_self_profile_placement.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules MAG_SKIP_CHROME=1 node mag-room/tests/test_will_line.js
+          NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_filewatch_ui.js
           node mag-room/tests/test_routine_minutes.js
           node mag-room/tests/test_routine_coalesce.js
           node mag-room/tests/test_browser_body_null.js

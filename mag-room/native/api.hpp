@@ -3,6 +3,7 @@
 #pragma once
 #include "auth.hpp"
 #include "engine.hpp"
+#include "filewatch.hpp"
 #include "idol.hpp"
 #include "voiceover.hpp"
 #include "push.hpp"
@@ -158,6 +159,20 @@ public:
         v["rules"] = assist_.rules();
         if (who.owner()) v["journal"] = assist_.journal_tail();
         return http::send_json(fd, 200, v);
+      }
+      if (p == "/api/filewatch" || starts_with(p, "/api/filewatch/")) {
+        // What the bots wrote, changed or deleted in their VMs: the owner's alone.
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        if (!filewatch) return http::send_error(fd, 404, "Nicht gefunden");
+        if (p == "/api/filewatch") {
+          Val v = Val::object();
+          v["enabled"] = filewatch->enabled();
+          v["entries"] = filewatch->list(atoll(r.param("after").c_str()));
+          return http::send_json(fd, 200, v, {{"Cache-Control", "private, no-store"}});
+        }
+        const Val e = filewatch->entry(atoll(p.substr(15).c_str()));
+        if (!e.isObj()) return http::send_error(fd, 404, "Kein Eintrag");
+        return http::send_json(fd, 200, e, {{"Cache-Control", "private, no-store"}});
       }
       if (p == "/api/plugins") {
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
@@ -541,6 +556,9 @@ private:
   Push &push_;
   Assist &assist_;
   Vault &vault_;
+public:
+  FileWatch *filewatch = nullptr; // the owner's file notification (magroom.cpp)
+private:
   std::string version_, web_;
   // Serializes bake reads against removal of superseded lane files.
   std::mutex voiceover_render_mu_;
@@ -1873,6 +1891,7 @@ private:
       if (const Val *v = in.find("pass_enabled"); v && v->type == Val::BOOL) s["pass_enabled"] = v->b;
       if (const Val *v = in.find("show_self_orientation"); v && v->type == Val::BOOL) s["show_self_orientation"] = v->b;
       if (const Val *v = in.find("show_will_line"); v && v->type == Val::BOOL) s["show_will_line"] = v->b;
+      if (const Val *v = in.find("file_watch"); v && v->type == Val::BOOL) s["file_watch"] = v->b;
       if (const Val *v = in.find("web"); v && v->type == Val::BOOL) { s["web"] = v->b; net = true; }
       if (const Val *v = in.find("assist"); v && v->isObj()) s["assist"] = Assist::clean_rules(*v);
     });

@@ -441,6 +441,117 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
   return true;
 }
 
+// Recover only a whole, standalone Python-shaped function invocation.
+// This is a literal parser, not Python evaluation. In particular there
+// are no positional expressions, nested calls, attributes or containers.
+inline bool python_tool_call(std::string raw, const Val &offered, llm::ToolCall &call) {
+  raw = trim(raw);
+  if (raw.empty() || raw.size() > 16000) return false;
+  if (starts_with(raw, "\x60\x60\x60")) {
+    const size_t first = raw.find('\n');
+    if (first == std::string::npos) return false;
+    const std::string lang = trim(raw.substr(3, first - 3));
+    if (lang != "python" && lang != "tool_code" && !lang.empty()) return false;
+    const size_t end = raw.rfind("\x60\x60\x60");
+    if (end <= first || !trim(raw.substr(end + 3)).empty()) return false;
+    raw = trim(raw.substr(first + 1, end - first - 1));
+  }
+  size_t i = 0;
+  const auto skip = [&] { while (i < raw.size() && std::isspace((unsigned char)raw[i])) ++i; };
+  const auto take = [&](char c) { skip(); if (i >= raw.size() || raw[i] != c) return false; ++i; return true; };
+  const auto id = [&]() -> std::string {
+    skip();
+    const size_t start = i;
+    if (i >= raw.size() || !(std::isalpha((unsigned char)raw[i]) || raw[i] == '_')) return "";
+    ++i;
+    while (i < raw.size() && (std::isalnum((unsigned char)raw[i]) || raw[i] == '_')) ++i;
+    return raw.substr(start, i - start);
+  };
+  std::string name = id();
+  if (name.empty() || !take('(')) return false;
+  const bool printed = name == "print";
+  if (printed) {
+    name = id();
+    if (name.empty() || !take('(')) return false;
+  }
+  // Explicit allowlist. Never promote writes, shell, browser interaction,
+  // consent, payment, login, sharing or plugin calls from ordinary text.
+  static const std::set<std::string> safe = {
+      "image_generate", "video_generate", "photo_to_3d", "scene_3d",
+      "models_3d", "web_search", "goal_requirements", "goal_plan",
+      "goal_step", "goal_finish", "goal_blocked", "browser_look", "browser_read"};
+  if (!safe.count(name)) return false;
+
+  const auto literal = [&](Val &v) -> bool {
+    skip();
+    if (i >= raw.size()) return false;
+    if (raw[i] == '"' || raw[i] == '\'') {
+      const char quote = raw[i++];
+      std::string value;
+      while (i < raw.size()) {
+        const char c = raw[i++];
+        if (c == quote) { v = value; return true; }
+        if ((unsigned char)c < 32) return false;
+        if (c != '\\') { value += c; continue; }
+        if (i >= raw.size()) return false;
+        switch (const char e = raw[i++]) {
+          case '\\': case '"': case '\'': value += e; break;
+          case 'n': value += '\n'; break;
+          case 'r': value += '\r'; break;
+          case 't': value += '\t'; break;
+          case 'b': value += '\b'; break;
+          case 'f': value += '\f'; break;
+          default: return false; // do not interpret code or unknown escapes
+        }
+      }
+      return false;
+    }
+    const size_t start = i;
+    while (i < raw.size() && raw[i] != ',' && raw[i] != ')' &&
+           !std::isspace((unsigned char)raw[i])) ++i;
+    const std::string token = raw.substr(start, i - start);
+    if (token == "true" || token == "True") { v = true; return true; }
+    if (token == "false" || token == "False") { v = false; return true; }
+    if (token == "null" || token == "None") { v = Val(); return true; }
+    // Decimal integer/fraction/exponent only; reject hex, NaN, infinity,
+    // arithmetic and arbitrary identifiers before converting the number.
+    static const std::regex number(R"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)");
+    if (!std::regex_match(token, number)) return false;
+    char *end = nullptr;
+    const double n = std::strtod(token.c_str(), &end);
+    if (!end || *end || !std::isfinite(n)) return false;
+    v = n;
+    return true;
+  };
+
+  Val args = Val::object();
+  skip();
+  if (!take(')')) {
+    for (;;) {
+      const std::string key = id();
+      if (key.empty() || args.find(key) || !take('=')) return false;
+      Val value;
+      if (!literal(value)) return false;
+      args[key] = value;
+      if (take(')')) break;
+      if (!take(',')) return false;
+      if (take(')')) break; // a Python trailing comma
+    }
+  }
+  if (printed && !take(')')) return false;
+  skip();
+  if (i != raw.size()) return false; // no second call, suffix or prose
+  llm::ToolCall parsed;
+  parsed.id = "call_python_" + random_hex(5);
+  parsed.name = name;
+  parsed.arguments = mj::dump(args);
+  parsed.valid = true;
+  std::string why;
+  if (!args_ok(offered, parsed, why)) return false;
+  call = std::move(parsed);
+  return true;
+}
+
 // ---- page memory ------------------------------------------------------------
 inline bool direct_link(const std::string &url); // defined with evidence ranking below
 inline void absorb(Val &g, const Val &page, int version) {

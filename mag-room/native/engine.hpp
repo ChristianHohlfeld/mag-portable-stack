@@ -3500,7 +3500,9 @@ private:
       const auto addressed = group_chat::addressed(human, named);
       const bool mentioned = std::find(mentions.begin(), mentions.end(), b.id) != mentions.end() ||
                              std::find(addressed.begin(), addressed.end(), b.id) != addressed.end();
-      t.errand = goal::classify(human, roster).kind == goal::Kind::Task && mentioned;
+      // A historical human task is not a current order in an autonomous round.
+      t.errand = (reason == "human" || from_chris) &&
+                 goal::classify(human, roster).kind == goal::Kind::Task && mentioned;
     }
     std::string error;
     unsigned model_calls_in_turn = 0;
@@ -3555,7 +3557,17 @@ private:
       if (reason == "bot" || reason == "autonomous") {
         Val cue = Val::object();
         cue["role"] = "user";
-        cue["content"] = reason == "autonomous" ? autonomous_invite : note;
+        const Val current_will = room_.will(b.id);
+        const bool own_task = !will_owner_interrupted && !goal_live(b) &&
+                              jstr(current_will, "status") == "open";
+        cue["content"] = own_task
+            ? "(Interne Selbstgesprächsrunde, kein Auftrag von Chris: Dein eigenes Ziel ist offen: „" +
+              clip(jstr(current_will, "text"), 800) + "“. Abschluss: „" +
+              clip(jstr(current_will, "done_when"), 600) +
+              "“. Setze es mit höchstens EINEM echten shell- oder write_file-Schritt "
+              "in deiner VM fort, statt etwas nur anzukündigen. "
+              "Andere Werkzeuge bleiben verboten. Danach kannst du kurz mit dem anderen Bot sprechen.)"
+            : reason == "autonomous" ? autonomous_invite : note;
         body["messages"].push(cue);
       }
 

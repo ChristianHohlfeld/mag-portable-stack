@@ -516,6 +516,43 @@ public:
       }
     return false;
   }
+  // Independent, private, durable will. Never add it to the shared room
+  // snapshot, the bot roster or SSE. Fixed bot IDs prevent path traversal.
+  static Val empty_will() {
+    Val w = Val::object();
+    w["text"] = ""; w["done_when"] = ""; w["status"] = "none";
+    w["progress"] = ""; w["steps"] = 0.0; w["by"] = "";
+    w["last_tool"] = ""; w["last_ok"] = false;
+    return w;
+  }
+  Val will(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    bool known = false;
+    for (const auto &b : bots_.asArr()) if (jstr(b, "id") == id) known = true;
+    if (!known) return Val();
+    const Val saved = read_json(cfg.state_dir + "/will/" + id + ".json");
+    return saved.isObj() ? saved : empty_will();
+  }
+  bool update_will(const std::string &id, const std::function<bool(Val &)> &fn) {
+    std::lock_guard<std::mutex> lk(mu_);
+    bool known = false;
+    for (const auto &b : bots_.asArr()) if (jstr(b, "id") == id) known = true;
+    if (!known) return false;
+    const std::string dir = cfg.state_dir + "/will";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return false;
+    chmod(dir.c_str(), 0700);
+    const std::string file = dir + "/" + id + ".json";
+    Val w = read_json(file);
+    if (!w.isObj()) w = empty_will();
+    if (!fn(w)) return false;
+    return write_json(file, w, 0600);
+  }
+  void clear_will(const std::string &id) {
+    update_will(id, [&](Val &w) { w = empty_will(); return true; });
+  }
+
   Val settings() {
     std::lock_guard<std::mutex> lk(mu_);
     return settings_;
@@ -639,16 +676,29 @@ private:
     write_json(cfg.state_dir + "/agents.json", agents);
   }
 
-  // A missing self gets this description once. An existing self, including
-  // fields the owner cleared, stays. Both bots share it; it names no model.
+  // One-time migration: a pre-existing narrator is authoritative, even
+  // when intentionally empty. Legacy fields remain on disk untouched.
+  static std::string default_narrator() {
+    return "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.\n\n"
+           "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen.\n\n"
+           "Ich bearbeite aktuelle Bitten. Ein eigenes Ziel setze ich selbst und führe es aus, statt es nur anzukündigen. "
+           "Den anderen Bot behandle ich als Gesprächspartner.";
+  }
   static bool ensure_self(Val &b) {
-    if (const Val *have = b.find("self"); have && have->isObj()) return false;
+    if (const Val *old = b.find("self"); old && old->isObj() && old->find("narrator")) return false;
+    Val &self = b["self"];
+    if (!self.isObj()) self = Val::object();
+    std::string joined;
+    bool had_legacy = false;
+    for (const char *key : {"who", "care", "pursue"}) {
+      if (const Val *v = self.find(key)) {
+        had_legacy = true;
+        const std::string text = trim(v->asStr());
+        if (!text.empty()) { if (!joined.empty()) joined += "\n\n"; joined += text; }
+      }
+    }
     const bool known = jstr(b, "id") == "lena" || jstr(b, "id") == "noah";
-    Val self = Val::object();
-    self["who"] = known ? "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber." : "";
-    self["care"] = known ? "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen." : "";
-    self["pursue"] = known ? "Ich bearbeite aktuelle Bitten; im Austausch mit anderen Bots führe ich Gespräche, ohne eigenmächtig alte Aufgaben wiederaufzunehmen." : "";
-    b["self"] = self;
+    self["narrator"] = clip(had_legacy ? joined : known ? default_narrator() : "", 1200);
     return true;
   }
 

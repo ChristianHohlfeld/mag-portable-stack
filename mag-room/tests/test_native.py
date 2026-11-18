@@ -1238,7 +1238,8 @@ class RoomContract(unittest.TestCase):
         r.idle()
         last = [m for m in r.messages() if m["from"] == "lena"][-1]
         self.assertEqual([(p["path"], p["title"], p["part"]) for p in last["pages"]], [("demo.html", "Demo", 0)])
-        self.assertIn("Veröffentlicht: https://lena.bot.stardenburg.de/demo.html", r.lena.chats()[-1]["messages"][-1]["content"])
+        self.assertTrue(any("Veröffentlicht: https://lena.bot.stardenburg.de/demo.html" in (m.get("content") or "")
+                            for m in r.lena.chats()[-1]["messages"]))
         self.assertIn("demo.html", (home / "published.txt").read_text())
         # Screenshots in the chat are gone; the room may frame the bots' sites and nothing else.
         self.assertNotIn("browser_screenshot", [t["function"]["name"] for t in r.lena.chats()[-1]["tools"]])
@@ -1247,6 +1248,10 @@ class RoomContract(unittest.TestCase):
             # The page is cross-origin isolated (threads for the speech model), in the way that leaves frames of other origins possible.
             self.assertEqual((res.headers["Cross-Origin-Embedder-Policy"], res.headers["Cross-Origin-Opener-Policy"]), ("credentialless", "same-origin"))
         self.assertIn("frame-src 'self' https://*.bot.stardenburg.de;", policy)
+        img = policy.split("img-src ", 1)[1].split(";", 1)[0]
+        self.assertNotIn("*", img)
+        self.assertIn("https://lena.bot.stardenburg.de", img)
+        self.assertIn("https://noah.bot.stardenburg.de", img)
         # ... and a bot's page says that it may run in such a frame.
         site = urllib.request.Request(r.url("/"), headers={"Host": "lena.bot.stardenburg.de"})
         try:

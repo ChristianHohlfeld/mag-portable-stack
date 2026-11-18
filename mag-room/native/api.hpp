@@ -9,6 +9,7 @@
 #include "vault.hpp"
 
 #include <regex>
+#include <set>
 
 namespace mag {
 
@@ -113,6 +114,7 @@ public:
       if (p == "/api/files.zip") return files_zip(fd, r);
       if (starts_with(p, "/api/screen/")) return screen(fd, r);
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
+      if (starts_with(p, "/api/site/")) return site_file(fd, r);
       if (starts_with(p, "/api/bot/") && ends_with(p, "/self")) {
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
         const Val bot = room_.bot(bot_of(p));
@@ -544,18 +546,37 @@ private:
       "<title>MAG</title><body style='font:16px system-ui;background:#17181b;color:#ececee;display:grid;place-items:center;height:100vh;margin:0'>"
       "<p>Kein Zugang. Dieser Raum gehört Chris.</p>";
 
-  static const http::Headers &page_headers() {
+  http::Headers page_headers() const {
     // The policy keeps model output from loading or running anything that is
-    // not part of this release. The one exception is deliberate: pages of the
-    // bots run in frames from their own sites (another origin, tailnet only).
-    static const http::Headers h = {
+    // not part of this release. Pages of the bots are framed same-origin
+    // (/api/site/...). A picture the page still names on its own host is
+    // listed here one host at a time: the current name, the id and earlier
+    // names. No wildcard.
+    std::string img = "img-src 'self' blob: data:";
+    std::set<std::string> slugs;
+    auto add = [&](const std::string &slug) {
+      if (slug.size() < 2 || slug.size() > 63) return;
+      for (unsigned char c : slug)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return;
+      slugs.insert(slug);
+    };
+    const Val bots = room_.bots();
+    for (auto &b : bots.asArr()) {
+      add(site::slug_of(b));
+      add(jstr(b, "id"));
+      if (const Val *old = b.find("aliases"); old && old->isArr())
+        for (auto &a : old->asArr()) add(a.asStr());
+    }
+    const std::string zone = site::zone();
+    for (const auto &slug : slugs) img += " https://" + slug + "." + zone;
+    http::Headers h = {
         {"Referrer-Policy", "no-referrer"},
         // Isolated from other origins: shared memory for the threads of the speech model.
         {"Cross-Origin-Opener-Policy", "same-origin"},
         {"Content-Security-Policy",
-         "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+         "default-src 'self'; " + img + "; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
          "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; frame-src 'self' https://*." +
-             site::zone() + "; object-src 'none'; base-uri 'none'; form-action 'self'"}};
+             zone + "; object-src 'none'; base-uri 'none'; form-action 'self'"}};
     return h;
   }
 
@@ -1777,7 +1798,38 @@ private:
       http::send(fd, code, "text/plain; charset=utf-8", "Umgezogen\n", h);
     };
     if (!current) return moved(302, site::base_url(bot) + r.path + query);
-    const std::string rel = url_decode(r.path);
+    return serve_published(fd, r, vm, url_decode(r.path), r.path);
+  }
+
+  // Published files of one bot, on the room's own origin: /api/site/<id>/<path>.
+  // The chat frames this instead of https://<name>.<zone>, so pictures in the
+  // page are 'self' and the page CSP can show them.
+  void site_file(int fd, const http::Request &r) {
+    const std::string rest = r.path.substr(std::string("/api/site/").size());
+    const size_t slash = rest.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= rest.size())
+      return http::send_error(fd, 404, "Nicht gefunden");
+    bool current = false;
+    const Val bot = site::resolve(room_.bots(), url_decode(rest.substr(0, slash)), current);
+    const std::string vm = jstr(bot, "vm");
+    if (!bot.isObj() || !vm::valid_name(vm)) return http::send_error(fd, 404, "Nicht gefunden");
+    return serve_published(fd, r, vm, "/" + url_decode(rest.substr(slash + 1)), r.path);
+  }
+
+  void serve_published(int fd, const http::Request &r, const std::string &vm, const std::string &rel, const std::string &self_path) {
+    static const http::Headers open = {{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-cache"}, {"Cross-Origin-Resource-Policy", "cross-origin"}};
+    auto missing = [&] {
+      http::send(fd, 404, "text/html; charset=utf-8",
+                 "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Nicht gefunden</title>"
+                 "<body style='font:16px system-ui;margin:14vh auto;max-width:30em;padding:0 20px'><h1 style='font-size:20px'>Nicht gefunden</h1>"
+                 "<p>Unter dieser Adresse liegt nichts.</p>", open);
+    };
+    const std::string query = r.query.empty() ? "" : "?" + r.query;
+    auto moved = [&](int code, const std::string &where) {
+      http::Headers h = open;
+      h.push_back({"Location", where});
+      http::send(fd, code, "text/plain; charset=utf-8", "Umgezogen\n", h);
+    };
     // No way up, no dot files, nothing odd.
     if (rel.empty() || rel[0] != '/' || rel.find('\0') != std::string::npos || rel.find('\\') != std::string::npos ||
         rel.find("/.") != std::string::npos)
@@ -1787,7 +1839,7 @@ private:
     struct stat st{};
     if (stat(path.c_str(), &st) != 0) return missing();
     if (S_ISDIR(st.st_mode)) {
-      if (rel.back() != '/') return moved(301, r.path + "/" + query);
+      if (rel.back() != '/') return moved(301, self_path + "/" + query);
       path += "index.html";
       if (stat(path.c_str(), &st) != 0) return missing();
     }

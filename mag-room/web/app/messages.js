@@ -1236,11 +1236,26 @@
   // Only the owner can request the structured server-generated cue.
   // Never read m.reasoning or display raw model thoughts.
   const orientationCache = new Map(), orientationOpen = new Set();
-  const orientationEnabled = () => S.you?.role === 'owner' && S.settings?.show_self_orientation === true;
+  const WILL_STEP = new Set(['will_set', 'will_progress', 'will_finish', 'will_drop', 'shell', 'write_file']);
+  // The old switch defaulted to off, which hid the line. It stays visible for
+  // the owner until he turns that switch off in this browser.
+  const willLineOn = () => {
+    try { return localStorage.getItem('mag-will-line') !== 'off'; } catch { return true; }
+  };
+  const orientationEnabled = () => S.you?.role === 'owner' && willLineOn();
+  const oneLine = (text, n) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, n || 72);
+  function stepGlance(p) {
+    const name = { will_set: 'Ziel gesetzt', will_progress: 'Fortschritt', will_finish: 'abgeschlossen',
+      will_drop: 'aufgegeben', shell: 'shell', write_file: 'Datei' }[p.tool] || p.tool;
+    const result = { ok: 'ok', error: 'fehlgeschlagen', timeout: 'Zeit', cancelled: 'abgebrochen', running: 'läuft' }[p.state] || '';
+    const raw = p.tool === 'shell' ? p.input?.command : p.tool === 'write_file' ? p.input?.path
+      : p.input?.text || p.input?.progress || p.input?.done_when || '';
+    return [name, result, oneLine(raw, 64)].filter(Boolean).join(' · ');
+  }
   function orientationLine(m) {
     if (m.role !== 'bot' || !orientationEnabled()) return null;
     const details = el('details', { class: 'self-orientation', hidden: true });
-    const summary = el('summary', { text: 'Gedanke · ' + MAG.name(m.from) });
+    const summary = el('summary', { text: 'Wille · ' + MAG.name(m.from) });
     const body = el('div', { class: 'self-orientation-body' });
     details.append(summary, body);
     details.open = orientationOpen.has(m.id);
@@ -1248,22 +1263,28 @@
       if (details.open) orientationOpen.add(m.id); else orientationOpen.delete(m.id);
     });
     function paint(data) {
-      if (!orientationEnabled() || !data?.narrator || !S.messages.has(m.id)) return;
-      // Exactly the privately captured paragraph sent to the model,
-      // not a reconstruction from today's mutable bot profile.
-      body.replaceChildren(el('div', { text: data.narrator || '' }));
-      details.hidden = false;
+      if (!orientationEnabled() || !S.messages.has(m.id)) return;
+      const steps = (m.parts || []).filter((p) => p.k === 'step' && WILL_STEP.has(p.tool));
+      const goal = data?.objective && data.objective !== 'Kein eigenes Ziel' ? oneLine(data.objective, 72) : 'kein eigenes Ziel';
+      const last = steps.length ? stepGlance(steps[steps.length - 1]) : 'kein Schritt';
+      summary.textContent = 'Wille · ' + MAG.name(m.from) + ' · ' + goal + ' · ' + last;
+      // The narrator paragraph is exactly what this round sent the model.
+      body.replaceChildren(...[
+        data?.narrator ? el('div', { text: data.narrator }) : null,
+        ...steps.map((p) => el('div', { text: stepGlance(p) }))
+      ].filter(Boolean));
+      details.hidden = !(data?.narrator || steps.length);
     }
     const known = orientationCache.get(m.id);
-    if (known) paint(known);
-    else {
+    paint(known || null);
+    if (!known) {
       // The first streaming event can precede the private sidecar write.
       // A completed message is fetched again if the earlier result was empty.
       MAG.api('GET', '/api/self-orientation?message=' + encodeURIComponent(m.id)).then(data => {
         if (!orientationEnabled() || !S.messages.has(m.id)) return;
         if (data?.narrator) orientationCache.set(m.id, data);
         paint(data);
-      }).catch(() => {});
+      }).catch(() => paint(null));
     }
     return details;
   }

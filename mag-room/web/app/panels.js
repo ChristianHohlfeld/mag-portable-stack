@@ -613,8 +613,11 @@
       // This switch affects the entire room; individual self-profiles live
       // in each bot's own sheet, under Selbstbild.
       if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
-        row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
-          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v })))));
+        row('Inneres Selbstgespräch', 'Die Wille-Zeile steht im Chat unter jeder Bot-Antwort: Ziel, Schritt und Ergebnis, nur für dich. Aufgeklappt der Erzähler. Rohe Modellgedanken bleiben verborgen.',
+          toggle((() => { try { return localStorage.getItem('mag-will-line') !== 'off'; } catch { return true; } })(), (v) => {
+            try { localStorage.setItem('mag-will-line', v ? 'on' : 'off'); } catch {}
+            call('PUT', '/api/settings', { show_self_orientation: v });
+          }))));
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),

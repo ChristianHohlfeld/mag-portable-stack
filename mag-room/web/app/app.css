@@ -950,7 +950,7 @@ article.flash { animation: flash 1.6s ease-out; }
 /* Owner's self-orientation: a quiet disclosure, separate from chat content. */
 .msg > .self-orientation { margin: .2rem 0 .4rem; font-size: .78em; color: var(--muted, #888); }
 .msg > .self-orientation[hidden] { display: none; }
-.self-orientation > summary { cursor: pointer; width: fit-content; opacity: .85; }
+.self-orientation > summary { cursor: pointer; max-width: 100%; opacity: 1; white-space: normal; }
 .self-orientation > summary:hover, .self-orientation[open] > summary { opacity: 1; }
 .self-orientation-body { margin: .35rem 0 .1rem .45rem; padding-left: .65rem; border-left: 1px solid var(--line, #8885); line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
 .self-orientation-body > div + div { margin-top: .2rem; }

@@ -115,7 +115,11 @@
         foot.textContent = list.length ? list.length + (list.length === 1 ? ' Datei · ' : ' Dateien · ') + MAG.bytes(bytes) : all.length ? 'Nichts gefunden.' : 'Im Chat liegen noch keine Dateien.';
         // The ZIP holds what is shown; everything when nothing is filtered.
         zip.hidden = !list.length;
-        zip.href = '/api/files.zip' + (list.length === all.length ? '' : '?files=' + list.map((f) => encodeURIComponent(f.file)).join(','));
+        // Each new selection gets an immutable server snapshot. The browser
+        // download manager can reuse this exact URL for every Range request.
+        const snapshot = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+        zip.href = '/api/files.zip?snapshot=' + encodeURIComponent(snapshot) +
+          (list.length === all.length ? '' : '&files=' + list.map((f) => encodeURIComponent(f.file)).join(','));
       };
       search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); draw(); });
       foot.textContent = 'Lädt …';

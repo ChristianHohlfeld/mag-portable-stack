@@ -647,6 +647,11 @@ private:
     b["enabled"] = true;
     b["thinking"] = false;
     b["persona"] = "";
+    Val self = Val::object();
+    self["who"] = "";
+    self["care"] = "";
+    self["pursue"] = "";
+    b["self"] = self;
     b["memory"] = Val::array();
     return b;
   }

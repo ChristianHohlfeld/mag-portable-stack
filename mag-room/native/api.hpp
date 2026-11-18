@@ -99,6 +99,11 @@ public:
       if (p == "/api/version") { Val v = Val::object(); v["version"] = version_; return http::send_json(fd, 200, v); }
       if (p == "/api/state") return state(fd, r, who);
       if (p == "/api/messages") return messages(fd, r);
+      // Never put private orientation in the shared state/messages/SSE payload.
+      if (p == "/api/self-orientation") {
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        return http::send_json(fd, 200, room_.self_orientation(r.param("message")), {{"Cache-Control", "private, no-store"}});
+      }
       if (p == "/api/media") return media_messages(fd, r);
       if (p == "/api/events") return events(fd);
       if (starts_with(p, "/api/file/") && ends_with(p, "/thumb")) return file_thumb(fd, url_decode(p.substr(10, p.size() - 10 - 6)));
@@ -1723,6 +1728,7 @@ private:
       if (const Val *v = in.find("auto_chat"); v && v->type == Val::BOOL) s["auto_chat"] = v->b;
       if (const Val *v = in.find("auto_chat_visible"); v && v->type == Val::BOOL) s["auto_chat_visible"] = v->b;
       if (const Val *v = in.find("pass_enabled"); v && v->type == Val::BOOL) s["pass_enabled"] = v->b;
+      if (const Val *v = in.find("show_self_orientation"); v && v->type == Val::BOOL) s["show_self_orientation"] = v->b;
       if (const Val *v = in.find("web"); v && v->type == Val::BOOL) { s["web"] = v->b; net = true; }
       if (const Val *v = in.find("assist"); v && v->isObj()) s["assist"] = Assist::clean_rules(*v);
     });

@@ -1195,6 +1195,42 @@
       !a.voiceover_kind && (a.kind === 'video' || a.kind === 'audio' ||
         (a.kind === 'image' && m.role !== 'user')));
   }
+  // Only the owner can request the structured server-generated cue.
+  // Never read m.reasoning or display raw model thoughts.
+  const orientationCache = new Map(), orientationOpen = new Set();
+  const orientationEnabled = () => S.you?.role === 'owner' && S.settings?.show_self_orientation === true;
+  function orientationLine(m) {
+    if (m.role !== 'bot' || !orientationEnabled()) return null;
+    const details = el('details', { class: 'self-orientation', hidden: true });
+    const summary = el('summary', { text: 'Gedanke · ' + MAG.name(m.from) });
+    const body = el('div', { class: 'self-orientation-body' });
+    details.append(summary, body);
+    details.open = orientationOpen.has(m.id);
+    details.addEventListener('toggle', () => {
+      if (details.open) orientationOpen.add(m.id); else orientationOpen.delete(m.id);
+    });
+    function paint(data) {
+      if (!orientationEnabled() || !data?.objective || !S.messages.has(m.id)) return;
+      body.replaceChildren(
+        el('div', {}, el('b', { text: 'Wer ich bin: ' }), data.identity || ''),
+        el('div', {}, el('b', { text: 'Was ich will: ' }), data.intent || ''),
+        el('div', {}, el('b', { text: 'Mein Ziel: ' }), data.objective),
+        el('div', {}, el('b', { text: 'Was ich vermeiden will: ' }), data.anti_goal || ''));
+      details.hidden = false;
+    }
+    const known = orientationCache.get(m.id);
+    if (known) paint(known);
+    else {
+      // The first streaming event can precede the private sidecar write.
+      // A completed message is fetched again if the earlier result was empty.
+      MAG.api('GET', '/api/self-orientation?message=' + encodeURIComponent(m.id)).then(data => {
+        if (!orientationEnabled() || !S.messages.has(m.id)) return;
+        if (data?.objective) orientationCache.set(m.id, data);
+        paint(data);
+      }).catch(() => {});
+    }
+    return details;
+  }
   function build(m) {
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' +
@@ -1214,6 +1250,8 @@
     }
     node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: picture ? (m.model3d.kind === 'video' ? 'Video' : 'Bild') : MAG.name(m.from) }),
       el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) })));
+    const orientation = orientationLine(m);
+    if (orientation) node.append(orientation);
     if (picture) {
       node.append(buildPicture(m));
       if (atts) node.append(atts);
@@ -1638,13 +1676,24 @@
       (mediaOnly ? loadMedia(false) : MAG.loadOlder()).catch((x) => MAG.toast(x.message, true)));
     new ResizeObserver(() => { if (pinned) setScrollTop(scroller.scrollHeight); }).observe(scroller);
   });
+  MAG.on('settings', () => {
+    // Update only these small lines; do not recreate playing media or editors.
+    if (!orientationEnabled()) { orientationCache.clear(); orientationOpen.clear(); }
+    for (const [id, node] of nodes) {
+      node.querySelector('.self-orientation')?.remove();
+      const m = S.messages.get(id), line = m && orientationLine(m);
+      if (line) node.querySelector('.meta')?.after(line);
+    }
+  });
   MAG.on('reset', () => {
+    orientationCache.clear(); orientationOpen.clear();
     mediaCursor = ''; mediaMore = false;
     renderAll(); showPushTarget();
     if (mediaOnly) loadMedia(true);
   });
   MAG.on('message', (m) => { upsert(m, !nodes.has(m.id)); showPushTarget(); });
   MAG.on('gone', (id) => {
+    orientationCache.delete(id); orientationOpen.delete(id);
     nodes.get(id)?.remove(); nodes.delete(id);
     // The deleted message may have been the anchor for a multi-turn goal.
     // Rebuild remaining groups using their next historical owner.

@@ -484,6 +484,9 @@
       content.append(el('h3', { text: 'Netzzugriff' }), el('div', { class: 'card' },
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 
+      if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
+        row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
+          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v })))));
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),

@@ -385,6 +385,54 @@
     paintStaged();
   }
 
+  // Something shared to MAG from the system's share menu (sw.js keeps it in
+  // Cache Storage 'mag-share'): its files go through addFiles like any upload
+  // (64 MB, /api/upload with the owner's token), its words and link become the
+  // message text, and it is sent as a normal message. When Chris was already
+  // writing something, or a file did not arrive, it waits in the composer.
+  function sharedText(meta) {
+    const text = String(meta.text || '').trim(), url = String(meta.url || '').trim(), title = String(meta.title || '').trim();
+    const lines = [];
+    if (title && !text.includes(title) && title !== url) lines.push(title);
+    if (text) lines.push(text);
+    if (url && !text.includes(url)) lines.push(url);
+    return lines.join('\n');
+  }
+  async function takeShare() {
+    const params = new URLSearchParams(location.search), id = params.get('share');
+    if (!id) return;
+    params.delete('share');
+    const rest = params.toString();
+    history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+    const lost = () => MAG.toast('Das Geteilte kam nicht an – bitte noch einmal teilen.', true);
+    if (id === 'lost' || !/^[a-z0-9]{1,12}-[a-z0-9]{1,12}$/.test(id) || !window.caches) return lost();
+    let cache, meta;
+    try { cache = await caches.open('mag-share'); meta = await (await cache.match('/share-inbox/' + id))?.json(); } catch {}
+    if (!meta) return lost();
+    const files = [];
+    for (const f of meta.files || []) {
+      const res = await cache.match(f.key);
+      if (res) files.push(new File([await res.blob()], f.name || 'datei', { type: f.type || '' }));
+      else failed.push({ file: null, why: (f.name || 'Eine Datei') + ' kam beim Teilen nicht an.', again: () => pick('', false) });
+    }
+    // Picked up: nothing of it stays, nor a share older than a day that no page took.
+    for (const req of await cache.keys()) {
+      const key = new URL(req.url).pathname.split('/')[2] || '', born = parseInt(key.split('-')[0], 36);
+      if (key === id || !(Date.now() - born < 864e5)) await cache.delete(req);
+    }
+    const waiting = !!(input.value.trim() || staged.length || failed.length);
+    mode3d = modeImage = modeVideo = false;
+    const text = sharedText(meta);
+    if (text) input.value = input.value.trim() ? input.value.trimEnd() + '\n' + text : text;
+    try { sessionStorage.setItem('mag-draft', input.value); } catch {}
+    resize();
+    paintStaged();
+    await addFiles(files);
+    if (waiting || failed.length || sendBtn.disabled) { MAG.toast('Das Geteilte liegt im Eingabefeld bereit.'); return; }
+    await send();
+  }
+  MAG.takeShare = takeShare;
+
   document.addEventListener('DOMContentLoaded', () => {
     input = $('#input'); sendBtn = $('#send'); stagedBox = $('#staged');
     input.value = sessionStorage.getItem('mag-draft') || '';
@@ -419,5 +467,6 @@
     } catch { /* private mode */ }
     resize();
     paintStaged();
+    takeShare();
   });
 })();

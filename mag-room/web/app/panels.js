@@ -379,8 +379,13 @@
                 select(b.effort || 'low', [['low', 'Kurz'], ['medium', 'Mittel'], ['high', 'Gründlich']],
                   (v) => call('PUT', '/api/bot/' + id, { effort: v }), !b.thinking))
             : null,
-          el('div', { class: 'set col' }, el('div', { class: 'txt' }, 'Art und Auftrag', el('small', { text: 'Persönlichkeit und feste Vorgaben, in eigenen Worten' })),
+          el('div', { class: 'set col' }, el('div', { class: 'txt' }, 'Art und Auftrag', el('small', { text: 'Feste Vorgaben für diesen Bot; nicht sein Selbstbild.' })),
             el('textarea', { value: b.persona || '', placeholder: 'z. B. Antworte knapp und direkt.', onchange: (e) => call('PUT', '/api/bot/' + id, { persona: e.target.value }).then(() => MAG.toast('Gespeichert')) }))));
+        // Private bot profile stays distinct from persona and next to it,
+        // not among the room-wide switches in Einstellungen.
+        content.append(el('h3', { text: 'Selbstbild' }),
+          el('div', { class: 'card' }, selfProfile(b)),
+          el('p', { class: 'fine', text: 'Wer dieser Bot ist, was ihm wichtig ist und was er verfolgt. Die Aufgabe steht weiterhin im Chat.' }));
 
         // Plugins: which of the connected services this bot may use, and how freely.
         const plug = el('div', { class: 'card' });
@@ -533,11 +538,11 @@
       content.append(el('h3', { text: 'Netzzugriff' }), el('div', { class: 'card' },
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 
+      // This switch affects the entire room; individual self-profiles live
+      // in each bot's own sheet, under Selbstbild.
       if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
         row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
-          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v }))),
-        ...S.bots.map(selfProfile),
-        el('div', { class: 'set' }, el('small', { text: 'Die Aufgabe ist die Nachricht im Chat.' }))));
+          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v })))));
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),

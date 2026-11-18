@@ -324,32 +324,6 @@
         actsTitle.hidden = acts.hidden = actsHint.hidden = !acts.children.length;
       };
       content.append(el('h3', { text: 'Status' }), status, actsTitle, acts, actsHint);
-      if (owner() && b.vm) {
-        // Saves of the VM: everything the bot has in it (files, programs,
-        // browser data, its site), daily and whenever Chris asks; a restore
-        // keeps the state it replaces as a save of its own.
-        const list = el('div', { class: 'card' });
-        content.append(el('h3', { text: 'Sicherungen der VM' }), list,
-          el('p', { class: 'fine', text: 'Jede Nacht und auf Wunsch: alles, was ' + b.name + ' in der VM hat (Dateien, Programme, Browser-Daten, Website). Die VM läuft beim Sichern weiter. Wiederherstellen setzt die VM auf den Stand der Sicherung; der jetzige Stand bleibt vorher als Sicherung erhalten. Zurücksetzen lässt die Sicherungen stehen.' }));
-        sheet.saves = () => {
-          const now = MAG.bot(id);
-          sheet.savesBusy = !!(now?.saving || now?.restore?.state === 'running');
-          return MAG.api('GET', '/api/vm/' + id + '/saves').then((out) => {
-            const busy = sheet.savesBusy;
-            list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, out.saves.length ? out.saves.length + (out.saves.length === 1 ? ' Sicherung' : ' Sicherungen') : el('small', { text: 'Noch keine Sicherung.' })),
-              el('button', { class: 'btn', text: 'Jetzt sichern', disabled: busy, onclick: () => call('POST', '/api/vm/' + id + '/save').then(() => MAG.toast('VM von ' + b.name + ' wird gesichert')) })));
-            for (const one of out.saves)
-              list.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, saveDate(one.id), el('small', { text: (saveKinds[one.kind] || one.kind) + ' · ' + MAG.bytes(one.bytes) })),
-                el('button', { class: 'btn', text: 'Wiederherstellen', disabled: busy, onclick: async () => {
-                  if (await MAG.confirm('VM von ' + b.name + ' wiederherstellen?', 'Die VM wird angehalten und auf den Stand vom ' + saveDate(one.id) + ' gesetzt: Dateien, Programme, Browser-Daten und Website wie damals. Der jetzige Stand bleibt als Sicherung erhalten. Eine laufende Antwort bricht ab; das Gespräch und die Erinnerungen bleiben.', 'Wiederherstellen', true))
-                    call('POST', '/api/vm/' + id + '/restore', { save: one.id }).then(() => MAG.toast(b.name + ': VM wird wiederhergestellt'));
-                } })));
-          }).catch(() => list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Sicherungen nicht lesbar.' })))));
-        };
-        sheet.saves();
-      }
-      if (owner()) content.append(el('h3', { text: 'Jobs' }), MAG.jobs(id),
-        el('p', { class: 'fine', text: 'Was ' + b.name + ' regelmäßig oder bei einem Ereignis von selbst tut, als eigener Zug' + (b.vm ? ', in der VM ' + b.vm : '') + '. Läuft auch nach Neustarts weiter; was ausfiel, holt der Raum einmal nach (bis 12 Stunden). ' + b.name + ' kann Jobs auch selbst anlegen und ändern, mit deiner Freigabe.' }));
       sheet.refresh();
 
       if (owner()) {
@@ -379,8 +353,34 @@
                 select(b.effort || 'low', [['low', 'Kurz'], ['medium', 'Mittel'], ['high', 'Gründlich']],
                   (v) => call('PUT', '/api/bot/' + id, { effort: v }), !b.thinking))
             : null,
-          el('div', { class: 'set col' }, el('div', { class: 'txt' }, 'Art und Auftrag', el('small', { text: 'Persönlichkeit und feste Vorgaben, in eigenen Worten' })),
+          el('div', { class: 'set col' }, el('div', { class: 'txt' }, 'Art', el('small', { text: 'Wie dieser Bot arbeiten soll. Das ist eine Vorgabe.' })),
             el('textarea', { value: b.persona || '', placeholder: 'z. B. Antworte knapp und direkt.', onchange: (e) => call('PUT', '/api/bot/' + id, { persona: e.target.value }).then(() => MAG.toast('Gespeichert')) }))));
+        // Private bot profile stays distinct from persona and next to it,
+        // not among the room-wide switches in Einstellungen.
+        content.append(el('h3', { text: 'Selbstbild' }),
+          el('div', { class: 'card' }, selfProfile(b)),
+          el('p', { class: 'fine', text: 'Die Aufgabe ist die Nachricht im Chat.' }));
+        // One voice and playback rate per bot, using the existing per-speaker
+        // browser preferences. Nothing is copied to server-side bot settings.
+        const voiceCard = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Stimme und Tempo' }), voiceCard);
+        if (!MAG.voices?.possible()) {
+          voiceCard.append(el('div', { class: 'set' }, el('div', { class: 'txt' },
+            el('small', { text: 'Dieser Browser kann die lokalen Stimmen nicht laden.' }))));
+        } else {
+          const loading = el('small', { text: 'Stimmen werden geladen …' });
+          voiceCard.append(el('div', { class: 'set' }, loading));
+          MAG.voices.options().then((options) => {
+            if (!voiceCard.isConnected) return;
+            const now = MAG.voices.of(id);
+            voiceCard.replaceChildren(
+              row('Stimme', null, select(now.voice, options.map((o) => [o.id, o.label]),
+                (voice) => MAG.voices.set(id, { voice }))),
+              row('Tempo', null, select(String(now.rate),
+                MAG.voices.rates.map((rate) => [String(rate), String(rate).replace('.', ',') + '×']),
+                (rate) => MAG.voices.set(id, { rate: +rate }))));
+          }).catch(() => { if (voiceCard.isConnected) loading.textContent = 'Stimmen nicht lesbar.'; });
+        }
 
         // Plugins: which of the connected services this bot may use, and how freely.
         const plug = el('div', { class: 'card' });
@@ -443,6 +443,34 @@
         loadMemory();
       }
 
+      if (owner()) content.append(el('h3', { text: 'Jobs' }), MAG.jobs(id),
+        el('p', { class: 'fine', text: 'Was ' + b.name + ' regelmäßig oder bei einem Ereignis von selbst tut, als eigener Zug' + (b.vm ? ', in der VM ' + b.vm : '') + '. Läuft auch nach Neustarts weiter; was ausfiel, holt der Raum einmal nach (bis 12 Stunden). ' + b.name + ' kann Jobs auch selbst anlegen und ändern, mit deiner Freigabe.' }));
+
+      if (owner() && b.vm) {
+        // Saves of the VM: everything the bot has in it (files, programs,
+        // browser data, its site), daily and whenever Chris asks; a restore
+        // keeps the state it replaces as a save of its own.
+        const list = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Sicherungen der VM' }), list,
+          el('p', { class: 'fine', text: 'Jede Nacht und auf Wunsch: alles, was ' + b.name + ' in der VM hat (Dateien, Programme, Browser-Daten, Website). Die VM läuft beim Sichern weiter. Wiederherstellen setzt die VM auf den Stand der Sicherung; der jetzige Stand bleibt vorher als Sicherung erhalten. Zurücksetzen lässt die Sicherungen stehen.' }));
+        sheet.saves = () => {
+          const now = MAG.bot(id);
+          sheet.savesBusy = !!(now?.saving || now?.restore?.state === 'running');
+          return MAG.api('GET', '/api/vm/' + id + '/saves').then((out) => {
+            const busy = sheet.savesBusy;
+            list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, out.saves.length ? out.saves.length + (out.saves.length === 1 ? ' Sicherung' : ' Sicherungen') : el('small', { text: 'Noch keine Sicherung.' })),
+              el('button', { class: 'btn', text: 'Jetzt sichern', disabled: busy, onclick: () => call('POST', '/api/vm/' + id + '/save').then(() => MAG.toast('VM von ' + b.name + ' wird gesichert')) })));
+            for (const one of out.saves)
+              list.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, saveDate(one.id), el('small', { text: (saveKinds[one.kind] || one.kind) + ' · ' + MAG.bytes(one.bytes) })),
+                el('button', { class: 'btn', text: 'Wiederherstellen', disabled: busy, onclick: async () => {
+                  if (await MAG.confirm('VM von ' + b.name + ' wiederherstellen?', 'Die VM wird angehalten und auf den Stand vom ' + saveDate(one.id) + ' gesetzt: Dateien, Programme, Browser-Daten und Website wie damals. Der jetzige Stand bleibt als Sicherung erhalten. Eine laufende Antwort bricht ab; das Gespräch und die Erinnerungen bleiben.', 'Wiederherstellen', true))
+                    call('POST', '/api/vm/' + id + '/restore', { save: one.id }).then(() => MAG.toast(b.name + ': VM wird wiederhergestellt'));
+                } })));
+          }).catch(() => list.replaceChildren(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Sicherungen nicht lesbar.' })))));
+        };
+        sheet.saves();
+      }
+
       // The bot's own VM: its browser, a terminal and its files.
       if (b.vm && MAG.liveView) {
         const box = el('div', { class: 'vm-view' }), tabs = el('div', { class: 'seg vm-tabs' });
@@ -465,7 +493,7 @@
   // failure, and serialize per-field changes to avoid out-of-order saves.
   function selfProfile(bot) {
     const path = '/api/bot/' + encodeURIComponent(bot.id);
-    const group = el('div', { class: 'self-profile' }, el('b', { text: bot.name }));
+    const group = el('div', { class: 'self-profile' });
     const fields = [['who', 'Wer ich bin'], ['care', 'Was mir wichtig ist'], ['pursue', 'Was ich verfolge']];
     const inputs = new Map(), saved = {};
     let loaded = false, pending = Promise.resolve();
@@ -533,11 +561,11 @@
       content.append(el('h3', { text: 'Netzzugriff' }), el('div', { class: 'card' },
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 
+      // This switch affects the entire room; individual self-profiles live
+      // in each bot's own sheet, under Selbstbild.
       if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
         row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
-          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v }))),
-        ...S.bots.map(selfProfile),
-        el('div', { class: 'set' }, el('small', { text: 'Die Aufgabe ist die Nachricht im Chat.' }))));
+          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v })))));
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),
@@ -677,22 +705,21 @@
         }).catch(() => {});
         loadPlugins();
       }
-      // Read aloud: a voice and a tempo for every bot, on this device.
+      // Global reading settings concern only the owner's voice. Bot voice
+      // selectors now live in their own sheets; storage keys are unchanged.
       if (MAG.voices) {
         const voices = el('div', { class: 'card' });
         content.append(el('h3', { text: 'Vorlesen' }), voices);
         if (!MAG.voices.possible()) voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, 'Stimme des Geräts', el('small', { text: 'Dieser Browser kann die lokalen Stimmen nicht laden.' }))));
         else MAG.voices.options().then((options) => {
-          // Chris's own messages are read too, with a voice of his choice.
-          for (const b of [{ id: 'chris', name: 'Chris' }, ...S.bots]) {
-            const now = MAG.voices.of(b.id);
-            voices.append(row(b.name, null, el('span', { class: 'pair' },
-              select(now.voice, options.map((o) => [o.id, o.label]), (v) => MAG.voices.set(b.id, { voice: v })),
-              select(String(now.rate), MAG.voices.rates.map((r) => [String(r), String(r).replace('.', ',') + '×']), (v) => MAG.voices.set(b.id, { rate: +v })))));
-          }
+          const now = MAG.voices.of('chris');
+          voices.append(row('Meine Stimme', null, el('span', { class: 'pair' },
+            select(now.voice, options.map((o) => [o.id, o.label]), (v) => MAG.voices.set('chris', { voice: v })),
+            select(String(now.rate), MAG.voices.rates.map((rate) => [String(rate), String(rate).replace('.', ',') + '×']),
+              (rate) => MAG.voices.set('chris', { rate: +rate })))));
           voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('span', { class: 'voice-state', text: MAG.voices.state() }),
             el('small', { text: 'Die Stimmen laufen nur in diesem Browser (Supertonic 3, Deutsch und Englisch). Das Sprachmodell wird einmal im Hintergrund geladen (rund 400 MB) und bleibt dann auf dem Gerät; der Server macht dafür nichts.' }))));
-        });
+        }).catch(() => voices.append(el('div', { class: 'set' }, 'Stimmen nicht lesbar.')));
       }
 
       const sys = el('dl', { class: 'kv' }, el('dt', { text: 'Version' }), el('dd', { text: MAG.version }));

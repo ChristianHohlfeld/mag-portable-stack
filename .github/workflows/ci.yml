@@ -71,6 +71,7 @@ jobs:
           node --check mag-room/web/app/messages.js
           node --check mag-room/web/app/tts-worker.js
           node mag-room/tests/test_bot_name_prefix.js
+          node mag-room/tests/test_self_profile_placement.js
           node mag-room/tests/test_routine_minutes.js
           node mag-room/tests/test_routine_coalesce.js
           node mag-room/tests/test_browser_body_null.js

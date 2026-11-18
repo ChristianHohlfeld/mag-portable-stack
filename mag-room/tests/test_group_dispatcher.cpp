@@ -67,6 +67,14 @@ int main() {
   CHECK(!conversation_rests(1, 2));
   CHECK(conversation_rests(2, 2));
   CHECK(conversation_rests(0, 1));
+  // The room's speaker head, copied by a model, is taken out at the start only.
+  CHECK(strip_speaker_tags("[Sprecher Blake] Hallo Chris.") == "Hallo Chris.");
+  CHECK(strip_speaker_tags("(Mi 18.11. 14:10)\n[Sprecher Blake] [Sprecher Blake] Hallo") == "Hallo");
+  CHECK(strip_speaker_tags("Hallo [Sprecher Blake] da") == "Hallo [Sprecher Blake] da");
+  CHECK(strip_speaker_tags("  Nichts davon.") == "  Nichts davon.");
+  CHECK(maybe_speaker_tag("[Spre") && maybe_speaker_tag("[Sprecher Bla") && maybe_speaker_tag("(Mi 18.1"));
+  CHECK(maybe_speaker_tag("[Sprecher Blake] ") && !maybe_speaker_tag("[Sprecher Blake] Hallo"));
+  CHECK(!maybe_speaker_tag("(ja) gut") && !maybe_speaker_tag("Hallo"));
   if (fails) return 1;
   std::puts("test-group-dispatcher ok");
   return 0;

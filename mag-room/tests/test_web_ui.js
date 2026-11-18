@@ -141,7 +141,6 @@ async function checkPrivateProfile() {
   assert.deepStrictEqual(profileCalls.at(-1).body, { self: { who: '' } });
   group.remove();
 }
-checkPrivateProfile().catch(err => { console.error(err); process.exitCode = 1; });
 const engineSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'engine.hpp'), 'utf8');
 assert(engineSrc.includes('if (thinking) k["reasoning_effort"]'), 'off must not send effort');
 const apiSrc = fs.readFileSync(path.join(root, '..', '..', 'native', 'api.hpp'), 'utf8');
@@ -162,6 +161,8 @@ assert(!browserSrc.includes('cc-exp|pin|otp/i'), 'no broad substring PIN/OTP rul
 assert(browserSrc.includes('const bool append_mode'), 'typing into focused fields must permit append with proof');
 
 
-window.close();
-console.log('web ui ok');
-process.exit(0);
+checkPrivateProfile().then(() => {
+  window.close();
+  console.log('web ui ok');
+  process.exit(0);
+}, err => { console.error(err); window.close(); process.exit(1); });

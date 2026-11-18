@@ -121,9 +121,14 @@ public:
         if (!bot.isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
         Val self = Val::object();
         const Val *saved = bot.find("self");
-        for (const char *key : {"who", "care", "pursue"})
-          self[key] = saved ? jstr(*saved, key) : "";
+        self["narrator"] = saved ? jstr(*saved, "narrator") : "";
         return http::send_json(fd, 200, self, {{"Cache-Control", "private, no-store"}});
+      }
+      if (starts_with(p, "/api/bot/") && ends_with(p, "/will")) {
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        const Val w = room_.will(bot_of(p));
+        if (!w.isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+        return http::send_json(fd, 200, w, {{"Cache-Control", "private, no-store"}});
       }
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
       if (starts_with(p, "/api/shot/")) {
@@ -384,6 +389,7 @@ public:
     }
     if (r.method == "DELETE" && starts_with(p, "/api/message/")) return remove(fd, p.substr(13));
     if (r.method == "PUT" && p == "/api/settings") return put_settings(fd, r);
+    if (r.method == "PUT" && starts_with(p, "/api/bot/") && ends_with(p, "/will")) return put_will(fd, r);
     if (r.method == "PUT" && starts_with(p, "/api/bot/")) return put_bot(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/bot/") && ends_with(p, "/model")) return model_control(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/bot/") && ends_with(p, "/vm")) {
@@ -1879,6 +1885,29 @@ private:
     return rest.substr(0, rest.find('/'));
   }
 
+  // Owner-written goals cannot be overwritten by autonomous will_set.
+  void put_will(int fd, const http::Request &r) {
+    const Val in = jparse(r.body);
+    const std::string id = bot_of(r.path);
+    if (!in.isObj()) return http::send_error(fd, 400, "JSON erwartet");
+    const std::string action = jstr(in, "action", "save");
+    if (action != "save" && action != "hold" && action != "drop")
+      return http::send_error(fd, 400, "Unbekannte Aktion");
+    if (action == "save" && (trim(jstr(in, "text")).empty() || trim(jstr(in, "done_when")).empty()))
+      return http::send_error(fd, 400, "Ziel und Abschlusskriterium erforderlich");
+    const bool ok = room_.update_will(id, [&](Val &w) {
+      if (action == "drop") { w = Room::empty_will(); return true; }
+      if (action == "hold") { w["status"] = "held"; return true; }
+      w = Room::empty_will();
+      w["text"] = clip(trim(jstr(in, "text")), 800);
+      w["done_when"] = clip(trim(jstr(in, "done_when")), 600);
+      w["by"] = "owner"; w["status"] = "open";
+      return true;
+    });
+    if (!ok) return http::send_error(fd, 404, "Bot nicht gefunden oder Speichern fehlgeschlagen");
+    http::send_json(fd, 200, room_.will(id), {{"Cache-Control", "private, no-store"}});
+  }
+
   void put_bot(int fd, const http::Request &r) {
     const Val in = jparse(r.body);
     const std::string id = bot_of(r.path);
@@ -1887,9 +1916,8 @@ private:
     // Only these three string fields are accepted; absent fields are untouched.
     if (const Val *self = in.find("self")) {
       if (!self->isObj()) return http::send_error(fd, 400, "Selbstbeschreibung muss ein Objekt sein");
-      for (const char *key : {"who", "care", "pursue"})
-        if (const Val *v = self->find(key); v && v->type != Val::STR)
-          return http::send_error(fd, 400, "Selbstbeschreibung muss Text sein");
+      if (const Val *v = self->find("narrator"); v && v->type != Val::STR)
+        return http::send_error(fd, 400, "Erzähler muss Text sein");
     }
     // The name is the one source of truth: the address of the bot's site
     // follows it, and what it was called before keeps leading there.
@@ -1936,15 +1964,8 @@ private:
       if (const Val *v = in.find("persona"); v && v->type == Val::STR) b["persona"] = clip(v->str, 2000);
       if (const Val *self = in.find("self"); self && self->isObj()) {
         if (!b["self"].isObj()) b["self"] = Val::object();
-        for (const char *key : {"who", "care", "pursue"}) {
-          if (const Val *v = self->find(key); v && v->type == Val::STR) {
-            std::string text = v->str;
-            replace_all(text, "\r\n", " ");
-            replace_all(text, "\r", " ");
-            replace_all(text, "\n", " ");
-            b["self"][key] = trim(clip(trim(text), 400));
-          }
-        }
+        if (const Val *v = self->find("narrator"); v && v->type == Val::STR)
+          b["self"]["narrator"] = clip(v->str, 1200);
       }
     });
     if (!ok) return http::send_error(fd, 404, "Bot nicht gefunden");

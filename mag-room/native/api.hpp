@@ -1540,127 +1540,201 @@ private:
     v["files"] = chat_files();
     http::send_json(fd, 200, v);
   }
-  // Several files of the chat as one ZIP (stored, not compressed: they are
-  // pictures, models and videos), folders by kind. Its length is known before
-  // the first byte, the checksums are worked out while it streams.
+  // Immutable ZIP snapshots: a download URL always identifies one archive,
+  // not the changing contents of the chat. A retry opens the same bytes.
+  std::mutex zip_mu_;
   void files_zip(int fd, const http::Request &r) {
+    constexpr uint64_t LIM32 = 0xffffffffULL, LIM16 = 0xffffULL;
+    constexpr int64_t retention = 24 * 60 * 60;
     std::set<std::string> wanted;
     for (std::istringstream in(r.param("files")); !in.eof();) {
       std::string one;
       std::getline(in, one, ',');
       if (!one.empty()) wanted.insert(one);
     }
-    struct Entry { std::string path, name; uint64_t size; uint32_t when; uint32_t crc = 0; uint64_t offset = 0; };
-    std::vector<Entry> entries;
-    std::set<std::string> names;
-    for (auto &f : chat_files().asArr()) {
-      const std::string stored = jstr(f, "file");
-      if (!wanted.empty() && !wanted.count(stored)) continue;
-      const std::string path = room_.file_path(stored);
+    const std::string token = r.param("snapshot");
+    if (token.size() > 128 || (!token.empty() &&
+        token.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_") != std::string::npos))
+      return http::send_error(fd, 400, "Ungültige ZIP-ID");
+    // Legacy links without an explicit snapshot remain usable; each canonical
+    // selection gets a stable archive within the same retention window.
+    std::string selection = token + "\n";
+    for (const auto &id : wanted) selection += id + "\n";
+    const std::string key = sha256_hex(selection);
+    const std::string cache = room_.cfg.state_dir + "/zip-downloads";
+    const std::string target = cache + "/" + key + ".zip";
+    std::string etag;
+    {
+      std::lock_guard<std::mutex> guard(zip_mu_);
+      std::error_code ec;
+      fs::create_directories(cache, ec);
+      if (ec) return http::send_error(fd, 500, "ZIP-Speicher nicht verfügbar");
+      chmod(cache.c_str(), 0700);
+      const int64_t now = now_s();
       struct stat st{};
-      if (path.empty() || stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
-      std::string name = jstr(f, "name", stored);
-      for (auto &c : name) if (c == '/' || c == '\\' || (unsigned char)c < 32) c = '_';
-      const time_t t = (time_t)(jnum(f, "ts") / 1000);
-      char day[16];
-      std::strftime(day, sizeof day, "%Y-%m-%d", std::localtime(&t));
-      std::string full = jstr(f, "group") + "/" + day + " " + name;
-      for (int i = 2; names.count(full); ++i) full = jstr(f, "group") + "/" + day + " " + std::to_string(i) + " " + name;
-      names.insert(full);
-      std::tm lt{};
-      localtime_r(&t, &lt);
-      const uint32_t when = (uint32_t)(((std::max(lt.tm_year - 80, 0) << 9) | ((lt.tm_mon + 1) << 5) | lt.tm_mday) << 16) |
-                            (uint32_t)((lt.tm_hour << 11) | (lt.tm_min << 5) | (lt.tm_sec / 2));
-      entries.push_back({path, full, (uint64_t)st.st_size, when});
-      if (st.st_size >= 0xffffffffLL) return http::send_error(fd, 413, "Eine Datei ist für ein ZIP zu groß");
-    }
-    if (entries.empty()) return http::send_error(fd, 404, "Keine Dateien");
-    uint64_t total = 22, central = 0;
-    for (auto &e : entries) total += 30 + e.name.size() + e.size + 16, central += 46 + e.name.size();
-    total += central;
-    if (total >= 0xffffffffULL) return http::send_error(fd, 413, "Zu viele Daten für ein ZIP; bitte weniger auswählen");
-    static uint32_t table[256];
-    static std::once_flag once;
-    std::call_once(once, [] {
-      for (uint32_t i = 0; i < 256; ++i) {
-        uint32_t c = i;
-        for (int k = 0; k < 8; ++k) c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1;
-        table[i] = c;
+      // Only remove expired archives and abandoned temporary files. Open
+      // descriptors remain valid if a completed download spans cleanup.
+      for (fs::directory_iterator it(cache, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string path = it->path().string();
+        const std::string name = it->path().filename().string();
+        struct stat cached{};
+        if ((ends_with(name, ".zip") || ends_with(name, ".part")) &&
+            lstat(path.c_str(), &cached) == 0 && S_ISREG(cached.st_mode) &&
+            now - (int64_t)cached.st_mtime >= retention)
+          unlink(path.c_str());
       }
-    });
-    auto le = [](std::string &out, uint64_t v, int bytes) { for (int i = 0; i < bytes; ++i) out += (char)((v >> (8 * i)) & 0xff); };
-    char stamp[32];
-    const time_t now = time(nullptr);
-    std::strftime(stamp, sizeof stamp, "%Y-%m-%d", std::localtime(&now));
-    // A temporary regular file supports byte-range retries from Android's
-    // download manager, unlike a live HTTP stream. Never expose partial ZIPs.
-    const std::string temp = room_.cfg.state_dir + "/mag-zip-" + random_hex(16) + ".zip";
-    const int zipfd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (zipfd < 0) return http::send_error(fd, 500, "ZIP-Datei konnte nicht erstellt werden");
-    const auto zipwrite = [&](const void *data, size_t left) {
-      const char *p = static_cast<const char *>(data);
-      while (left) {
-        ssize_t n = ::write(zipfd, p, left);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return false;
-        left -= (size_t)n; p += n;
+      if (stat(target.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        // Do not silently recreate the bytes of an expired partial download.
+        // A new browser download should use a new snapshot ID.
+        const std::string range = r.header("range");
+        if (!r.header("if-range").empty() ||
+            (!range.empty() && !starts_with(range, "bytes=0-")))
+          return http::send_error(fd, 410, "ZIP-Download abgelaufen; bitte erneut starten");
+
+        struct Entry {
+          std::string path, name;
+          uint64_t size, offset = 0;
+          uint32_t when, crc = 0;
+        };
+        std::vector<Entry> entries;
+        std::set<std::string> names;
+        for (auto &f : chat_files().asArr()) {
+          const std::string stored = jstr(f, "file");
+          if (!wanted.empty() && !wanted.count(stored)) continue;
+          const std::string path = room_.file_path(stored);
+          struct stat input{};
+          if (path.empty() || stat(path.c_str(), &input) != 0 || !S_ISREG(input.st_mode)) continue;
+          std::string name = jstr(f, "name", stored);
+          for (auto &c : name) if (c == '/' || c == '\\' || (unsigned char)c < 32) c = '_';
+          const time_t t = (time_t)(jnum(f, "ts") / 1000);
+          std::tm lt{};
+          localtime_r(&t, &lt);
+          char day[16];
+          std::strftime(day, sizeof day, "%Y-%m-%d", &lt);
+          const std::string prefix = jstr(f, "group") + "/" + day + " ";
+          std::string full = prefix + name;
+          for (int i = 2; names.count(full); ++i) full = prefix + std::to_string(i) + " " + name;
+          if (full.size() > LIM16) return http::send_error(fd, 413, "ZIP-Dateiname zu lang");
+          names.insert(full);
+          const uint32_t when = (uint32_t)(((std::clamp(lt.tm_year - 80, 0, 127) << 9) |
+              ((lt.tm_mon + 1) << 5) | lt.tm_mday) << 16) |
+              (uint32_t)((lt.tm_hour << 11) | (lt.tm_min << 5) | (lt.tm_sec / 2));
+          entries.push_back({path, full, (uint64_t)input.st_size, 0, when});
+        }
+        if (entries.empty()) return http::send_error(fd, 404, "Keine Dateien");
+        static uint32_t table[256];
+        static std::once_flag once;
+        std::call_once(once, [] {
+          for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+          }
+        });
+        const auto le = [](std::string &out, uint64_t v, int bytes) {
+          for (int i = 0; i < bytes; ++i) out += (char)((v >> (8 * i)) & 0xff);
+        };
+        const std::string temp = cache + "/" + key + "-" + random_hex(8) + ".part";
+        const int zipfd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (zipfd < 0) return http::send_error(fd, 500, "ZIP-Datei konnte nicht erstellt werden");
+        uint64_t at = 0;
+        bool zipok = true, uses64 = false;
+        const auto zipwrite = [&](const void *data, size_t size) {
+          if (!http::write_file_all(zipfd, static_cast<const char *>(data), size)) return false;
+          at += size;
+          return true;
+        };
+        std::vector<char> buf(1 << 20);
+        for (auto &e : entries) {
+          e.offset = at;
+          const bool big = e.size >= LIM32, far = e.offset >= LIM32;
+          uses64 = uses64 || big || far;
+          std::string local, extra;
+          if (big) {
+            le(extra, 0x0001, 2); le(extra, 16, 2);
+            le(extra, e.size, 8); le(extra, e.size, 8);
+          }
+          le(local, 0x04034b50, 4); le(local, big || far ? 45 : 20, 2);
+          le(local, 0x0808, 2); le(local, 0, 2); // stored + descriptor + UTF-8
+          le(local, e.when, 4); le(local, 0, 4);
+          le(local, big ? LIM32 : 0, 4); le(local, big ? LIM32 : 0, 4);
+          le(local, e.name.size(), 2); le(local, extra.size(), 2);
+          local += e.name; local += extra;
+          if (!zipwrite(local.data(), local.size())) { zipok = false; break; }
+          const int input = open(e.path.c_str(), O_RDONLY | O_CLOEXEC);
+          uint64_t left = e.size;
+          uint32_t c = 0xffffffffu;
+          struct stat current{};
+          if (input < 0 || fstat(input, &current) != 0 || !S_ISREG(current.st_mode) ||
+              (uint64_t)current.st_size != e.size) zipok = false;
+          while (zipok && left > 0) {
+            const ssize_t got = ::read(input, buf.data(), std::min<uint64_t>(buf.size(), left));
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) { zipok = false; break; }
+            for (ssize_t i = 0; i < got; ++i) c = table[(c ^ (unsigned char)buf[i]) & 0xff] ^ (c >> 8);
+            if (!zipwrite(buf.data(), (size_t)got)) { zipok = false; break; }
+            left -= (uint64_t)got;
+          }
+          if (input >= 0) close(input);
+          if (!zipok || left) { zipok = false; break; }
+          e.crc = c ^ 0xffffffffu;
+          std::string desc;
+          le(desc, 0x08074b50, 4); le(desc, e.crc, 4);
+          le(desc, e.size, big ? 8 : 4); le(desc, e.size, big ? 8 : 4);
+          if (!zipwrite(desc.data(), desc.size())) { zipok = false; break; }
+        }
+        const uint64_t central_at = at;
+        if (zipok) for (const auto &e : entries) {
+          const bool big = e.size >= LIM32, far = e.offset >= LIM32;
+          std::string dir, extra, payload;
+          if (big) { le(payload, e.size, 8); le(payload, e.size, 8); }
+          if (far) le(payload, e.offset, 8);
+          if (!payload.empty()) {
+            le(extra, 0x0001, 2); le(extra, payload.size(), 2); extra += payload;
+          }
+          le(dir, 0x02014b50, 4); le(dir, big || far ? 45 : 20, 2);
+          le(dir, big || far ? 45 : 20, 2); le(dir, 0x0808, 2); le(dir, 0, 2);
+          le(dir, e.when, 4); le(dir, e.crc, 4);
+          le(dir, big ? LIM32 : e.size, 4); le(dir, big ? LIM32 : e.size, 4);
+          le(dir, e.name.size(), 2); le(dir, extra.size(), 2); le(dir, 0, 2);
+          le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 4);
+          le(dir, far ? LIM32 : e.offset, 4);
+          dir += e.name; dir += extra;
+          if (!zipwrite(dir.data(), dir.size())) { zipok = false; break; }
+        }
+        const uint64_t central = at - central_at, count = entries.size();
+        const bool archive64 = uses64 || count >= LIM16 || central >= LIM32 || central_at >= LIM32;
+        if (zipok) {
+          std::string end;
+          if (archive64) {
+            const uint64_t end64 = at;
+            le(end, 0x06064b50, 4); le(end, 44, 8); le(end, 45, 2); le(end, 45, 2);
+            le(end, 0, 4); le(end, 0, 4); le(end, count, 8); le(end, count, 8);
+            le(end, central, 8); le(end, central_at, 8);
+            le(end, 0x07064b50, 4); le(end, 0, 4); le(end, end64, 8); le(end, 1, 4);
+          }
+          le(end, 0x06054b50, 4); le(end, 0, 2); le(end, 0, 2);
+          le(end, std::min(count, LIM16), 2); le(end, std::min(count, LIM16), 2);
+          le(end, std::min(central, LIM32), 4); le(end, std::min(central_at, LIM32), 4); le(end, 0, 2);
+          zipok = zipwrite(end.data(), end.size());
+        }
+        if (zipok && fsync(zipfd) != 0) zipok = false;
+        if (::close(zipfd) != 0) zipok = false;
+        if (!zipok || file_size(temp) != at || ::rename(temp.c_str(), target.c_str()) != 0 ||
+            stat(target.c_str(), &st) != 0) {
+          unlink(temp.c_str());
+          return http::send_error(fd, 500, "ZIP konnte nicht vollständig erstellt werden");
+        }
       }
-      return true;
-    };
-    bool zipok = true;
-    uint64_t at = 0;
-    std::vector<char> buf(1 << 20);
-    for (auto &e : entries) {
-      e.offset = at;
-      std::string local;
-      le(local, 0x04034b50, 4); le(local, 20, 2); le(local, 0x0808, 2); le(local, 0, 2); // stored, data descriptor, UTF-8 name
-      le(local, e.when, 4); le(local, 0, 4); le(local, 0, 4); le(local, 0, 4);
-      le(local, e.name.size(), 2); le(local, 0, 2);
-      local += e.name;
-      if (!zipwrite(local.data(), local.size())) { zipok = false; break; }
-      at += local.size();
-      const int file = open(e.path.c_str(), O_RDONLY | O_CLOEXEC);
-      uint64_t left = e.size;
-      uint32_t c = 0xffffffffu;
-      while (file >= 0 && left > 0) {
-        const ssize_t got = ::read(file, buf.data(), std::min<uint64_t>(buf.size(), left));
-        if (got <= 0) break;
-        for (ssize_t i = 0; i < got; ++i) c = table[(c ^ (unsigned char)buf[i]) & 0xff] ^ (c >> 8);
-        if (!zipwrite(buf.data(), (size_t)got)) { zipok = false; break; }
-        left -= (uint64_t)got;
-      }
-      if (file >= 0) close(file);
-      if (left > 0 || !zipok) { zipok = false; break; } // reject a short input
-      e.crc = c ^ 0xffffffffu;
-      std::string desc;
-      le(desc, 0x08074b50, 4); le(desc, e.crc, 4); le(desc, e.size, 4); le(desc, e.size, 4);
-      if (!zipwrite(desc.data(), desc.size())) { zipok = false; break; }
-      at += e.size + desc.size();
+      // A recreated snapshot after expiration cannot accidentally validate an
+      // old partial response: the immutable file's identity changes.
+      etag = "\"" + sha256_hex(key + ":" + std::to_string(st.st_ino) + ":" +
+          std::to_string(st.st_mtim.tv_sec) + ":" + std::to_string(st.st_mtim.tv_nsec) +
+          ":" + std::to_string(st.st_size)) + "\"";
     }
-    if (!zipok) { ::close(zipfd); unlink(temp.c_str()); return http::send_error(fd, 500, "ZIP konnte nicht vollständig erstellt werden"); }
-    std::string dir;
-    for (auto &e : entries) {
-      le(dir, 0x02014b50, 4); le(dir, 20, 2); le(dir, 20, 2); le(dir, 0x0808, 2); le(dir, 0, 2);
-      le(dir, e.when, 4); le(dir, e.crc, 4); le(dir, e.size, 4); le(dir, e.size, 4);
-      le(dir, e.name.size(), 2); le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 2); le(dir, 0, 4);
-      le(dir, e.offset, 4);
-      dir += e.name;
-    }
-    le(dir, 0x06054b50, 4); le(dir, 0, 2); le(dir, 0, 2); le(dir, entries.size(), 2); le(dir, entries.size(), 2);
-    le(dir, central, 4); le(dir, at, 4); le(dir, 0, 2);
-    zipok = zipwrite(dir.data(), dir.size());
-    if (::close(zipfd) != 0) zipok = false;
-    if (!zipok || file_size(temp) != total) {
-      unlink(temp.c_str());
-      return http::send_error(fd, 500, "ZIP konnte nicht vollständig erstellt werden");
-    }
-    timeval tv{300, 0};
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    const std::string name = std::string("MAG Dateien ") + stamp + ".zip";
-    const http::Headers h = {{"Content-Disposition", download_disposition(name, true)},
-                             {"Cache-Control", "no-store"}};
-    http::send_file(fd, r, temp, "application/zip", h);
-    unlink(temp.c_str());
+    const http::Headers h = {{"Content-Disposition", download_disposition("MAG Dateien.zip", true)},
+                             {"Cache-Control", "private, no-cache"}, {"ETag", etag}};
+    http::send_file(fd, r, target, "application/zip", h);
   }
 
   // ---- the bots' sites ----------------------------------------------------

@@ -3545,6 +3545,9 @@ private:
       }
       logf("engine: " + b.id + " goal_state=" + jstr(b.goal, "state", "none") +
            " tool_choice=" + (driving ? "required" : "auto") + " reason=" + reason);
+      // Pin the own goal to the model request. An owner edit/hold/clear
+      // during inference must invalidate the stale autonomous action.
+      const Val will_at_request = room_.will(b.id);
       Val body = Val::object();
       body["messages"] = request_with_goal(b, closing || (jstr(b.goal, "state") == "done" && step > 0));
       if (!will_retry_note.empty()) {
@@ -3885,7 +3888,11 @@ private:
           std::all_of(res.calls.begin(), res.calls.end(), [&](const llm::ToolCall &call) {
             if (is_will_tool(call.name)) return true;
             return !will_action_used && (call.name == "shell" || call.name == "write_file") &&
-                   vm::valid_name(jstr(me, "vm")) && jstr(room_.will(b.id), "status") == "open";
+                   vm::valid_name(jstr(me, "vm")) &&
+                   jstr(will_at_request, "status") == "open" &&
+                   jstr(room_.will(b.id), "status") == "open" &&
+                   jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
+                   jstr(room_.will(b.id), "by") == jstr(will_at_request, "by");
           }) &&
           std::count_if(res.calls.begin(), res.calls.end(), [](const llm::ToolCall &c) {
             return c.name == "shell" || c.name == "write_file";
@@ -4198,7 +4205,10 @@ private:
                   (!is_will_tool(c.name) &&
                    !(c.name == "shell" || c.name == "write_file" &&
                      !will_action_used && vm::valid_name(jstr(me, "vm")) &&
-                     jstr(room_.will(b.id), "status") == "open")))) {
+                     jstr(will_at_request, "status") == "open" &&
+                     jstr(room_.will(b.id), "status") == "open" &&
+                     jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
+                     jstr(room_.will(b.id), "by") == jstr(will_at_request, "by")))) {
           // All unattended access is denied except the explicit will
           // transitions and ONE VM-local shell/write_file per bot round.
           result = tools::fail("Selbstgespräch: nur eigenes Ziel und höchstens ein eigener VM-Schritt erlaubt.");
@@ -4627,10 +4637,15 @@ private:
           }
         }
         if (bot_dialogue && (c.name == "shell" || c.name == "write_file") && own_chat &&
-            !will_action_used && jstr(room_.will(b.id), "status") == "open") {
+            !will_action_used && jstr(will_at_request, "status") == "open" &&
+            jstr(room_.will(b.id), "status") == "open" &&
+            jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
+            jstr(room_.will(b.id), "by") == jstr(will_at_request, "by")) {
           will_action_used = true;
           room_.update_will(b.id, [&](Val &w) {
-            if (jstr(w, "status") != "open") return false;
+            if (jstr(w, "status") != "open" ||
+                jstr(w, "text") != jstr(will_at_request, "text") ||
+                jstr(w, "by") != jstr(will_at_request, "by")) return false;
             w["steps"] = jnum(w, "steps") + 1;
             w["last_tool"] = c.name;
             w["last_ok"] = result.ok && !cancel->stopped();

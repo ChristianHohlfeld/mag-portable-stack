@@ -3550,7 +3550,7 @@ private:
           "(PRIVATE SELBSTORIENTIERUNG, nur an dich gerichtet; kein Sprecher, "
           "kein Erzähler und keine neue Nachricht von Chris. Der Besitzer kann diese "
           "Orientierung einsehen; kein anderer Bot erhält sie als Gesprächsbeitrag. "
-          "Dein gegenwärtiges Selbstmodell: "
+          "Dein gegenwärtiges Selbstmodell: " +
           self_context +
           "WER ICH BIN = " + identity +
           ", eigenständiger KI-Assistent in MAG, nicht Chris und nicht der andere Bot. "

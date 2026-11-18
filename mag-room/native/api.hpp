@@ -372,6 +372,7 @@ public:
     }
     if (r.method == "DELETE" && starts_with(p, "/api/message/")) return remove(fd, p.substr(13));
     if (r.method == "PUT" && p == "/api/settings") return put_settings(fd, r);
+    if (r.method == "GET" && starts_with(p, "/api/bot/") && ends_with(p, "/self")) return get_bot_self(fd, r);
     if (r.method == "PUT" && starts_with(p, "/api/bot/")) return put_bot(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/bot/") && ends_with(p, "/model")) return model_control(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/bot/") && ends_with(p, "/vm")) {
@@ -1817,6 +1818,26 @@ private:
     return rest.substr(0, rest.find('/'));
   }
 
+  // Never expose this owner-maintained identity through the public bot
+  // status snapshot or the broadcast bots event.
+  void get_bot_self(int fd, const http::Request &r) {
+    const Val bot = room_.bot(bot_of(r.path));
+    if (!bot.isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+    Val self = Val::object();
+    const Val *stored = bot.find("self");
+    for (const char *key : {"who", "care", "pursue"})
+      self[key] = stored && stored->isObj() ? jstr(*stored, key) : "";
+    Val out = Val::object();
+    out["self"] = self;
+    http::send_json(fd, 200, out);
+  }
+
+  static std::string clean_bot_self(std::string value) {
+    for (char &c : value) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    // Normalize line breaks before truncation; trim on both ends.
+    return clip(trim(value), 400);
+  }
+
   void put_bot(int fd, const http::Request &r) {
     const Val in = jparse(r.body);
     const std::string id = bot_of(r.path);
@@ -1839,6 +1860,12 @@ private:
       const std::string problem = plugins_.bind(id, *v);
       if (!problem.empty()) return http::send_error(fd, 400, problem);
     }
+    if (const Val *self = in.find("self"); self && !self->isObj())
+      return http::send_error(fd, 400, "Self muss ein Objekt sein");
+    if (const Val *self = in.find("self"); self && self->isObj())
+      for (const char *key : {"who", "care", "pursue"})
+        if (const Val *v = self->find(key); v && v->type != Val::STR)
+          return http::send_error(fd, 400, "Self-Felder müssen Text sein");
     bool disabled = false, renamed = false;
     const bool ok = room_.update_bot(id, [&](Val &b) {
       if (!rename.empty() && rename != jstr(b, "name")) {
@@ -1864,6 +1891,13 @@ private:
       }
       if (const Val *v = in.find("effort"); v && (v->asStr() == "low" || v->asStr() == "medium" || v->asStr() == "high")) b["effort"] = v->asStr();
       if (const Val *v = in.find("persona"); v && v->type == Val::STR) b["persona"] = clip(v->str, 2000);
+      if (const Val *self = in.find("self"); self && self->isObj()) {
+        Val &stored = b["self"];
+        if (!stored.isObj()) stored = Val::object();
+        for (const char *key : {"who", "care", "pursue"})
+          if (const Val *value = self->find(key))
+            stored[key] = clean_bot_self(value->str);
+      }
     });
     if (!ok) return http::send_error(fd, 404, "Bot nicht gefunden");
     if (renamed) {

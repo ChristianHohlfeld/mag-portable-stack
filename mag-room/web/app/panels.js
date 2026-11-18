@@ -461,6 +461,55 @@
     opened.addEventListener('closed', () => live?.stop());
   }
 
+  // Owner-only profile controls: load privately, preserve unsaved edits on
+  // failure, and serialize per-field changes to avoid out-of-order saves.
+  function selfProfile(bot) {
+    const path = '/api/bot/' + encodeURIComponent(bot.id);
+    const group = el('div', { class: 'self-profile' }, el('b', { text: bot.name }));
+    const fields = [['who', 'Wer ich bin'], ['care', 'Was mir wichtig ist'], ['pursue', 'Was ich verfolge']];
+    const inputs = new Map(), saved = {};
+    let loaded = false, pending = Promise.resolve();
+    const status = el('small', { class: 'fine', text: 'Wird geladen …', role: 'status' });
+    const save = (key, input) => {
+      if (!loaded) return;
+      const value = input.value;
+      pending = pending.then(async () => {
+        if (saved[key] === value) return;
+        status.textContent = 'Speichert …';
+        try {
+          await call('PUT', path, { self: { [key]: value } });
+          saved[key] = value;
+          status.textContent = 'Gespeichert';
+        } catch {
+          // Keep the input as typed. A later blur or a click on retry saves it.
+          status.textContent = 'Nicht gespeichert – erneut versuchen';
+        }
+      });
+    };
+    for (const [key, label] of fields) {
+      const input = el('input', { type: 'text', maxLength: 400, disabled: true, 'aria-label': label,
+        onblur: () => save(key, input),
+        onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } } });
+      inputs.set(key, input);
+      group.append(el('label', { class: 'self-profile-field' }, el('span', { text: label }), input));
+    }
+    const retry = el('button', { class: 'pill', text: 'Speichern', onclick: () => {
+      for (const [key, input] of inputs) save(key, input);
+    } });
+    group.append(el('div', { class: 'self-profile-status' }, status, retry));
+    call('GET', path + '/self').then(data => {
+      if (!owner()) return;
+      for (const [key, input] of inputs) {
+        saved[key] = typeof data?.[key] === 'string' ? data[key] : '';
+        input.value = saved[key];
+        input.disabled = false;
+      }
+      loaded = true;
+      status.textContent = '';
+    }).catch(() => { status.textContent = 'Nicht geladen – Einstellungen erneut öffnen'; });
+    return group;
+  }
+
   // ---- settings: everything in one place ----------------------------------
   function settingsSheet() {
     MAG.sheet('Einstellungen', (content, sheet) => {
@@ -486,7 +535,9 @@
 
       if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
         row('Inneres Selbstgespräch', 'Zeigt nur dir die Selbstorientierung der Bots vor ihrer Antwort. Rohe Modellgedanken bleiben verborgen.',
-          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v })))));
+          toggle(s.show_self_orientation === true, (v) => call('PUT', '/api/settings', { show_self_orientation: v }))),
+        ...S.bots.map(selfProfile),
+        el('div', { class: 'set' }, el('small', { text: 'Die Aufgabe ist die Nachricht im Chat.' }))));
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),

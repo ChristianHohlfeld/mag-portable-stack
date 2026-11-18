@@ -1248,14 +1248,10 @@
       if (details.open) orientationOpen.add(m.id); else orientationOpen.delete(m.id);
     });
     function paint(data) {
-      if (!orientationEnabled() || !data?.objective || !S.messages.has(m.id)) return;
-      body.replaceChildren(...[
-        el('div', {}, el('b', { text: 'Wer ich bin: ' }), data.self?.who || data.identity || ''),
-        data.self?.care ? el('div', {}, el('b', { text: 'Was mir wichtig ist: ' }), data.self.care) : null,
-        data.self?.pursue ? el('div', {}, el('b', { text: 'Was ich verfolge: ' }), data.self.pursue) : null,
-        el('div', {}, el('b', { text: 'Was ich will: ' }), data.intent || ''),
-        el('div', {}, el('b', { text: 'Mein Ziel: ' }), data.objective),
-        el('div', {}, el('b', { text: 'Was ich vermeiden will: ' }), data.anti_goal || '')].filter(Boolean));
+      if (!orientationEnabled() || !data?.narrator || !S.messages.has(m.id)) return;
+      // Exactly the privately captured paragraph sent to the model,
+      // not a reconstruction from today's mutable bot profile.
+      body.replaceChildren(el('div', { text: data.narrator || '' }));
       details.hidden = false;
     }
     const known = orientationCache.get(m.id);
@@ -1265,7 +1261,7 @@
       // A completed message is fetched again if the earlier result was empty.
       MAG.api('GET', '/api/self-orientation?message=' + encodeURIComponent(m.id)).then(data => {
         if (!orientationEnabled() || !S.messages.has(m.id)) return;
-        if (data?.objective) orientationCache.set(m.id, data);
+        if (data?.narrator) orientationCache.set(m.id, data);
         paint(data);
       }).catch(() => {});
     }

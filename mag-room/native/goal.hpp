@@ -441,6 +441,123 @@ inline bool text_tool_call(std::string raw, const Val &offered, llm::ToolCall &c
   return true;
 }
 
+// Parse only one complete standalone scalar invocation; never interpret Python.
+inline bool python_tool_call(std::string raw, const Val &offered, llm::ToolCall &call) {
+  raw = trim(raw);
+  if (raw.empty() || raw.size() > 16000) return false;
+  const std::string fence(3, char(96));
+  if (starts_with(raw, fence)) {
+    const size_t first = raw.find('\n');
+    if (first == std::string::npos) return false;
+    const std::string lang = trim(raw.substr(3, first - 3));
+    if (lang != "python" && lang != "tool_code") return false;
+    if (!ends_with(raw, fence) || raw.size() < first + 4) return false;
+    raw = trim(raw.substr(first + 1, raw.size() - first - 4));
+  }
+  size_t i = 0;
+  const auto skip = [&] { while (i < raw.size() && std::isspace((unsigned char)raw[i])) ++i; };
+  const auto take = [&](char c) {
+    skip();
+    if (i >= raw.size() || raw[i] != c) return false;
+    ++i;
+    return true;
+  };
+  const auto identifier = [&]() -> std::string {
+    skip();
+    const size_t start = i;
+    if (i >= raw.size() || !(std::isalpha((unsigned char)raw[i]) || raw[i] == '_')) return "";
+    ++i;
+    while (i < raw.size() && (std::isalnum((unsigned char)raw[i]) || raw[i] == '_')) ++i;
+    return raw.substr(start, i - start);
+  };
+  std::string name = identifier();
+  const bool printed = name == "print";
+  if (printed) {
+    if (!take('(')) return false;
+    name = identifier();
+  }
+  static const std::set<std::string> safe = {
+      "image_generate", "video_generate", "photo_to_3d", "scene_3d",
+      "models_3d", "web_search", "goal_requirements", "goal_plan",
+      "goal_step", "goal_finish", "goal_blocked", "browser_look", "browser_read"};
+  if (!safe.count(name) || !take('(')) return false;
+  const auto scalar = [&](Val &value) -> bool {
+    skip();
+    if (i >= raw.size()) return false;
+    if (raw[i] == '"' || raw[i] == '\'') {
+      const char quote = raw[i++];
+      std::string str;
+      while (i < raw.size()) {
+        const char c = raw[i++];
+        if (c == quote) { value = str; return true; }
+        if ((unsigned char)c < 32) return false;
+        if (c != '\\') { str += c; continue; }
+        if (i >= raw.size()) return false;
+        const char e = raw[i++];
+        switch (e) {
+          case '\\': case '"': case '\'': str += e; break;
+          case 'n': str += '\n'; break;
+          case 'r': str += '\r'; break;
+          case 't': str += '\t'; break;
+          case 'b': str += '\b'; break;
+          case 'f': str += '\f'; break;
+          default: return false;
+        }
+      }
+      return false;
+    }
+    const size_t start = i;
+    while (i < raw.size() && raw[i] != ',' && raw[i] != ')' &&
+           !std::isspace((unsigned char)raw[i])) ++i;
+    const std::string tok = raw.substr(start, i - start);
+    if (tok == "true" || tok == "True") { value = true; return true; }
+    if (tok == "false" || tok == "False") { value = false; return true; }
+    if (tok == "null" || tok == "None") { value = Val(); return true; }
+    static const std::regex number(R"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)");
+    if (!std::regex_match(tok, number)) return false;
+    char *end = nullptr;
+    const double n = std::strtod(tok.c_str(), &end);
+    if (!end || *end || !std::isfinite(n)) return false;
+    value = n;
+    return true;
+  };
+  Val args = Val::object();
+  if (!take(')')) {
+    for (;;) {
+      const std::string key = identifier();
+      if (key.empty() || args.find(key) || !take('=')) return false;
+      Val value;
+      if (!scalar(value)) return false;
+      args[key] = value;
+      if (take(')')) break;
+      if (!take(',')) return false;
+      if (take(')')) break;
+    }
+  }
+  if (printed && !take(')')) return false;
+  skip();
+  if (i != raw.size()) return false;
+  llm::ToolCall parsed;
+  parsed.id = "call_python_" + random_hex(5);
+  parsed.name = name;
+  parsed.arguments = mj::dump(args);
+  parsed.valid = true;
+  std::string why;
+  if (!args_ok(offered, parsed, why)) return false;
+  // Reject invented keywords (args_ok validates known property types).
+  for (const auto &def : offered.asArr()) {
+    const Val *fn = def.find("function");
+    if (!fn || jstr(*fn, "name") != name) continue;
+    const Val *params = fn->find("parameters");
+    const Val *props = params ? params->find("properties") : nullptr;
+    for (const auto &kv : *args.obj)
+      if (!props || !props->find(kv.first)) return false;
+    break;
+  }
+  call = parsed;
+  return true;
+}
+
 // ---- page memory ------------------------------------------------------------
 inline bool direct_link(const std::string &url); // defined with evidence ranking below
 inline void absorb(Val &g, const Val &page, int version) {

@@ -1019,7 +1019,7 @@
   // The scene's voices in the chat: they follow the viewer's clock (play,
   // pause, from the start, the loop), so the lips and the voice go together.
   function sceneSound(m, canvas, button) {
-    let audio = null, timer = 0;
+    let audio = null, timer = 0, url = '', disposed = false;
     const follow = () => {
       const st = canvas._viewer?.state?.();
       if (!audio || !st) return;
@@ -1028,19 +1028,29 @@
       if (audio.paused && st.time < (audio.duration || 0)) audio.play().catch(() => {});
     };
     const off = () => { clearInterval(timer); timer = 0; audio?.pause(); button.classList.remove('on'); };
-    button.addEventListener('click', async () => {
+    const click = async () => {
+      if (disposed) return;
       if (timer) return off();
       button.disabled = true;
       const wav = await sceneVoices(m);
+      if (disposed || !canvas.isConnected) return;
       button.disabled = false;
       if (!wav) return MAG.toast('Die Stimmen sind auf diesem Gerät nicht geladen', true);
-      audio ||= new Audio(URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })));
+      if (!audio) { url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })); audio = new Audio(url); }
       button.classList.add('on');
       MAG.viewer3d.reset(canvas);
       audio.currentTime = 0;
       timer = setInterval(() => { if (!canvas.isConnected) off(); else follow(); }, 80);
       follow();
-    });
+    };
+    button.addEventListener('click', click);
+    canvas.addEventListener('magviewerdispose', () => {
+      disposed = true;
+      off();
+      button.removeEventListener('click', click);
+      if (audio) { audio.removeAttribute('src'); audio.load(); audio = null; }
+      if (url) { URL.revokeObjectURL(url); url = ''; }
+    }, { once: true });
   }
   function buildScene(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 scene ' + m3.state });

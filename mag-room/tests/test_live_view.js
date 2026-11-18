@@ -211,6 +211,10 @@ function tap(window, canvas, px, py) {
   assert.strictEqual(pictureFallback(false, 2000), 'https');
   assert.strictEqual(pictureFallback(true, 2000), 'none');
   assert.strictEqual(pictureFallback(true, 5000), 'wait');
+  const { terminalFallback } = g.window.MAG.liveGesture;
+  assert.strictEqual(terminalFallback(false, 1999), 'wait');
+  assert.strictEqual(terminalFallback(false, 2000), 'https');
+  assert.strictEqual(terminalFallback(true, 5000), 'pty');
   g.view.stop();
 
   // No tap: frames, state polls, visibility and a moved card never focus the field.

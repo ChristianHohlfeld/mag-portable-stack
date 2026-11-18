@@ -639,15 +639,15 @@ private:
     write_json(cfg.state_dir + "/agents.json", agents);
   }
 
-  // The two bots run the same model. A missing self gets this description
-  // once. An existing self, including fields the owner cleared, stays.
+  // A missing self gets this description once. An existing self, including
+  // fields the owner cleared, stays. Both bots share it; it names no model.
   static bool ensure_self(Val &b) {
     if (const Val *have = b.find("self"); have && have->isObj()) return false;
     const bool known = jstr(b, "id") == "lena" || jstr(b, "id") == "noah";
     Val self = Val::object();
-    self["who"] = known ? "Ich bin einer von zwei Assistenten im Raum und laufe mit demselben Modell wie der andere." : "";
-    self["care"] = known ? "Mir ist wichtig, knapp zu sein und nur das zu sagen, was der Chat oder ein Werkzeug hergibt." : "";
-    self["pursue"] = known ? "Ich verfolge die Bitte, die gerade im Chat steht." : "";
+    self["who"] = known ? "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber." : "";
+    self["care"] = known ? "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen." : "";
+    self["pursue"] = known ? "Ich bearbeite aktuelle Bitten; im Austausch mit anderen Bots führe ich Gespräche, ohne eigenmächtig alte Aufgaben wiederaufzunehmen." : "";
     b["self"] = self;
     return true;
   }

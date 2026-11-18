@@ -1054,9 +1054,9 @@ class RoomContract(unittest.TestCase):
         r = self.room
         base = "/api/bot/lena"
         defaults = {
-            "who": "Ich bin einer von zwei Assistenten im Raum und laufe mit demselben Modell wie der andere.",
-            "care": "Mir ist wichtig, knapp zu sein und nur das zu sagen, was der Chat oder ein Werkzeug hergibt.",
-            "pursue": "Ich verfolge die Bitte, die gerade im Chat steht.",
+            "who": "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.",
+            "care": "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen.",
+            "pursue": "Ich bearbeite aktuelle Bitten; im Austausch mit anderen Bots führe ich Gespräche, ohne eigenmächtig alte Aufgaben wiederaufzunehmen.",
         }
         self.assertEqual(r.api("GET", base + "/self"), (200, defaults))
         self.assertEqual(r.api("GET", "/api/bot/noah/self"), (200, defaults))

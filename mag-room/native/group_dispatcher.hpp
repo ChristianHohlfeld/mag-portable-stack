@@ -227,6 +227,65 @@ inline bool name_only(const std::string &text, const std::vector<std::string> &n
   return false;
 }
 
+// The room names who spoke in the prompt with "[Sprecher <Name>] ", a
+// message of Chris with its clock in front ("(Mi 18.11. 14:10)\n"). A model
+// copies that head into its own answer; at the start of an answer it is
+// taken out, once or as often as it was copied. Nothing else is touched.
+inline size_t clock_label_end(const std::string &t, size_t at) {
+  // "(Mi 18.11. 14:10)": two letters, day, month, hour and minute.
+  static const char shape[] = "(aa 00.00. 00:00)";
+  if (t.size() < at + sizeof shape - 1) return std::string::npos;
+  for (size_t i = 0; i + 1 < sizeof shape; ++i) {
+    const unsigned char c = (unsigned char)t[at + i], s = (unsigned char)shape[i];
+    if (s == 'a' ? !std::isalpha(c) : s == '0' ? !std::isdigit(c) : c != s) return std::string::npos;
+  }
+  return at + sizeof shape - 1;
+}
+inline size_t speaker_tag_end(const std::string &t, size_t at) {
+  static const std::string open = "[Sprecher ";
+  if (t.compare(at, open.size(), open) != 0) return std::string::npos;
+  const size_t close = t.find(']', at + open.size());
+  if (close == std::string::npos || close - at > 72 || t.find('\n', at) < close) return std::string::npos;
+  return close + 1;
+}
+inline std::string strip_speaker_tags(const std::string &text) {
+  size_t at = 0;
+  for (;;) {
+    size_t p = at;
+    while (p < text.size() && std::isspace((unsigned char)text[p])) ++p;
+    size_t end = clock_label_end(text, p);
+    if (end == std::string::npos) end = speaker_tag_end(text, p);
+    if (end == std::string::npos) break;
+    at = end;
+  }
+  if (at == 0) return text;
+  while (at < text.size() && std::isspace((unsigned char)text[at])) ++at;
+  return text.substr(at);
+}
+// While streaming: could the head still turn out to be such a tag ("[Spre",
+// "(Mi 18.1")? Then the bubble waits, so no part of it is ever shown.
+inline bool maybe_speaker_tag(const std::string &partial) {
+  const std::string t = strip_speaker_tags(partial);
+  size_t p = 0;
+  while (p < t.size() && std::isspace((unsigned char)t[p])) ++p;
+  const std::string head = t.substr(p);
+  if (head.empty()) return t.size() != partial.size(); // only tags so far
+  static const std::string open = "[Sprecher ", clock = "(aa 00.00. 00:00)";
+  if (head.size() < open.size()) {
+    if (open.compare(0, head.size(), head) == 0) return true;
+  } else if (head.compare(0, open.size(), open) == 0) {
+    return head.size() <= 72 && head.find_first_of("]\n") == std::string::npos;
+  }
+  if (head[0] == '(' && head.size() < clock.size()) {
+    for (size_t i = 0; i < head.size(); ++i) {
+      const unsigned char c = (unsigned char)head[i], s = (unsigned char)clock[i];
+      if (s == 'a' ? !std::isalpha(c) : s == '0' ? !std::isdigit(c) : c != s) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 // While streaming: could this still end up as a bare name ("No", "[Noah",
 // "Noah (gpt-o")? Then hold the bubble; it may turn out to be silent.
 inline bool maybe_name_only(const std::string &partial, const std::vector<std::string> &names) {

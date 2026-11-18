@@ -3221,7 +3221,10 @@ private:
     candidates.push_back(name);
     std::string t = trim(text);
     while (!t.empty()) {
-      bool changed = false;
+      // The room's own head ("[Sprecher Blake]", with a clock in front) first.
+      const std::string untagged = group_chat::strip_speaker_tags(t);
+      bool changed = untagged.size() != t.size();
+      t = trim(untagged);
       for (const auto &speaker : candidates) {
         if (speaker.empty()) continue;
         for (const std::string &p : {"[" + speaker + "]:", "[" + speaker + "]",
@@ -3306,6 +3309,7 @@ private:
       t.held += text;
       if (!flush && t.steps == 0 &&
           (trim(t.held).size() < 2 || group_chat::maybe_pass(t.held) || group_chat::maybe_name_only(t.held, names()) ||
+           group_chat::maybe_speaker_tag(t.held) ||
            trim(t.held).size() < name.size() + 4))
         return;
       text = strip_self(t.held, name, names());
@@ -3956,7 +3960,9 @@ private:
       if (!res.content.empty() || !res.calls.empty()) {
         Val a = Val::object();
         a["role"] = "assistant";
-        a["content"] = res.calls.empty() && res.cancelled && content.empty() ? "" : res.content;
+        // A copied speaker tag is not kept in the bot's own words either, so
+        // its next answer finds nothing there to imitate.
+        a["content"] = res.calls.empty() && res.cancelled && content.empty() ? "" : group_chat::strip_speaker_tags(res.content);
         if (!res.calls.empty() && !res.cancelled) {
           Val calls = Val::array();
           for (auto &c : res.calls) {

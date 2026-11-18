@@ -1367,6 +1367,8 @@
       return new RegExp('^\\s*(?:\\*\\*' + escaped + ':\\*\\*|\\*\\*' +
         escaped + '\\*\\*:|\\[' + escaped + '\\]:?|' + escaped + '[:：,])\\s*', 'i');
     });
+    // The room's own speaker head of the prompt, copied by a model (an answer from before the room took it out).
+    labels.push(/^\s*\([A-Za-z]{2} \d{2}\.\d{2}\. \d{2}:\d{2}\)\s*/, /^\s*\[Sprecher [^\]\n]{1,60}\]\s*/);
     for (;;) {
       const before = text;
       for (const re of labels) {

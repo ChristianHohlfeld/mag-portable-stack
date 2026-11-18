@@ -45,8 +45,39 @@
   let readingFrom = null;
   const READ_FROM_SPEEDS = [1, 1.25, 1.5, 1.75, 2];
 
-  function normalize(text) {
-    return String(text || '')
+  // What the bots say quietly to each other ("*leise zu Noah:* …", "(flüstert)
+  // …", "Flüsternd: …") stays in the chat to be read, but is not read aloud:
+  // from the cue to the end of its line, or only a longer whispered span
+  // ("*flüstert: er merkt nichts*"). A span still streaming without its
+  // close counts as closed at the end of the line, so the cut never moves.
+  const WHISPER = /^\s*(?:ganz\s+|sehr\s+)?(?:leiser?(?=\s*(?:zu\b|an\b|zur\b|zum\b|[:,…)*_]|$))|fl[üu]ster\p{L}*|geflüstert|wisper\p{L}*|wispert|raunt|tuschel\p{L}*|ps+t\b|whisper\p{L}*|beiseite\b|aside\b)/iu;
+  function unwhispered(text) {
+    return String(text || '').split('\n').map((line) => {
+      let out = '', i = 0;
+      while (i < line.length) {
+        const c = line[i], at = i === 0 || /[\s([{"„]/.test(line[i - 1]);
+        const close = c === '(' ? ')' : c === '*' || c === '_' ? c : '';
+        if (close && at) {
+          let o = i; while (line[o] === c && c !== '(') o++;       // ** as well as *
+          if (c === '(') o = i + 1;
+          if (WHISPER.test(line.slice(o))) {
+            const mark = c === '(' ? ')' : line.slice(i, o);
+            const end = line.indexOf(mark, o);
+            const inner = line.slice(o, end < 0 ? line.length : end).trim();
+            // A short cue ("leise zu Noah:", "flüstert") whispers the rest of the line.
+            if (end < 0 || inner.split(/\s+/).length <= 4 || /:$/.test(inner)) return out.replace(/\s+$/, '');
+            i = end + mark.length;
+            continue;
+          }
+        } else if (i === 0 && WHISPER.test(line) && /^\s*[^:]{1,30}:/.test(line)) return '';  // "Leise zu Noah: …"
+        out += c; i++;
+      }
+      return out;
+    }).join('\n');
+  }
+
+  function normalize(text, keepWhispers = false) {
+    return String(keepWhispers ? text || '' : unwhispered(text))
       .replace(/\[\[MAG:(?:WEITER|ENDE)\]\]/g, '')
       .replace(/```[\s\S]*?```/g, ' ')
       .replace(/```[\s\S]*$/, ' ') // code block still streaming
@@ -1055,7 +1086,8 @@
     pause: () => { if (systemOk) synth.pause?.(); try { tts.ctx?.suspend?.(); } catch (_) {} },
     resume: () => { if (systemOk) synth.resume?.(); if (tts.ctx) resume(tts.ctx); },
     startFrom: startReadFrom,
-    readingFrom: () => !!readingFrom
+    readingFrom: () => !!readingFrom,
+    unwhispered
   };
   // Voices and tempo for the settings: [{ who, name, voice, rate }], the choices, and a setter.
   MAG.voices = {
@@ -1132,7 +1164,7 @@
     const cfg = await loadConfig();
     const list = voiceList().filter((v) => v.model);
     if (!cfg || !list.length) return null;
-    const v = list[((k | 0) % list.length + list.length) % list.length], clean = normalize(text || '');
+    const v = list[((k | 0) % list.length + list.length) % list.length], clean = normalize(text || '', true); // a figure's words are all spoken
     if (!clean) return null;
     const lang = textLocale(clean).slice(0, 2);
     const say = async (tempo) => {

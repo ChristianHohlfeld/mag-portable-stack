@@ -58,11 +58,11 @@
     if (controlOpen && sinceMs >= 5000) return 'wait';
     return 'none';
   }
-  // The PTY rides the console channel. When that channel is not open, the
-  // command shell over HTTPS takes the view after the same two seconds the
-  // browser picture uses. An open channel keeps the real terminal.
-  function terminalFallback(consoleOpen, sinceMs) {
-    if (consoleOpen) return 'pty';
+  // The console channel opens with the WebRTC session and sends heartbeats
+  // even when the VM shell never prints. Only real terminal bytes keep the
+  // PTY. Otherwise the command shell over HTTPS takes the view after two seconds.
+  function terminalFallback(sawOutput, sinceMs) {
+    if (sawOutput) return 'pty';
     if (sinceMs >= 2000) return 'https';
     return 'wait';
   }
@@ -285,7 +285,7 @@
       const queued = this.pending.filter((p) => Date.now() - p.at < 20000);
       this.pending = [];
       for (const { data } of queued) this.sendConsole('terminal_input', { data });
-      this.sayTerm('Shell · ' + (MAG.bot(this.bot)?.name || this.bot) + ' · verbunden');
+      this.sayTerm('Warte auf die Shell …');
     }
     typed(text) {
       const bytes = utf8.encode(text);
@@ -310,8 +310,10 @@
       }
       const entry = terminals.get(this.bot);
       if (!entry || message?.kind !== 'terminal_output' || typeof message.data !== 'string' || message.data.length > 950) return;
+      this.termOutput = true;
       try { entry.term.write(Uint8Array.from(atob(message.data), (c) => c.charCodeAt(0))); }
       catch { this.sayTerm('Terminalausgabe nicht lesbar'); }
+      this.sayTerm('Shell · ' + (MAG.bot(this.bot)?.name || this.bot) + ' · verbunden');
     }
 
     // ---- the connection -----------------------------------------------------
@@ -897,6 +899,9 @@
         entry.ctrl = false;
         entry.onCtrl?.();
       }
+      // A cursor with no bytes is not a shell. The first keystroke goes to the
+      // HTTPS command line, which is what a phone keyboard can actually drive.
+      if (!link.termOutput && link.grabUnanswered) { link.grabUnanswered(data); return; }
       link.typed(data);
     });
     term.onResize(({ cols, rows }) => link.sendConsole('terminal_resize', { cols, rows }));
@@ -940,7 +945,7 @@
     const showPty = () => node.replaceChildren(box, keys, foot);
     // No console channel: the command shell is the terminal, not a hidden pill.
     const usePlain = (why) => {
-      if (plain || stopped || !held || link.console?.readyState === 'open') return;
+      if (plain || stopped || !held) return;
       done();
       full.close();
       plain = shell(bot);
@@ -948,6 +953,7 @@
         plain?.stop();
         plain = null;
         held = true;
+        link.termOutput = false;
         started = performance.now();
         showPty();
         link.use();
@@ -955,7 +961,8 @@
         else loadXterm().then(() => { xtermReady = true; openXterm(); }, (err) => usePlain('xterm.js konnte nicht geladen werden (' + err.message + '). Befehle gehen über HTTPS.'));
       } });
       node.replaceChildren(plain.node, el('div', { class: 'foot' }, again,
-        el('div', { class: 'note', text: why || 'Befehle über HTTPS. Das echte Terminal braucht den UDP-Weg zur VM.' })));
+        el('div', { class: 'note', text: why || 'Keine Ausgabe vom VM-Terminal. Der Befehl läuft über HTTPS.' })));
+      plain.focus();
     };
     const offer = el('button', { type: 'button', class: 'pill', text: 'Einzelne Befehle', title: 'Ohne UDP-Weg: ein Befehl nach dem anderen über HTTPS', hidden: true, onclick: () => usePlain() });
     const foot = el('div', { class: 'foot' }, status, offer,
@@ -978,6 +985,8 @@
       if (lines) { entry.term.scrollLines(lines); wheel -= lines; }
     }, { capture: true, passive: false });
 
+    link.termOutput = false;
+    link.grabUnanswered = (data) => { usePlain(); plain?.put(data); };
     link.use();
     let started = performance.now(), xtermReady = false;
     const openXterm = () => {
@@ -998,7 +1007,7 @@
     };
     const timer = setInterval(() => {
       if (stopped || plain || !held) return;
-      if (terminalFallback(link.console?.readyState === 'open', performance.now() - started) === 'https')
+      if (terminalFallback(!!link.termOutput, performance.now() - started) === 'https')
         usePlain();
     }, 400);
     loadXterm().then(() => { xtermReady = true; openXterm(); }, (err) => { usePlain('xterm.js konnte nicht geladen werden (' + err.message + '). Befehle gehen über HTTPS.'); });
@@ -1011,6 +1020,7 @@
       plain?.stop();
       full.close();
       if (entry) entry.onCtrl = null;
+      link.grabUnanswered = null;
       done();
     } };
   };
@@ -1025,7 +1035,7 @@
     const where = el('span', { class: 'term-cwd', text: '~' });
     const input = el('input', { type: 'text', class: 'term-in', autocapitalize: 'off', autocomplete: 'off', spellcheck: false, enterKeyHint: 'send', placeholder: 'Befehl', 'aria-label': 'Befehl' });
     input.setAttribute('autocorrect', 'off');
-    const go = el('button', { class: 'pill', text: 'Ausführen', onclick: () => (running ? running.abort() : run()) });
+    const go = el('button', { type: 'button', class: 'pill', text: 'Ausführen', onclick: () => (running ? running.abort() : run()) });
     const node = el('div', { class: 'term' }, out, el('div', { class: 'term-row' }, where, input, go));
     const show = (text, cls) => {
       out.append(cls ? el('span', { class: cls, text }) : text);
@@ -1072,14 +1082,23 @@
       go.classList.remove('danger');
       input.disabled = false;
       where.textContent = short(cwd);
-      if (matchMedia('(pointer: fine)').matches) input.focus();
+      input.focus();
     }
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); run(); }
       else if (e.key === 'ArrowUp' && at > 0) { e.preventDefault(); input.value = history[--at]; }
       else if (e.key === 'ArrowDown' && at < history.length) { e.preventDefault(); input.value = history[++at] || ''; }
     });
-    return { node, stop() { running?.abort(); } };
+    const put = (data) => {
+      const raw = data || '';
+      if (raw === '\x7f' || raw === '\b') { input.value = input.value.slice(0, -1); input.focus(); return; }
+      const runAfter = /[\r\n]/.test(raw);
+      const text = [...raw].filter((ch) => ch >= ' ' && ch !== '\x7f').join('');
+      if (text) input.value += text;
+      input.focus();
+      if (runAfter && input.value.trim()) run();
+    };
+    return { node, put, focus: () => { input.focus(); input.scrollIntoView({ block: 'nearest' }); }, stop() { running?.abort(); } };
   }
 
 

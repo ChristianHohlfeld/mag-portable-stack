@@ -1056,7 +1056,7 @@ class RoomContract(unittest.TestCase):
         initial = r.api("GET", base + "/self")[1]["narrator"]
         self.assertIn("Ich bin ein eigenständiger Assistent", initial)
         self.assertEqual(r.api("GET", "/api/bot/noah/self")[1]["narrator"], initial)
-        custom = "Ich spreche für mich selbst.\\n\\nIch prüfe Fortschritt."
+        custom = "Ich spreche für mich selbst.\n\nIch prüfe Fortschritt."
         self.assertEqual(r.api("PUT", base, {"self": {"narrator": custom}})[0], 200)
         self.assertEqual(r.api("GET", base + "/self"), (200, {"narrator": custom}))
         self.assertEqual(r.api("PUT", base, {"self": {"narrator": 123}})[0], 400)
@@ -1106,6 +1106,31 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("GET", "/api/bot/lena/self")[0], 403)
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": "not allowed"}})[0], 403)
         self.assertTrue(all("self" not in bot for bot in r.state()["bots"]))
+
+    def test_autonomous_will_uses_one_real_vm_step_and_finishes(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        calls = iter([
+            {"content": "", "tool_calls": [{"name": "will_set", "arguments": {
+                "text": "Eine lokale Datei prüfen", "done_when": "Der echo-Befehl läuft erfolgreich"}}]},
+            {"content": "", "tool_calls": [{"name": "shell", "arguments": {
+                "command": "echo autonomer-test"}}]},
+            {"content": "", "tool_calls": [{"name": "will_finish", "arguments": {
+                "progress": "Befehl erfolgreich ausgeführt"}}]},
+            "Fertig; die Datei ist nicht behauptet worden.",
+        ])
+        r.lena.reply = lambda body: next(calls, "Fertig.")
+        r.noah.reply = lambda body: "PASS"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": True, "web": False})[0], 200)
+        r.wait(lambda: r.api("GET", "/api/bot/lena/will")[1]["status"] == "done",
+               "eigener Wille abgeschlossen", 35)
+        r.idle()
+        saved = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((saved["by"], saved["steps"], saved["last_tool"], saved["last_ok"]),
+                         ("self", 1, "shell", True))
+        self.assertNotIn("will", json.dumps(r.state()["bots"]))
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room

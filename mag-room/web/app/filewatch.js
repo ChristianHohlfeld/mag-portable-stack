@@ -57,7 +57,7 @@
     return pre;
   }
   function row(e) {
-    const label = { diff: 'Änderung', inhalt: 'Inhalt', zuletzt: 'Zuletzt bekannter Inhalt', anfang: 'Anfang (Datei größer als 64 KB)', binär: 'Binärdatei' }[e.detail_kind] || '';
+    const label = { diff: 'Änderung', inhalt: 'Inhalt', zuletzt: 'Zuletzt bekannter Inhalt', anfang: 'Anfang (Datei größer als 64 KB)', binär: 'Binärdatei', gleich: 'Inhalt gleich geblieben (nur gespeichert)' }[e.detail_kind] || '';
     const head = el('summary', {},
       el('span', { class: 'fw-kind fw-' + (sign[e.kind] ? e.kind.replace('ä', 'ae').replace('ö', 'oe') : 'more'), text: sign[e.kind] || '…', title: e.kind }),
       el('span', { class: 'fw-path', text: e.path }),

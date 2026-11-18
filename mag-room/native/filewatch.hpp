@@ -51,6 +51,7 @@ public:
     {
       std::lock_guard<std::mutex> lk(mu_);
       poked_.insert(bot);
+      wake_ = true;
     }
     cv_.notify_all();
   }
@@ -83,7 +84,7 @@ private:
   std::mutex mu_, look_mu_;
   std::condition_variable cv_;
   std::thread thread_;
-  bool stop_ = false, was_on_ = true;
+  bool stop_ = false, wake_ = false, was_on_ = true;
   std::set<std::string> poked_;
   std::map<std::string, int64_t> last_look_;
   Val events_;
@@ -103,9 +104,10 @@ private:
       std::set<std::string> poked;
       {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait_for(lk, std::chrono::seconds(1), [&] { return stop_ || !poked_.empty(); });
+        cv_.wait_for(lk, std::chrono::seconds(1), [&] { return stop_ || wake_; });
         if (stop_) return;
-        poked.swap(poked_);
+        wake_ = false;
+        poked = poked_;
       }
       try {
         const bool on = enabled();
@@ -122,8 +124,12 @@ private:
         for (auto &b : bots.asArr()) {
           const std::string id = jstr(b, "id");
           if (!round && !poked.count(id)) continue;
-          // A step's poke waits a moment: what it started may still be writing.
-          if (!round && now - last_look_[id] < 3) { std::lock_guard<std::mutex> lk(mu_); poked_.insert(id); continue; }
+          // A step's poke waits a moment after the last look; it stays until then.
+          if (!round && now - last_look_[id] < 3) continue;
+          {
+            std::lock_guard<std::mutex> lk(mu_);
+            poked_.erase(id);
+          }
           look(id);
         }
       } catch (const std::exception &e) {
@@ -225,7 +231,7 @@ private:
           write_atomic(tmp, data, 0600);
           if (exists(shadow)) {
             detail = diff(shadow, tmp);
-            how = "diff";
+            how = detail.empty() ? "gleich" : "diff";
           } else {
             detail = data;
             how = "inhalt";

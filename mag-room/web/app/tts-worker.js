@@ -70,6 +70,10 @@ const LANGS = ['en', 'ko', 'ja', 'ar', 'bg', 'cs', 'da', 'de', 'el', 'es', 'et',
 // How many steps the sound is refined in: more is cleaner and takes longer.
 const STEPS = {webgpu: 5, wasm: 5};
 let engine = null;            // promise of {cfg, indexer, dp, enc, est, voc, provider}
+let fetching = null;          // the weight download, shared by warm-up and speech
+const qSpeak = [];            // sentences waiting to be spoken
+const qWarm = [];             // voice warm-ups; they never run ahead of a sentence
+let userSpeaking = 0;         // a real sentence is inside synth, so skip the hidden warm-up
 const styles = new Map();     // voice file -> promise of {ttl, dp}
 
 // The readers before this one (Piper, Supertonic from the room) are not needed any more: their files leave the device.
@@ -284,8 +288,13 @@ async function sessions(provider, alive) {
   return made;
 }
 
+function ensureFetched(id) {
+  if (!fetching) fetching = fetchAll(id).catch((e) => { fetching = null; throw e; });
+  return fetching;
+}
+function rushed() { return userSpeaking > 0 || qSpeak.length > 0; }
 async function build(id) {
-  await fetchAll(id);
+  await ensureFetched(id);
   current = undefined;
   // From here on nothing is fetched, but it takes a while on a phone: the page
   // hears that the worker is alive after every step, or it would take it for stuck.
@@ -308,8 +317,12 @@ async function build(id) {
       made = await sessions(provider, alive);
       const e = {cfg, indexer, dp: made[0], enc: made[1], est: made[2], voc: made[3], provider, makeMs: Date.now() - t0,
                  readMs: took.read, createMs: took.create};
+      // Somebody is already waiting to hear a sentence. Their words are the
+      // first run; the hidden warm-up sentences would only delay them.
+      if (rushed()) return e;
       // A provider that takes the networks but speaks nonsense (or nothing) is no provider: one word decides.
       const style = await loadStyle('F1.json');
+      if (rushed()) return e;
       const t1 = Date.now();
       const probe = await infer(e, 'Hallo, guten Tag.', 'de', style, STEPS[provider] || 5, 1.05);
       e.probeMs = Date.now() - t1;
@@ -317,6 +330,7 @@ async function build(id) {
       for (let i = 0; i < probe.length; i++) { if (!Number.isFinite(probe[i])) { sound = false; break; } energy += probe[i] * probe[i]; }
       if (!sound || probe.length < 2000 || energy / probe.length < 1e-7) throw new Error('silent or broken output');
       alive();
+      if (rushed()) return e;
       // The first runs of a network are its slowest (the browser is still making its code fast).
       // They happen here, in the background, not when somebody taps "Vorlesen".
       await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist.', 'de', style, 5, 1.05);
@@ -430,7 +444,8 @@ function german(text) {
 }
 // Generic speaker-caption grammar, independent of configured bot names.
 // Only labels at the start are removed; repeated labels consume real text.
-const leadingSpeakerCaption = /^\s*(?:\[[^\]\r\n]{1,64}\]:?|\*\*[\p{Lu}][\p{L}\p{M}\p{N} ._'-]{0,63}(?::\*\*|\*\*:)|[\p{Lu}][\p{L}\p{M}\p{N}_'-]{0,63}[:：,])\s*/u;
+// A bare caption is a name (Ada, Lena), not a shouted word such as "WICHTIG:".
+const leadingSpeakerCaption = /^\s*(?:\[[^\]\r\n]{1,64}\]:?|\*\*[\p{Lu}][\p{L}\p{M}\p{N} ._'-]{0,63}(?::\*\*|\*\*:)|[\p{Lu}][\p{Ll}\p{M}][\p{L}\p{M}\p{N}_'-]{0,62}[:：,])\s*/u;
 function stripSpeakerCaptions(value) {
   let t = String(value || '');
   while (leadingSpeakerCaption.test(t)) t = t.replace(leadingSpeakerCaption, '');
@@ -573,21 +588,38 @@ function trimmed(audio, rate, sentence) {
   to = Math.min(audio.length, to + 1 + Math.round(rate * (sentence ? 0.25 : 0.08)));
   return from === 0 && to === audio.length ? audio : audio.slice(from, to);
 }
-// One request at a time: a stopped playback may still have a part in flight,
-// and two overlapping runs of one session can fail. 'cancel' is handled at
-// once: speak requests of a stopped playback that are still queued are
-// answered as cancelled without synthesis.
-let chain = Promise.resolve();
+// One synthesis at a time: a stopped playback may still have a part in flight,
+// and two overlapping runs of one session can fail. A sentence always runs
+// before a warm-up that is only waiting. The weight download does not use
+// this queue at all. 'cancel' drops a queued sentence of a stopped reading.
 let cancelledBefore = 0;
+let draining = false;
+let drain = Promise.resolve();
+function enqueue(data) {
+  (data.type === 'speak' ? qSpeak : qWarm).push(data);
+  drainQueue();
+}
+function drainQueue() {
+  if (draining) return;
+  const job = qSpeak.shift() || qWarm.shift();
+  if (!job) return;
+  draining = true;
+  drain = drain.then(() => handle(job)).then(() => { draining = false; drainQueue(); }, () => { draining = false; drainQueue(); });
+}
 if (inWorker) self.onmessage = ev => {
   const data = ev.data || {};
   if (data.type === 'cancel') { cancelledBefore = Math.max(cancelledBefore, +data.before || 0); return; }
-  // A voice is a small file; fetching it holds nothing up.
+  // The weights (about 400 MB, then kept) and a voice file. Neither takes
+  // the synthesis queue, so a tap is not waiting behind the download.
+  if (data.type === 'fetch') {
+    ensureFetched(data.id).then(() => postMessage({type: 'ready', id: data.id, fetched: true}), e => postMessage({type: 'error', id: data.id, error: String(e && e.message || e)}));
+    return;
+  }
   if (data.type === 'prefetch') {
     (SHA[data.model] ? cachedFetch(at(data.model), data.model) : Promise.reject(new Error('Unbekannte Stimme'))).then(() => postMessage({type: 'ready', id: data.id}), e => postMessage({type: 'error', id: data.id, error: String(e && e.message || e)}));
     return;
   }
-  chain = chain.then(() => handle(data));
+  enqueue(data);
 };
 async function handle({type, id, text, model, rate, lang, steps}) {
   try {
@@ -600,8 +632,11 @@ async function handle({type, id, text, model, rate, lang, steps}) {
     }
     if (type === 'speak') {
       if (id <= cancelledBefore) { postMessage({type: 'error', id, error: 'cancelled'}); return; }
-      const out = await synth(text, model, id, rate, lang, steps);
-      postMessage({type: 'audio', id, audio: out.audio, rate: out.rate, synthMs: out.synthMs, provider: out.provider, threads: ort.env.wasm.numThreads, steps: out.steps}, [out.audio.buffer]);
+      userSpeaking++;
+      try {
+        const out = await synth(text, model, id, rate, lang, steps);
+        postMessage({type: 'audio', id, audio: out.audio, rate: out.rate, synthMs: out.synthMs, provider: out.provider, threads: ort.env.wasm.numThreads, steps: out.steps}, [out.audio.buffer]);
+      } finally { userSpeaking--; }
     }
   } catch (e) { postMessage({type: 'error', id, error: String(e && e.message || e)}); }
 }

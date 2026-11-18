@@ -10,6 +10,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'web', 'app', 'speak.js'), 'utf8');
 assert(!source.includes('setTimeout(warmUp, 2500)'), 'the model is warmed when the page arrives');
 assert(source.includes("type: 'prefetch'"), 'unused voices are fetched off the synthesis queue');
+assert(source.includes("type: 'fetch'"), 'the weights start downloading beside the synthesis queue');
 
 const calls = [];
 class FakeContext {
@@ -65,9 +66,10 @@ vm.runInNewContext(source, {
   assert.equal(window.MAG.speaking.startFrom('1', 1), true);
   await tick();
   const speakAt = calls.findIndex((c) => c.startsWith('speak:'));
-  assert(speakAt > 0, 'a sentence was sent to the model');
+  assert(speakAt >= 0, 'a sentence was sent to the model');
   const warmsBefore = calls.slice(0, speakAt).filter((c) => c.startsWith('warm:')).length;
-  assert.equal(warmsBefore, 1, 'only the engine voice is on the queue before the first sentence');
+  assert(warmsBefore <= 1, 'a sentence is not waiting behind every voice');
+  assert(calls.some((c) => c.startsWith('fetch:')), 'weights are requested as soon as the page is there');
   assert(running && running.sources.length >= 1, 'the first sentence is scheduled without waiting for the rest');
   assert.equal(button.attrs['aria-pressed'], 'true');
   console.log('TTS first chunk: one warm, first sentence scheduled at once');

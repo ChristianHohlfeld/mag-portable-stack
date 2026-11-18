@@ -294,7 +294,7 @@
         reject(new Error('Zeitüberschreitung der Stimme'));
       };
       const timer = setTimeout(late, timeout);
-      tts.pending.set(id, {resolve, reject, timer, again: msg.type === 'warm' ? late : null});
+      tts.pending.set(id, {resolve, reject, timer, again: msg.type === 'warm' || msg.type === 'fetch' ? late : null});
       try { worker().postMessage({...msg, id}); } catch (e) { tts.pending.delete(id); clearTimeout(timer); reject(e); }
     });
   }
@@ -800,21 +800,17 @@
     // Not ready (just after a reload), but every part of this one was made before and kept: it plays in its own voice.
     const tongue = (pb.lang || 'de').slice(0, 2), tempo = pb.rate ?? rateFor(pb.speaker);
     if (tts.config && pb.voice && pb.parts.every((t) => prepared.has(asked(pb.voice.model, tempo, tongue, t)))) { start(); return true; }
-    // Not loaded yet. Wait for Supertonic. The device voice is not a stand-in.
+    // The sentence goes out now. It does not wait for the warm-up to finish;
+    // the worker runs a waiting sentence before a warm-up, and the weights
+    // are already downloading beside that queue.
     pb.loading = true;
     setButtons();
+    start();
     loadConfig().then((cfg) => {
-      if (current !== pb) return false;
-      if (!cfg) return null;
-      pb.voice = profile(who).voice || pb.voice; // the real config has the real model names
-      return warm(pb.voice);
-    }).then((ok) => {
-      if (current !== pb) return;
-      pb.loading = false;
-      setButtons();
-      if (ok) return start();
-      fallback(pb);
-    }).catch(() => fallback(pb));
+      if (!cfg) return;
+      const voice = profile(who).voice || pb.voice;
+      if (voice) warm(voice);
+    }).catch(() => {});
     return true;
   }
   // The model failed. Do not switch to the device voice mid-reading.
@@ -1086,6 +1082,7 @@
   // Styles that are not needed for the first sentence. Loaded one at a time,
   // and never while a reading is waiting, so they cannot queue in front of it.
   let restTimer = 0;
+  let fetchingWeights = false;
   function warmNext(list) {
     clearTimeout(restTimer);
     if (current) return;
@@ -1102,11 +1099,25 @@
     loadConfig().then((cfg) => {
       if (!cfg) return;
       const voices = voiceList();
-      const used = [...new Set(['f1', 'm1', 'm2', ...(S.bots || []).map((b) => profile(b.id).voiceId)]
-        .map((id) => voices.find((v) => v.id === id)?.model).filter(Boolean))];
+      // Voices of whoever is actually in the room, by id. A renamed bot keeps
+      // its id, so the display name is never assumed here.
+      const ids = new Set();
+      for (const b of S.bots || []) {
+        const id = profile(b.id).voiceId;
+        if (id && id !== 'system') ids.add(id);
+      }
+      const mine = profile('chris').voiceId;
+      if (mine && mine !== 'system') ids.add(mine);
+      if (!ids.size) for (const id of Object.values(cfg.defaults || {})) if (id && id !== 'system') ids.add(id);
+      const used = [...new Set([...ids].map((id) => voices.find((v) => v.id === id)?.model).filter(Boolean))];
       const rest = [...new Set(voices.map((v) => v.model).filter((m) => m && !used.includes(m)))];
-      // The other styles are fetched beside the engine. They do not take the
-      // synthesis queue, so the first sentence is not waiting on nine voices.
+      if (!fetchingWeights) {
+        fetchingWeights = true;
+        if (!tts.ready.size) shown('loading');
+        ask({ type: 'fetch' }, WARM_TIMEOUT_MS).then(() => {
+          if (!tts.ready.size) shown('making', 1);
+        }).catch(() => { fetchingWeights = false; });
+      }
       for (const model of rest) ask({ type: 'prefetch', model }, WARM_TIMEOUT_MS).catch(() => {});
       warmNext(used.length ? used : rest);
     });

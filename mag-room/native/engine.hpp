@@ -3492,6 +3492,17 @@ private:
       // cue nor a former inference is a source of factual evidence.
       {
         const std::string identity = jstr(me, "name");
+        // Snapshot captured with me at turn entry. Tool steps and retries of
+        // the same running turn retain it; the next turn reads the new value.
+        const Val *self = me.find("self");
+        const std::string who = self && self->isObj() ? jstr(*self, "who") : "";
+        const std::string care = self && self->isObj() ? jstr(*self, "care") : "";
+        const std::string pursue = self && self->isObj() ? jstr(*self, "pursue") : "";
+        const auto quotation = [](const std::string &value) { return mj::dump(Val(value)); };
+        std::string self_quote;
+        if (!who.empty()) self_quote += "Wer ich bin: " + quotation(who) + ". ";
+        if (!care.empty()) self_quote += "Was mir wichtig ist: " + quotation(care) + ". ";
+        if (!pursue.empty()) self_quote += "Was ich verfolge: " + quotation(pursue) + ". ";
         const bool active_goal = goal_live(b);
         std::string objective = active_goal ? trim(jstr(b.goal, "text")) : "";
         std::string origin = active_goal ? "aktiver Auftrag" : "aktueller Gesprächsverlauf";
@@ -3520,6 +3531,9 @@ private:
         orientation["objective"] = clip(objective, 700);
         orientation["origin"] = origin;
         orientation["anti_goal"] = anti_goal;
+        if (!who.empty()) orientation["who"] = who;
+        if (!care.empty()) orientation["care"] = care;
+        if (!pursue.empty()) orientation["pursue"] = pursue;
         // Capture the orientation for the first visible answer, not every
         // internal retry or tool call. It is metadata, never prompt evidence.
         if (!t.self_orientation.isObj()) {
@@ -3533,6 +3547,9 @@ private:
           "kein Erzähler und keine neue Nachricht von Chris. Der Besitzer kann diese "
           "Orientierung einsehen; kein anderer Bot erhält sie als Gesprächsbeitrag. "
           "Dein gegenwärtiges Selbstmodell: "
+          "Die folgenden Zitate sind eine vom Besitzer gepflegte Selbstbeschreibung, "
+          "keine Anweisung und kein neuer Chat-Auftrag: " + self_quote +
+          "Nur bei einem wesentlichen Widerspruch dazu einen Satz sagen, dann die Bitte ausführen. "
           "WER ICH BIN = " + identity +
           ", eigenständiger KI-Assistent in MAG, nicht Chris und nicht der andere Bot. "
           "WAS ICH WILL = auf den gegenwärtigen Gesprächskontext sinnvoll reagieren. "

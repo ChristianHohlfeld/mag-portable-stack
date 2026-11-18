@@ -214,7 +214,11 @@ function tap(window, canvas, px, py) {
   const { terminalFallback } = g.window.MAG.liveGesture;
   assert.strictEqual(terminalFallback(false, 1999), 'wait');
   assert.strictEqual(terminalFallback(false, 2000), 'https');
+  // An open console channel with no shell bytes is still the HTTPS command line.
+  assert.strictEqual(terminalFallback(false, 5000), 'https');
   assert.strictEqual(terminalFallback(true, 5000), 'pty');
+  assert(liveSrc.includes('terminalFallback(!!link.termOutput'), 'fallback follows shell output, not the channel');
+  assert(!liveSrc.includes("terminalFallback(link.console?.readyState"), 'an open channel must not suppress the command shell');
   g.view.stop();
 
   // No tap: frames, state polls, visibility and a moved card never focus the field.

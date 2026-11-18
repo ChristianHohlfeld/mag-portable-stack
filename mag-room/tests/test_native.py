@@ -1944,6 +1944,48 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(any("als JSON in deinen Text geschrieben" in n for n in notes))
         self.assertEqual(len(r.idol.images), 1)  # the order's picture, not a third job from the written call
 
+    def test_standalone_python_image_call_runs_once_without_visible_text(self):
+        r = self.room
+        # A local model can emit the exact call as ordinary streamed content
+        # instead of delta.tool_calls. Only the tool event should survive.
+        replies = iter(['image_generate(prompt="a fry", shape="square")', "PASS"])
+        r.noah.reply = lambda body: next(replies, "PASS")
+        r.lena.reply = lambda body: "PASS"
+        r.say("@Noah male eine Pommes")
+        r.wait(lambda: len(r.idol.images) == 1, "recovered Python image job")
+        r.idle()
+        self.assertEqual(len(r.idol.images), 1)
+        self.assertEqual(r.idol.images[0]["prompt"], "a fry")
+        self.assertEqual(r.idol.images[0]["width"], r.idol.images[0]["height"])
+        stored = [m for m in r.messages() if m["from"] == "noah"]
+        self.assertTrue(stored)
+        self.assertTrue(any(p.get("tool") == "image_generate"
+                            for m in stored for p in m.get("parts", [])))
+        for m in stored:
+            self.assertEqual((m.get("text") or "").strip(), "")
+            self.assertNotIn('image_generate(', "".join(p.get("text", "")
+                             for p in m.get("parts", []) if p.get("k") == "text"))
+
+    def test_python_text_recovery_rejects_prose_multiple_calls_and_unsafe_tools(self):
+        r = self.room
+        r.lena.reply = lambda body: "PASS"
+        for written in [
+            'Beispiel: image_generate(prompt="a fry")',
+            'image_generate(prompt="a fry") + image_generate(prompt="another")',
+            'image_generate(prompt="a fry", prompt="another")',
+            'image_generate(prompt=make_prompt())',
+            'image_generate(prompt="a fry", shape="invalid")',
+            'shell(command="echo unsafe")',
+            'browser_click(n=1)',
+        ]:
+            r.noah.reply = lambda body, written=written: written
+            r.say("@Noah erkläre diesen Ausdruck")
+            r.idle()
+            self.assertEqual(r.idol.images, [], written)
+            self.assertFalse(any(p.get("k") == "step"
+                                 for m in r.messages() if m["from"] == "noah"
+                                 for p in m.get("parts", [])), written)
+
     def test_a_failed_3d_job_is_taken_up_again_where_it_stopped(self):
         r = self.room
 

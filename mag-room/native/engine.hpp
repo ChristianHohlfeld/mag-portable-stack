@@ -356,6 +356,7 @@ public:
       std::error_code ec;
       std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
       write_atomic(room_.cfg.state_dir + "/goals/" + b->id + ".json.end", "end\n", 0600);
+      room_.clear_will(b->id);
     }
     passes_ = 0;
     cv_.notify_all();
@@ -383,6 +384,7 @@ public:
         b->goal_text.clear();
         b->goal_fix.clear();
         unlink(goal_pending_file(*b).c_str());
+        room_.clear_will(b->id);
       }
       lead_.clear();
       silenced_.clear();
@@ -1172,6 +1174,61 @@ private:
     }
     b.wire["memory_items"] = current;
     save_wire(b);
+  }
+
+  static bool is_will_tool(const std::string &name) {
+    return name == "will_set" || name == "will_progress" ||
+           name == "will_finish" || name == "will_drop";
+  }
+  tools::Result apply_will(const std::string &id, const std::string &action,
+                           const Val &args, bool self_chat) {
+    if (!self_chat) return tools::fail("Eigene Ziele dürfen nur im Selbstgespräch ohne Chris-Auftrag verändert werden.");
+    const std::string goal = trim(jstr(args, "text"));
+    const std::string done = trim(jstr(args, "done_when"));
+    if (action == "will_set") {
+      if (goal.empty() || done.empty()) return tools::fail("Ziel und Abschlusskriterium fehlen.");
+      const Val history = room_.all();
+      for (auto it = history.asArr().rbegin(); it != history.asArr().rend(); ++it) {
+        if (jstr(*it, "role") != "bot" || jstr(*it, "from") == id) continue;
+        const std::string peer = group_chat::norm_reply(jstr(*it, "text"));
+        const std::string proposed = group_chat::norm_reply(goal);
+        if (!proposed.empty() && (peer == proposed || (proposed.size() >= 12 && peer.find(proposed) != std::string::npos)))
+          return tools::fail("Das ist der letzte Beitrag des anderen Bots, nicht dein eigenes Ziel.");
+        break;
+      }
+    }
+    std::string error;
+    const bool saved = room_.update_will(id, [&](Val &w) {
+      const std::string status = jstr(w, "status", "none");
+      if (jstr(w, "by") == "owner") {
+        error = "Ein von Chris gesetztes Ziel darf der Bot nicht überschreiben oder aufgeben.";
+        if (action == "will_set" || action == "will_drop") return false;
+      }
+      if (action == "will_set") {
+        if (status == "open" || status == "held") { error = "Es gibt bereits ein offenes Ziel."; return false; }
+        w = Room::empty_will();
+        w["text"] = clip(goal, 800); w["done_when"] = clip(done, 600);
+        w["status"] = "open"; w["by"] = "self";
+      } else if (action == "will_progress") {
+        if (status != "open") { error = "Kein offenes Ziel."; return false; }
+        w["progress"] = clip(trim(jstr(args, "progress")), 700);
+      } else if (action == "will_finish") {
+        if (status != "open" || jnum(w, "steps") < 1 || !jbool(w, "last_ok")) {
+          error = "Abschluss erst nach einem erfolgreichen echten Werkzeugschritt erlaubt.";
+          return false;
+        }
+        w["progress"] = clip(trim(jstr(args, "progress", jstr(w, "progress"))), 700);
+        w["status"] = "done";
+      } else if (action == "will_drop") {
+        if (status != "open" && status != "blocked" && status != "held") {
+          error = "Kein eigenes Ziel zum Aufgeben."; return false;
+        }
+        w["status"] = "done"; w["progress"] = "Aufgegeben";
+      } else { error = "Unbekanntes Zielwerkzeug."; return false; }
+      return true;
+    });
+    if (!saved) return tools::fail(error.empty() ? "Ziel nicht speicherbar." : error);
+    return {"Zielstand gespeichert: " + jstr(room_.will(id), "status"), true};
   }
 
   // Every tool this bot has: the room's own, then those of the plugins the

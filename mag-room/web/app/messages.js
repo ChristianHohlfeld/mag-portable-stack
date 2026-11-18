@@ -1221,11 +1221,13 @@
     });
     function paint(data) {
       if (!orientationEnabled() || !data?.objective || !S.messages.has(m.id)) return;
-      body.replaceChildren(
-        el('div', {}, el('b', { text: 'Wer ich bin: ' }), data.identity || ''),
+      body.replaceChildren(...[
+        el('div', {}, el('b', { text: 'Wer ich bin: ' }), data.self?.who || data.identity || ''),
+        data.self?.care ? el('div', {}, el('b', { text: 'Was mir wichtig ist: ' }), data.self.care) : null,
+        data.self?.pursue ? el('div', {}, el('b', { text: 'Was ich verfolge: ' }), data.self.pursue) : null,
         el('div', {}, el('b', { text: 'Was ich will: ' }), data.intent || ''),
         el('div', {}, el('b', { text: 'Mein Ziel: ' }), data.objective),
-        el('div', {}, el('b', { text: 'Was ich vermeiden will: ' }), data.anti_goal || ''));
+        el('div', {}, el('b', { text: 'Was ich vermeiden will: ' }), data.anti_goal || '')].filter(Boolean));
       details.hidden = false;
     }
     const known = orientationCache.get(m.id);

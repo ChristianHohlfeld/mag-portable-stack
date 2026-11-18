@@ -113,6 +113,16 @@ public:
       if (p == "/api/files.zip") return files_zip(fd, r);
       if (starts_with(p, "/api/screen/")) return screen(fd, r);
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
+      if (starts_with(p, "/api/bot/") && ends_with(p, "/self")) {
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        const Val bot = room_.bot(bot_of(p));
+        if (!bot.isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+        Val self = Val::object();
+        const Val *saved = bot.find("self");
+        for (const char *key : {"who", "care", "pursue"})
+          self[key] = saved ? jstr(*saved, key) : "";
+        return http::send_json(fd, 200, self, {{"Cache-Control", "private, no-store"}});
+      }
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
       if (starts_with(p, "/api/shot/")) {
         // The browser as a step left it: <message>-<step>.jpg.
@@ -1821,6 +1831,14 @@ private:
     const Val in = jparse(r.body);
     const std::string id = bot_of(r.path);
     if (!in.isObj()) return http::send_error(fd, 400, "JSON erwartet");
+    // Validate the entire private profile patch before changing anything.
+    // Only these three string fields are accepted; absent fields are untouched.
+    if (const Val *self = in.find("self")) {
+      if (!self->isObj()) return http::send_error(fd, 400, "Selbstbeschreibung muss ein Objekt sein");
+      for (const char *key : {"who", "care", "pursue"})
+        if (const Val *v = self->find(key); v && v->type != Val::STR)
+          return http::send_error(fd, 400, "Selbstbeschreibung muss Text sein");
+    }
     // The name is the one source of truth: the address of the bot's site
     // follows it, and what it was called before keeps leading there.
     std::string rename, slug;
@@ -1864,6 +1882,18 @@ private:
       }
       if (const Val *v = in.find("effort"); v && (v->asStr() == "low" || v->asStr() == "medium" || v->asStr() == "high")) b["effort"] = v->asStr();
       if (const Val *v = in.find("persona"); v && v->type == Val::STR) b["persona"] = clip(v->str, 2000);
+      if (const Val *self = in.find("self"); self && self->isObj()) {
+        if (!b["self"].isObj()) b["self"] = Val::object();
+        for (const char *key : {"who", "care", "pursue"}) {
+          if (const Val *v = self->find(key); v && v->type == Val::STR) {
+            std::string text = v->str;
+            replace_all(text, "\r\n", " ");
+            replace_all(text, "\r", " ");
+            replace_all(text, "\n", " ");
+            b["self"][key] = trim(clip(trim(text), 400));
+          }
+        }
+      }
     });
     if (!ok) return http::send_error(fd, 404, "Bot nicht gefunden");
     if (renamed) {

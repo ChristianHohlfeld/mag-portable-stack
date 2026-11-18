@@ -3102,7 +3102,8 @@ private:
     std::string id;          // room message, created on first visible output
     std::string held;        // text not shown yet (could still become PASS)
     std::string tail;        // possible start of a control marker
-    std::string reasoning;   // the turn's thoughts as the model wrote them; the message shows them tidied
+    std::string reasoning;   // raw model thoughts; never used for owner self-orientation
+    Val self_orientation;    // structured, server-generated cue, never model reasoning
     bool visible = false;
     bool ok_tool = false;
     bool last_ok = true;     // how the last tool call went
@@ -3199,6 +3200,7 @@ private:
     if (!t.goal_id.empty()) m["goal_id"] = t.goal_id; // presentation only, steps retain their own audit entries
     if (const std::string thoughts = llm::tidy_thoughts(t.reasoning); !thoughts.empty()) m["reasoning"] = thoughts;
     t.id = jstr(room_.add(m), "id");
+    if (t.self_orientation.isObj()) room_.save_self_orientation(t.id, t.self_orientation);
     if (Val *mark = b.wire.find("at_work"); mark && mark->isObj()) {
       (*mark)["seen"] = true; // something of this turn can be seen now: cut off, it stays as it is ("Gestoppt")
       save_wire(b);
@@ -3483,8 +3485,8 @@ private:
         body["messages"].push(cue);
       }
 
-      // A prompt-only, per-request self-orientation. No room setting, UI,
-      // extra inference, narrator character, persisted state, or chat event.
+      // A per-request self-orientation, not model-generated reasoning.
+      // The owner sees the exact structured values used here via separate private metadata.
       // Concrete values are derived from the live task and the latest context.
       // The bot revises its own perspective on each request; neither this
       // cue nor a former inference is a source of factual evidence.
@@ -3512,12 +3514,24 @@ private:
         const std::string blocker = trim(jstr(b.goal, "error"));
         if (active_goal && !blocker.empty())
           anti_goal += "; die aktuelle Hürde nicht ignorieren: " + clip(blocker, 200);
+        Val orientation = Val::object();
+        orientation["identity"] = identity;
+        orientation["intent"] = "Auf den gegenwärtigen Gesprächskontext sinnvoll reagieren";
+        orientation["objective"] = clip(objective, 700);
+        orientation["origin"] = origin;
+        orientation["anti_goal"] = anti_goal;
+        // Capture the orientation for the first visible answer, not every
+        // internal retry or tool call. It is metadata, never prompt evidence.
+        if (!t.self_orientation.isObj()) {
+          t.self_orientation = orientation;
+          if (!t.id.empty()) room_.save_self_orientation(t.id, t.self_orientation);
+        }
         Val inner = Val::object();
         inner["role"] = "user";
         inner["content"] =
           "(PRIVATE SELBSTORIENTIERUNG, nur an dich gerichtet; kein Sprecher, "
-          "kein Erzähler und keine neue Nachricht von Chris. Nur du siehst diese "
-          "Orientierung, kein anderer Bot erhält sie als Gesprächsbeitrag. "
+          "kein Erzähler und keine neue Nachricht von Chris. Der Besitzer kann diese "
+          "Orientierung einsehen; kein anderer Bot erhält sie als Gesprächsbeitrag. "
           "Dein gegenwärtiges Selbstmodell: "
           "WER ICH BIN = " + identity +
           ", eigenständiger KI-Assistent in MAG, nicht Chris und nicht der andere Bot. "
@@ -3529,8 +3543,8 @@ private:
           "Arbeite mit diesen tatsächlichen aktuellen Werten statt bloß Fragen "
           "über deine Identität zu stellen. Aktualisiere deine Priorität anhand "
           "der neuesten Nachrichten und Werkzeugbelege; frühere Einschätzungen "
-          "sind keine Tatsachenbelege. Diese Orientierung bleibt still, nur deine "
-          "normale Antwort oder der notwendige Werkzeugaufruf wird sichtbar.)";
+          "sind keine Tatsachenbelege. Gib diese Orientierung niemals in deiner Antwort "
+          "aus; antworte normal oder verwende den notwendigen Werkzeugaufruf.)";
         body["messages"].push(inner);
       }
       // Keep the SAME tool schemas, order and sampler template across all

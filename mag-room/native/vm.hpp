@@ -101,6 +101,20 @@ public:
     return exec(vm, script, timeout_s, nullptr, {});
   }
 
+  // The owner's file notification: "list" (files below /home/bot with size
+  // and mtime) or "read" (the named files, base64). Leaves nothing in the VM.
+  Val watch(const std::string &vm, const std::string &what, const std::string &paths = "") {
+    if (!valid_name(vm)) return Val();
+    RunOptions opt;
+    opt.timeout_s = 90;
+    opt.stdin_data = &paths;
+    opt.cap = 16u << 20;
+    const RunResult run = mag::run(wrapper({cfg_.guest_run, vm, "--watch", what}), opt);
+    if (!run.spawned || run.code != 0 || run.timed_out || run.truncated) return Val();
+    const Val v = jparse(run.out);
+    return v.isObj() ? v : Val();
+  }
+
   // Atomic write below /home/bot (the guest helper enforces the path).
   ExecResult write(const std::string &vm, const std::string &path, const std::string &content, bool append,
                    const Cancel *cancel = nullptr) {

@@ -614,7 +614,9 @@
       // in each bot's own sheet, under Selbstbild.
       if (owner()) content.append(el('h3', { text: 'Gedanken' }), el('div', { class: 'card' },
         row('Wille-Zeile', 'Im Chat unter jeder Bot-Antwort: Ziel, letzter Schritt und, aufgeklappt, der Erzähler. Ausblenden versteckt nur diese Zeile. Erzähler, Ziel und Schritte bleiben.',
-          toggle(s.show_will_line !== false, (v) => call('PUT', '/api/settings', { show_will_line: v })))));
+          toggle(s.show_will_line !== false, (v) => call('PUT', '/api/settings', { show_will_line: v })),
+        row('Dateiänderungen', 'Ein Knopf oben zeigt, was die Bots in ihren VMs anlegen, ändern oder löschen, auch per Shell, mit Inhalt oder Diff. Nur für dich, nie im Chat; die Bots erfahren davon nichts.',
+          toggle(s.file_watch !== false, (v) => call('PUT', '/api/settings', { file_watch: v })))));
       const theme = localStorage.getItem('mag-theme') || 'auto', size = localStorage.getItem('mag-size') || '16';
       content.append(el('h3', { text: 'Darstellung' }), el('div', { class: 'card' },
         row('Farben', null, select(theme, [['auto', 'Wie das Gerät'], ['dark', 'Dunkel'], ['light', 'Hell']], (v) => { localStorage.setItem('mag-theme', v); applyLook(); })),

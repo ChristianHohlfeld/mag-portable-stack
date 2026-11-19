@@ -9,6 +9,11 @@ case "${1:-}" in
     if [[ $# == 3 ]]; then exec /usr/local/bin/magbot exec "$vm" --stdin "$2" --live; fi
     exec /usr/local/bin/magbot exec "$vm" --stdin "${2:-600}"
     ;;
+  --watch)
+    # The owner's file notification: a fixed listing or read, nothing of the caller runs.
+    [[ $# == 2 && ($2 == list || $2 == read) ]] || { echo 'Invalid watch request' >&2; exit 64; }
+    exec /usr/local/bin/magbot watch "$vm" "$2"
+    ;;
   --write|--append)
     [[ $# == 2 && -n $2 && ${#2} -le 4096 ]] || { echo 'Invalid guest file path' >&2; exit 64; }
     exec /usr/local/bin/magbot file-write "$vm" "$2" "$1"

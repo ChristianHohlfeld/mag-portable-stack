@@ -1501,6 +1501,75 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((code, headers["location"]), (302, "https://lena.bot.stardenburg.de/"))
         self.assertEqual(site("lena", "/")[0], 200)
 
+    def test_owner_file_notification_sees_shell_writes_and_stays_private(self):
+        """Chris sees what a bot creates, changes and deletes in its VM, by
+        write_file, a shell command or anything else; with content or diff,
+        never in the chat, a prompt or the shared stream; only the owner."""
+        # The "VM" answers: its control helper knows an address.
+        ctl = pathlib.Path(tempfile.mkdtemp(prefix="magctl-"))
+        self.addCleanup(shutil.rmtree, ctl, True)
+        (ctl / "ctl").write_text("#!/bin/sh\n[ \"$1\" = ip ] && echo 192.168.122.10/24\n")
+        (ctl / "ctl").chmod(0o755)
+        r = Room(MAG_ROOM_FILEWATCH_INTERVAL_S="2", MAG_ROOM_AGENT_CTL=str(ctl / "ctl"))
+        self.addCleanup(r.close)
+        home = pathlib.Path(r.env["FAKE_GUEST_HOME"]) / "agent1"
+        seen = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "filewatch" / "seen-lena.json"
+        r.wait(seen.exists, "first listing of the VM", 15)
+
+        def entries(after=0):
+            code, out = r.api("GET", "/api/filewatch?after=%d" % after)
+            self.assertEqual(code, 200)
+            return out["entries"]
+
+        def entry(path, kind):
+            for e in reversed(entries()):
+                if e["path"] == path and e["kind"] == kind:
+                    return e
+            return None
+        # A script written by a shell command of the bot.
+        script = iter([{"content": "", "tool_calls": [{"name": "shell", "arguments": {
+            "command": "printf 'echo zeile eins\\n' > notiz.sh"}}]}, "Erledigt."])
+        r.lena.reply = lambda body: next(script, "Erledigt.")
+        r.say("@Lena schreib ein Skript")
+        r.wait(lambda: entry("/home/bot/notiz.sh", "neu"), "new file reported", 20)
+        r.idle()
+        e = entry("/home/bot/notiz.sh", "neu")
+        self.assertEqual((e["bot"], e["has_detail"]), ("lena", True))
+        detail = r.api("GET", "/api/filewatch/%d" % e["n"])[1]
+        self.assertEqual((detail["detail_kind"], detail["detail"]), ("inhalt", "echo zeile eins\n"))
+        # Changed by something the bot left running: seen all the same, as a diff.
+        (home / "notiz.sh").write_text("echo zeile eins\necho GEHEIM-ZWEI\n")
+        r.wait(lambda: entry("/home/bot/notiz.sh", "geändert"), "change reported", 15)
+        e = entry("/home/bot/notiz.sh", "geändert")
+        detail = r.api("GET", "/api/filewatch/%d" % e["n"])[1]
+        self.assertEqual(detail["detail_kind"], "diff")
+        self.assertIn("+echo GEHEIM-ZWEI", detail["detail"])
+        (home / "notiz.sh").unlink()
+        r.wait(lambda: entry("/home/bot/notiz.sh", "gelöscht"), "deletion reported", 15)
+        # The bot learns nothing of it: not in its next prompt, the chat or the shared stream.
+        r.lena.reply = lambda body: "Hallo."
+        r.say("@Lena hallo")
+        r.idle()
+        prompts = json.dumps(r.lena.requests, ensure_ascii=False)
+        self.assertNotIn("GEHEIM-ZWEI", prompts)
+        self.assertNotIn("filewatch", prompts)
+        self.assertNotIn("GEHEIM-ZWEI", json.dumps(r.state(), ensure_ascii=False))
+        self.assertNotIn("GEHEIM-ZWEI", json.dumps(r.events, ensure_ascii=False))
+        self.assertFalse((home / ".mag-shell" / "filewatch").exists())
+        # Switched off: nothing is looked at or reported.
+        self.assertIs(r.state()["settings"]["file_watch"], True)
+        self.assertEqual(r.api("PUT", "/api/settings", {"file_watch": False})[0], 200)
+        last = max(x["n"] for x in entries())
+        time.sleep(1.5)
+        (home / "aus.txt").write_text("leise")
+        time.sleep(4.5)
+        self.assertEqual(entries(last), [])
+        # Only the owner.
+        local = Room(MAG_TEST_ALLOW_LOCAL_OWNER="0")
+        self.addCleanup(local.close)
+        self.assertEqual(local.api("GET", "/api/filewatch")[0], 403)
+        self.assertEqual(local.api("GET", "/api/filewatch/1")[0], 403)
+
     def test_owner_terminal_and_files_of_a_bots_vm(self):
         r = self.room
 

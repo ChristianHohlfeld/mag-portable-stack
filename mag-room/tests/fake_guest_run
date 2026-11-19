@@ -14,6 +14,31 @@ case "${1:-}" in
     rm -f "$script"
     printf '\x1elog %s/.mag-shell/test.log 0\n' "$home"
     exit "$rc" ;;
+  --watch)
+    # The same listing as magbot watch, over the temp dir.
+    code=$(cat <<'PY'
+import base64, json, os, stat, sys
+home, what = sys.argv[1], sys.argv[2]
+if what == 'list':
+    out = {}
+    for root, dirs, files in os.walk(home):
+        rel = os.path.relpath(root, home)
+        rel = '' if rel == '.' else rel + '/'
+        dirs[:] = [d for d in dirs if d not in ('.mag-shell', 'room', 'browserd')]
+        for name in files:
+            st = os.lstat(os.path.join(root, name))
+            out[rel + name] = [st.st_size, str(st.st_mtime_ns)]
+    print(json.dumps({'files': out, 'cut': False}))
+else:
+    got = {}
+    for r in sys.stdin.read().split('\n'):
+        if r and os.path.isfile(os.path.join(home, r)):
+            got[r] = base64.b64encode(open(os.path.join(home, r), 'rb').read(65537)).decode()
+    print(json.dumps(got))
+PY
+)
+    exec python3 -c "$code" "$home" "$2"
+    ;;
   --write|--append)
     target=$2; [[ $target == /* ]] || target="$home/$target"
     mkdir -p "$(dirname "$target")"

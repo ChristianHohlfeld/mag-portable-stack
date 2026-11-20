@@ -1,5 +1,5 @@
 # Central model interface with a complete, hash-chained audit log. The room
-# talks to :8080 only; the gateway forwards to lena :8191 and noah :8192.
+# talks to :8080 only; the gateway forwards to bot1 :8191 and bot2 :8192.
 # Model units are never started or stopped by this unit.
 [Unit]
 Description=MAG audit gateway (central LLM interface, full audit log)
@@ -16,11 +16,11 @@ Environment=MAG_AUDIT_LISTEN_HOST=127.0.0.1
 Environment=MAG_AUDIT_LISTEN_PORT=8080
 Environment=MAG_AUDIT_UPSTREAM_HOST=127.0.0.1
 # Two single-slot model servers; the room names the bot (X-Mag-Slot 0/1).
-Environment=MAG_ROOM_MODEL_ID=lena
+Environment=MAG_ROOM_MODEL_ID=bot1
 Environment=MAG_ROOM_MODEL_PORTS=8191:0,8192:1
 Environment=MAG_ROOM_MAX_BOTS=2
-Environment=MAG_ROOM_MODEL_ID_0=lena
-Environment=MAG_ROOM_MODEL_ID_1=noah
+Environment=MAG_ROOM_MODEL_ID_0=bot1
+Environment=MAG_ROOM_MODEL_ID_1=bot2
 Environment="MAG_ROOM_MODEL_LABEL_0=Bot 0 (Gemma 4)"
 Environment="MAG_ROOM_MODEL_LABEL_1=Bot 1 (Gemma 4)"
 Environment=MAG_ROOM_BOTS_FILE=/var/lib/magbot/room/bots.json

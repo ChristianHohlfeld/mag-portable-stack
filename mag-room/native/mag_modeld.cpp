@@ -327,12 +327,16 @@ static void verify_async(const std::string &bot, Artifact &a) {
   }).detach();
 }
 
-// True when a stamp records exactly this file (size and mtime).
+// Bind a verification stamp to the current model's expected SHA as well as
+// its file metadata: swapping profiles must never reuse another GGUF's stamp.
 static bool stamp_matches(const std::string &path, const Artifact &a) {
   std::istringstream in(read_file(path, 256));
   uint64_t size = 0;
   long long mtime = 0;
-  return (in >> size >> mtime) && size == a.size && mtime == (long long)a.mtime;
+  std::string digest;
+  if (!(in >> size >> mtime >> digest) || size != a.size || mtime != (long long)a.mtime) return false;
+  const std::string expected = a.expected_sha();
+  return digest == (expected.empty() ? "-" : expected);
 }
 
 // ---------------------------------------------------------------------- bots

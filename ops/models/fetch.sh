@@ -49,7 +49,9 @@ fi
 # Hugging Face's supported CLI uses the login belonging to the model owner.
 # Never pass a token through MAG, a URL or a command argument.
 if [[ -n $repo && -n $local_dir ]]; then
-  command -v hf >/dev/null || { echo 'fetch: Hugging Face CLI (hf) is missing for the model owner' >&2; exit 78; }
+  hf_cmd=$(command -v hf || true)
+  if [[ -z $hf_cmd && -x $HOME/.local/bin/hf ]]; then hf_cmd="$HOME/.local/bin/hf"; fi
+  [[ -n $hf_cmd ]] || { echo 'fetch: Hugging Face CLI (hf) is missing for the model owner' >&2; exit 78; }
   if [[ $kind == model && -n $include ]]; then
     staging="$local_dir.incomplete"
     if [[ -e $local_dir ]]; then
@@ -57,7 +59,7 @@ if [[ -n $repo && -n $local_dir ]]; then
       exit 78
     fi
     mkdir -p "$staging"
-    hf download "$repo" --include "$include" --local-dir "$staging" || exit $?
+    "$hf_cmd" download "$repo" --include "$include" --local-dir "$staging" || exit $?
     relative="${path#"$local_dir"/}"
     [[ $relative != "$path" && -s "$staging/$relative" ]] || { echo 'fetch: first GGUF shard missing' >&2; exit 78; }
     # Cross-device moves are forbidden: both directories share one parent.
@@ -66,7 +68,7 @@ if [[ -n $repo && -n $local_dir ]]; then
   fi
   if [[ -n $hf_file ]]; then
     mkdir -p "$local_dir"
-    exec hf download "$repo" "$hf_file" --local-dir "$local_dir"
+    exec "$hf_cmd" download "$repo" "$hf_file" --local-dir "$local_dir"
   fi
 fi
 mkdir -p "$(dirname "$path")"

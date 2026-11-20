@@ -540,7 +540,7 @@ static bool read_control(std::map<std::string, Bot> &bots, const Val *profiles) 
         selected = Val::object();
       if (selected.find(kv.first) && selected.find(kv.first)->asStr() == id) continue;
       selected[kv.first] = id;
-      if (!write_atomic(g_state_dir + "/selection.json", mj::dump(selected) + "\n", 0600)) {
+      if (!write_atomic(g_state_dir + "/selection.json", mj::dump(selected) + "\n", 0644)) {
         logf(kv.first + ": model selection could not be saved"); continue;
       }
       // Stop only this bot's llama-server. Identity, VM, memory and the

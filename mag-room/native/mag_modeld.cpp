@@ -1,6 +1,6 @@
 // mag-modeld: the single owner of the model lifecycle.
 //
-// For every bot in models.json (lena: NUMA0 :8191, noah: NUMA1 :8192):
+// For every bot in models.json (bot1: NUMA0 :8191, bot2: NUMA1 :8192):
 //   GGUF missing/partial  -> "downloading"; resumes with mag-model-fetch@<bot>
 //                            when no other process is writing the file
 //   size == Hugging Face  -> one SHA256 pass, then a <bot>.<kind>.ok stamp

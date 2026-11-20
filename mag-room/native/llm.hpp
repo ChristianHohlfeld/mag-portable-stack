@@ -7,7 +7,7 @@
 namespace mag::llm {
 
 struct Backend {
-  std::string bot;     // "lena" / "noah": also the model id the gateway expects
+  std::string bot;     // stable "bot1" / "bot2": also the model id the gateway expects
   int index = 0;       // gateway backend index (NUMA node)
   int port = 0;        // llama-server port, used when there is no gateway
   std::string gateway; // e.g. http://127.0.0.1:8080, empty = direct

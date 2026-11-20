@@ -1330,7 +1330,10 @@ private:
     }
     if (adapter == "mistral") {
       k["reasoning_effort"] = thinking ? "high" : "none";
-    } else {
+    } else if (adapter == "gemma" || adapter.empty()) {
+      // Older supervisor status files predate adapter metadata and belong to
+      // the existing Gemma bots. Explicit "generic" profiles never inherit
+      // these Gemma-only controls.
       k["enable_thinking"] = thinking;
       if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
     }

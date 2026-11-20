@@ -65,6 +65,7 @@ case "$1" in
     case "$3" in
       mag-model@*)
         bot=${{3#mag-model@}}; bot=${{bot%.service}}
+        mkdir -p {state}/slots/"$bot"
         {BIN} --config {tmp}/models.json spec-hash "$bot" > {state}/slots/"$bot"/.spec
         ;;
     esac

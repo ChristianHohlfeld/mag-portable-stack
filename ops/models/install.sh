@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the model layer (run as root, from deploy.sh or by hand):
 #   mag-modeld            supervisor: download watch, verify, start
-#   mag-model@<bot>       CPU-only llama.cpp server (lena :8191, noah :8192)
+#   mag-model@<bot>       CPU-only llama.cpp server (bot1 :8191, bot2 :8192)
 #   mag-model-fetch@<bot> resumable download
 # Never waits for a model, never restarts a running one and never deletes a
 # model file. Retired model units are stopped and their unit files moved to
@@ -45,4 +45,4 @@ systemctl daemon-reload
 systemctl enable mag-modeld.service >/dev/null
 # The supervisor is stateless: restarting it never touches a running model.
 systemctl restart mag-modeld.service
-echo 'Model layer installed: mag-modeld supervises lena (:8191) and noah (:8192)'
+echo 'Model layer installed: mag-modeld supervises bot1 (:8191) and bot2 (:8192)'

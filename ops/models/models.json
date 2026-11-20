@@ -33,7 +33,7 @@
       "args": ["--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0", "--repeat-penalty", "1.0"]
     },
     "noah": {
-      "label": "Gemma 4 26B-A4B-it · Q8_0",
+      "label": "Gemma 4 26B-A4B · Q4_K_M",
       "numa": 1,
       "cpus": "14-27",
       "threads": 14,
@@ -41,20 +41,23 @@
       "ctx": 65536,
       "thinking_control": "toggle",
       "model": {
-        "path": "/home/chris/models/gemma4-original-q8/gemma-4-26B-A4B-it-Q8_0.gguf",
-        "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q8_0.gguf",
-        "sha256": "5f7cbd0f4564e84342fc34321a09acb54b1a3da9215124e5bf444baa6dda152c"
+        "path": "/home/chris/models/gemma4-26b-a4b-uncensored/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+        "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+        "size": 16796015520,
+        "sha256": "3c13133469e431312fffb8b1d9c85ae42199e6bb5746ea1da84e8ddf2097d73c"
       },
       "draft": {
-        "path": "/home/chris/models/gemma4-original-q8/mtp-gemma-4-26B-A4B-it.gguf",
-        "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/mtp-gemma-4-26B-A4B-it.gguf",
-        "sha256": "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b",
+        "path": "/home/chris/models/gemma4-26b-a4b-uncensored/mtp-gemma-4-26B-A4B-it.gguf",
+        "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/mtp-gemma-4-26B-A4B-it.gguf",
+        "size": 251937728,
+        "sha256": "62bd3af7f66c9308de9a5454233852f8c7324c93767e8dfb824ed45b9179864a",
         "args": ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3", "--spec-draft-p-min", "0.75"]
       },
       "mmproj": {
-        "path": "/home/chris/models/gemma4-original-q8/mmproj-BF16.gguf",
-        "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/mmproj-BF16.gguf",
-        "sha256": "41926ed5f1403cf5add23b0684992805ea6f97253096132e769e65646b8cef9d"
+        "path": "/home/chris/models/gemma4-26b-a4b-uncensored/mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
+        "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
+        "size": 1194827776,
+        "sha256": "b5346e5bfd906f5e16878c2d0b8243e948ca7410fa28ea35be9b0c54a0ac10b7"
       },
       "args": ["--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0", "--repeat-penalty", "1.0"]
     }

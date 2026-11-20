@@ -8,9 +8,21 @@ set -euo pipefail
 bot=${1:?usage: run.sh <bot>}
 CONF=${MAG_MODELS_CONF:-/usr/local/lib/mag-models/models.json}
 [[ $bot =~ ^[a-z][a-z0-9]{1,15}$ ]] || { echo "model $bot: invalid bot name" >&2; exit 78; }
-spec=$(jq -ce --arg b "$bot" '.bots[$b] // empty' "$CONF") || { echo "model $bot: not in $CONF" >&2; exit 78; }
-q() { jq -r "$1" <<<"$spec"; }
+# The supervisor persists only the selected profile, never changes the
+# installer-owned defaults. Profiles override model-specific settings only.
 STATE=$(jq -r '.state_dir' "$CONF")
+profile=default
+if [[ -f "$STATE/selection.json" ]]; then
+  profile=$(jq -er --arg b "$bot" '.[$b] // "default"' "$STATE/selection.json") || exit 78
+fi
+spec=$(jq -ce --arg b "$bot" --arg p "$profile" '
+  .bots[$b] as $base |
+  if $base == null then empty
+  elif $p == "default" then $base
+  elif .profiles[$p] == null then empty
+  else ($base + {model: null, draft: null, mmproj: null, args: []}) + .profiles[$p]
+  end' "$CONF") || { echo "model $bot: unknown model profile $profile" >&2; exit 78; }
+q() { jq -r "$1" <<<"$spec"; }
 REV=$(jq -r '.runtime.rev' "$CONF")
 BIN="$(jq -r '.runtime.dir' "$CONF")/$REV/bin/llama-server"
 [[ $REV =~ ^[a-f0-9]{40}$ && -x $BIN ]] || { echo "model $bot: runtime $REV missing (ops/models/build-runtime.sh)" >&2; exit 78; }

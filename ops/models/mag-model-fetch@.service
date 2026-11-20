@@ -19,5 +19,8 @@ IOSchedulingClass=idle
 TimeoutStartSec=infinity
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/home/chris/models
+# HF CLI stores resumed files inside the model directory and reads the
+# owner's existing auth in ~/.cache/huggingface; permit metadata updates there
+# without granting writes to any other home or system path.
+ReadWritePaths=/home/chris/models -/home/chris/.cache/huggingface
 PrivateTmp=yes

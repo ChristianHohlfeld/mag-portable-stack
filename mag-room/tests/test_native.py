@@ -2805,7 +2805,13 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: reply_after_reset() == ["Frisch."], "queued human reply after VM reset")
         r.idle()
         self.assertEqual(reply_after_reset(), ["Frisch."])
-        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
+        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"]), ("agent1", True))
+        # After reset the room may immediately regenerate its own VM context
+        # (MAG_CONTEXT.md / GIT_ACCESS.md). Only bot-created workspace files
+        # must be gone; their reappearance would mean the reset failed.
+        fresh_files = {p.name for p in (guests / "agent1").iterdir()}
+        self.assertFalse(fresh_files - {"MAG_CONTEXT.md", "GIT_ACCESS.md"}, fresh_files)
+        self.assertNotIn("notiz.txt", fresh_files)
         self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
         # Noah may erase an EMPTY slot while creating his first cold prefix at
         # startup. Only actions after the initial warmup count as a bot reset.

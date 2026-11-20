@@ -776,8 +776,32 @@ public:
 
   bool model_control(const std::string &bot, const std::string &verb) {
     static const std::set<std::string> verbs = {"start", "stop", "restart", "freeze", "thaw"};
-    if (!verbs.count(verb) || !find(bot)) return false;
+    const bool selecting = starts_with(verb, "select:");
+    const std::string profile = selecting ? verb.substr(7) : "";
+    if ((!verbs.count(verb) && !selecting) || !find(bot)) return false;
+    if (selecting) {
+      if (profile.empty() || profile.size() > 64 ||
+          profile.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") != std::string::npos)
+        return false;
+      // Refuse to replace a model in the middle of a tool action or goal.
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        const Bot *b = find(bot);
+        if (!b || !b->running.empty() || b->goal_on || b->goal_arm || b->resetting) return false;
+      }
+      const Val state = read_json(room_.cfg.models_status);
+      const Val *choices = state.find("profiles");
+      bool allowed = false;
+      if (choices && choices->isArr())
+        for (const auto &item : choices->asArr()) if (jstr(item, "id") == profile) { allowed = true; break; }
+      if (!allowed) return false;
+    }
     const bool ok = write_atomic(room_.cfg.models_control + "/" + bot, verb + "\n", 0660);
+    if (ok && selecting) {
+      // Selecting a different architecture must start with reasoning off.
+      // This changes neither the VM, bot identity, memory nor the 16k budget.
+      room_.update_bot(bot, [&](Val &b) { b["thinking"] = false; b["effort"] = "none"; });
+    }
     if (ok && (verb == "stop" || verb == "restart")) stop(bot);
     return ok;
   }
@@ -1296,11 +1320,23 @@ private:
   Val template_kwargs(const Val &me) {
     Val k = Val::object();
     const bool thinking = jbool(me, "thinking", false);
-    k["enable_thinking"] = thinking;
-    // When Thinking is off, do not send an unrelated reasoning effort.
-    // A legacy client can enable it without saving the dropdown first:
-    // the backend and UI both choose the same explicit "low" default.
-    if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
+    // A model family supplies its own chat-template parameters; never send
+    // Gemma's enable_thinking or a low/medium effort to Mistral's template.
+    std::string adapter;
+    {
+      std::lock_guard<std::mutex> lk(models_mu_);
+      if (const Val *model = models_.find(jstr(me, "id")))
+        adapter = jstr(*model, "reasoning_adapter");
+    }
+    if (adapter == "mistral") {
+      k["reasoning_effort"] = thinking ? "high" : "none";
+    } else if (adapter == "gemma" || adapter.empty()) {
+      // Older supervisor status files predate adapter metadata and belong to
+      // the existing Gemma bots. Explicit "generic" profiles never inherit
+      // these Gemma-only controls.
+      k["enable_thinking"] = thinking;
+      if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
+    }
     k["model_identity"] = "You are " + jstr(me, "name") + ", a helpful local AI assistant.";
     return k;
   }

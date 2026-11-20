@@ -327,12 +327,16 @@ static void verify_async(const std::string &bot, Artifact &a) {
   }).detach();
 }
 
-// True when a stamp records exactly this file (size and mtime).
+// Bind a verification stamp to the current model's expected SHA as well as
+// its file metadata: swapping profiles must never reuse another GGUF's stamp.
 static bool stamp_matches(const std::string &path, const Artifact &a) {
   std::istringstream in(read_file(path, 256));
   uint64_t size = 0;
   long long mtime = 0;
-  return (in >> size >> mtime) && size == a.size && mtime == (long long)a.mtime;
+  std::string digest;
+  if (!(in >> size >> mtime >> digest) || size != a.size || mtime != (long long)a.mtime) return false;
+  const std::string expected = a.expected_sha();
+  return digest == (expected.empty() ? "-" : expected);
 }
 
 // ---------------------------------------------------------------------- bots
@@ -391,7 +395,7 @@ static int health(int port) {
 }
 
 struct Bot {
-  std::string id, label, unit, spec_hash, thinking_control;
+  std::string id, label, unit, spec_hash, thinking_control, reasoning_adapter, profile = "default";
   int port = 0, numa = 0, ctx = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
 
@@ -512,21 +516,46 @@ static void apply_control(Bot &b, const std::string &verb) {
 
 // Control files are written by the unprivileged room: regular files only,
 // never followed, never blocked on, content from a fixed verb list.
-static void read_control(std::map<std::string, Bot> &bots) {
+static bool read_control(std::map<std::string, Bot> &bots, const Val *profiles) {
   const std::string dir = g_state_dir + "/control";
   for (auto &kv : bots) {
     const std::string path = dir + "/" + kv.first;
     int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) continue;
     struct stat st{};
-    char buf[32] = {0};
+    char buf[128] = {0};
     std::string verb;
     if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && read(fd, buf, sizeof buf - 1) > 0) verb = trim(buf);
     close(fd);
     unlink(path.c_str());
+    if (verb.compare(0, 7, "select:") == 0) {
+      const std::string id = verb.substr(7);
+      if (id.empty() || id.size() > 64 || (id != "default" &&
+          (!profiles || !profiles->isObj() || !profiles->find(id)))) {
+        logf(kv.first + ": rejected unknown model profile");
+        continue;
+      }
+      Val selected;
+      if (!mj::parse(read_file(g_state_dir + "/selection.json", 65536), selected) || !selected.isObj())
+        selected = Val::object();
+      if (selected.find(kv.first) && selected.find(kv.first)->asStr() == id) continue;
+      selected[kv.first] = id;
+      if (!write_atomic(g_state_dir + "/selection.json", mj::dump(selected) + "\n", 0644)) {
+        logf(kv.first + ": model selection could not be saved"); continue;
+      }
+      // Stop only this bot's llama-server. Identity, VM, memory and the
+      // other server remain untouched. Restart the supervisor to re-read
+      // the selected immutable catalog entry and its download metadata.
+      set_flag(kv.first, "switching", true);
+      systemctl("thaw", kv.second.unit);
+      systemctl("stop", kv.second.unit);
+      logf(kv.first + ": model profile selected: " + id);
+      return true;
+    }
     for (const char *ok : {"start", "stop", "restart", "freeze", "thaw"})
       if (verb == ok) apply_control(kv.second, verb);
   }
+  return false;
 }
 
 static void step(Bot &b) {
@@ -576,6 +605,13 @@ static void step(Bot &b) {
     b.draft_active = spec.find("draft=0") == std::string::npos && spec.find("draft=") != std::string::npos;
     b.mmproj_active = spec.find("mmproj=0") == std::string::npos && spec.find("mmproj=") != std::string::npos;
     b.restart_pending = !spec.empty() && spec.compare(0, b.spec_hash.size(), b.spec_hash) != 0;
+    // Never publish the old model as ready while a profile switch waits
+    // for its own server process. Unchanged bots may keep their old slot.
+    if (flag(b.id, "switching") && (spec.empty() || b.restart_pending)) {
+      b.state = "loading";
+      b.detail = "Modellwechsel läuft";
+      return;
+    }
     if (b.seen_restarts >= 0 && u.restarts > b.seen_restarts && !b.ever_ready && (b.draft_active || b.mmproj_active)) {
       // The server died before it ever answered /health while an optional
       // part was attached: run without it rather than loop. The projector
@@ -595,6 +631,7 @@ static void step(Bot &b) {
         b.state = "ready";
         b.ever_ready = true;
         b.process_us = u.since_us;
+        if (flag(b.id, "switching")) set_flag(b.id, "switching", false);
       } else {
         b.state = "loading";
       }
@@ -630,6 +667,15 @@ static void step(Bot &b) {
       b.detail = "Modell fertig, Drafter folgt";
       return;
     }
+  }
+  // Wait for a selected multimodal model's projector during the initial
+  // download, so a text-only server is not started prematurely.
+  const Artifact &vision = b.mmproj;
+  if (b.profile != "default" && vision.configured && vision.verify != Artifact::OK && vision.verify != Artifact::BAD &&
+      !flag(b.id, "mmproj.off") && now - b.model_verified_at < std::chrono::minutes(10)) {
+    b.state = "downloading";
+    b.detail = "Modell fertig, Bildprojektor folgt";
+    return;
   }
   if (u.active == "failed") {
     b.state = "failed";
@@ -692,7 +738,7 @@ static std::string sha256_hex(const std::string &s) {
   return out;
 }
 
-static void write_status(const std::map<std::string, Bot> &bots) {
+static void write_status(const std::map<std::string, Bot> &bots, const Val &catalog) {
   Val root = Val::object();
   root["updated"] = (double)time(nullptr);
   Val list = Val::object();
@@ -702,6 +748,8 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     v["state"] = b.state;
     v["label"] = b.label;
     v["thinking_control"] = b.thinking_control;
+    v["profile"] = b.profile;
+    v["reasoning_adapter"] = b.reasoning_adapter;
     // The exact weights: file name without directory and ".gguf".
     std::string file = b.model.path.substr(b.model.path.find_last_of('/') + 1);
     if (file.size() > 5 && file.compare(file.size() - 5, 5, ".gguf") == 0) file.resize(file.size() - 5);
@@ -735,6 +783,7 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     list[kv.first] = v;
   }
   root["bots"] = list;
+  root["profiles"] = catalog; // public id + label only, never local paths or credentials
   write_atomic(g_run_dir + "/status.json", mj::dump(root) + "\n");
 }
 
@@ -778,6 +827,42 @@ int main(int argc, char **argv) {
     return write_atomic(g_state_dir + "/control/" + args[1], args[2] + "\n", 0660) ? 0 : 1;
   }
   const Val *list = conf.find("bots");
+  const Val *profiles = conf.find("profiles");
+  Val selected;
+  if (!mj::parse(read_file(g_state_dir + "/selection.json", 65536), selected) || !selected.isObj())
+    selected = Val::object();
+  auto selection_of = [&](const std::string &bot) {
+    const Val *p = selected.find(bot);
+    const std::string id = p ? p->asStr("default") : "default";
+    return id != "default" && (!profiles || !profiles->find(id)) ? std::string("default") : id;
+  };
+  auto effective = [&](const std::string &id, const Val &original) {
+    Val current = original;
+    const std::string profile = selection_of(id);
+    if (profile != "default") {
+      // Never inherit Gemma's MTP drafter or mmproj when switching family.
+      current["model"] = Val();
+      current["draft"] = Val();
+      current["mmproj"] = Val();
+      current["args"] = Val::array();
+      const Val *change = profiles->find(profile);
+      if (change && change->isObj() && change->obj)
+        for (const auto &entry : *change->obj) current[entry.first] = entry.second;
+    }
+    return current;
+  };
+  Val catalog = Val::array();
+  Val first = Val::object();
+  first["id"] = "default";
+  first["label"] = "Standardmodell";
+  catalog.push(first);
+  if (profiles && profiles->isObj() && profiles->obj)
+    for (const auto &entry : *profiles->obj) {
+      Val choice = Val::object();
+      choice["id"] = entry.first;
+      choice["label"] = entry.second.find("label") ? entry.second.find("label")->asStr() : entry.first;
+      catalog.push(choice);
+    }
   const Val *runtime = conf.find("runtime");
   const std::string rev = runtime && runtime->find("rev") ? runtime->find("rev")->asStr() : "";
   // Identity of a bot's launch configuration; run.sh records it at start.
@@ -794,7 +879,7 @@ int main(int argc, char **argv) {
   if (!args.empty() && args[0] == "spec-hash") {
     const Val *bot = args.size() == 2 && list ? list->find(args[1]) : nullptr;
     if (!bot) return usage();
-    std::cout << spec_hash(*bot) << "\n";
+    std::cout << spec_hash(effective(args[1], *bot)) << "\n";
     return 0;
   }
   if (!args.empty()) return usage();
@@ -805,17 +890,21 @@ int main(int argc, char **argv) {
       Bot b;
       b.id = kv.first;
       b.unit = "mag-model@" + b.id + ".service";
-      auto num = [&](const char *k) { auto p = kv.second.find(k); return p ? (int)p->asNum() : 0; };
-      b.label = kv.second.find("label") ? kv.second.find("label")->asStr() : b.id;
-      b.thinking_control = kv.second.find("thinking_control") ? kv.second.find("thinking_control")->asStr() : "none";
+      b.profile = selection_of(b.id);
+      const Val spec = effective(b.id, kv.second);
+      auto num = [&](const char *k) { auto p = spec.find(k); return p ? (int)p->asNum() : 0; };
+      b.label = spec.find("label") ? spec.find("label")->asStr() : b.id;
+      b.thinking_control = spec.find("thinking_control") ? spec.find("thinking_control")->asStr() : "none";
+      b.reasoning_adapter = spec.find("reasoning_adapter") ? spec.find("reasoning_adapter")->asStr() : "generic";
       if (b.thinking_control != "toggle" && b.thinking_control != "effort") b.thinking_control = "none";
       b.port = num("port");
       b.numa = num("numa");
       b.ctx = num("ctx");
-      b.model = artifact_from(kv.second.find("model"), "model");
-      b.draft = artifact_from(kv.second.find("draft"), "draft");
-      b.mmproj = artifact_from(kv.second.find("mmproj"), "mmproj");
-      b.spec_hash = spec_hash(kv.second);
+      b.model = artifact_from(spec.find("model"), "model");
+      // A profile never inherits a drafter/projector from another model.
+      b.draft = artifact_from(spec.find("draft"), "draft");
+      b.mmproj = artifact_from(spec.find("mmproj"), "mmproj");
+      b.spec_hash = spec_hash(spec);
       if (!b.model.configured || b.port <= 0) {
         std::cerr << "mag-modeld: bot " << b.id << " lacks model.path/port\n";
         return 78;
@@ -839,14 +928,20 @@ int main(int argc, char **argv) {
       pruned = time(nullptr);
       for (auto &kv : bots) prune_prefix_files(kv.first);
     }
-    read_control(bots);
+    if (read_control(bots, profiles)) {
+      // exec preserves the service PID, and does not touch the other bot's
+      // llama-server. On failure systemd must restart us, not run stale specs.
+      execvp(argv[0], argv);
+      logf("model supervisor reload failed");
+      return 78;
+    }
     for (auto &kv : bots) {
       step(kv.second);
       const std::string now = kv.second.state + (kv.second.detail.empty() ? "" : " (" + kv.second.detail + ")");
       if (last[kv.first] != now) logf(kv.first + ": " + now);
       last[kv.first] = now;
     }
-    write_status(bots);
+    write_status(bots, catalog);
     for (int i = 0; i < poll_ms / 100 && !g_stop; i++) usleep(100 * 1000);
   }
   return 0;

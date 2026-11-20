@@ -44,6 +44,14 @@ def main():
         "noah": {"label": "N", "numa": 1, "port": ports["noah"], "ctx": 4096, "model": {
             "path": str(models / "noah.gguf"), "url": "", "size": len(bad),
             "sha256": "0" * 64}}}}
+    # A separate GGUF family may be selected for Lena while Noah stays on
+    # its own process. No Gemma drafter/projector may leak into that profile.
+    alternate = b"GGUF" + os.urandom(900)
+    conf["profiles"] = {"alternate": {
+        "label": "Another architecture", "reasoning_adapter": "mistral",
+        "model": {"path": str(models / "alternate.gguf"), "url": "",
+                  "size": len(alternate), "sha256": hashlib.sha256(alternate).hexdigest()},
+        "args": []}}
     (tmp / "models.json").write_text(json.dumps(conf))
     # Fake systemctl: a unit is "active" once started, and knows since when; every call is logged.
     fake = tmp / "systemctl"
@@ -52,7 +60,16 @@ echo "$@" >> {tmp}/calls
 case "$1" in
   show) if [ -e {tmp}/active.$2 ]; then echo ActiveState=active; echo ActiveEnterTimestampMonotonic=$(cat {tmp}/active.$2); else echo ActiveState=inactive; fi
         echo SubState=x; echo Result=success; echo NRestarts=0; echo FreezerState=running ;;
-  start|restart) date +%s%N | cut -c1-16 > {tmp}/active.$3 ;;
+  start|restart)
+    date +%s%N | cut -c1-16 > {tmp}/active.$3
+    case "$3" in
+      mag-model@*)
+        bot=${{3#mag-model@}}; bot=${{bot%.service}}
+        mkdir -p {state}/slots/"$bot"
+        {BIN} --config {tmp}/models.json spec-hash "$bot" > {state}/slots/"$bot"/.spec
+        ;;
+    esac
+    ;;
   stop) rm -f {tmp}/active.$3 ;;
 esac
 """)
@@ -153,6 +170,34 @@ esac
         while status("lena").get("since") == since and time.time() < end:
             time.sleep(0.2)
         assert wait("lena", "ready")["since"] not in (since, None), status("lena")
+        # 6. Per-bot selection is persistent and isolated from the other bot.
+        (models / "alternate.gguf").write_bytes(alternate)
+        subprocess.check_call([str(BIN), "--config", str(tmp / "models.json"),
+                               "ctl", "lena", "select:alternate"], env=env)
+        end = time.time() + 30
+        while time.time() < end:
+            updated = status("lena")
+            if updated.get("profile") == "alternate" and updated.get("state") == "ready":
+                break
+            time.sleep(0.2)
+        assert status("lena")["profile"] == "alternate", status("lena")
+        assert status("lena")["state"] == "ready", status("lena")
+        assert status("lena")["reasoning_adapter"] == "mistral"
+        assert status("lena")["file"] == "alternate", status("lena")
+        assert "draft" not in status("lena") and "mmproj" not in status("lena"), status("lena")
+        assert status("noah")["profile"] == "default"
+        assert json.loads((state / "selection.json").read_text())["lena"] == "alternate"
+        (state / "control" / "lena").write_text("select:../danger\\n")
+        time.sleep(1)
+        assert json.loads((state / "selection.json").read_text())["lena"] == "alternate"
+        subprocess.check_call([str(BIN), "--config", str(tmp / "models.json"),
+                               "ctl", "lena", "select:default"], env=env)
+        end = time.time() + 30
+        while time.time() < end:
+            updated = status("lena")
+            if updated.get("profile") == "default" and updated.get("state") == "ready": break
+            time.sleep(0.2)
+        assert status("lena")["profile"] == "default" and status("lena")["state"] == "ready"
         print("ok")
     finally:
         proc.terminate()

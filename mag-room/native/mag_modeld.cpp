@@ -826,6 +826,11 @@ int main(int argc, char **argv) {
     Val current = original;
     const std::string profile = selection_of(id);
     if (profile != "default") {
+      // Never inherit Gemma's MTP drafter or mmproj when switching family.
+      current["model"] = Val();
+      current["draft"] = Val();
+      current["mmproj"] = Val();
+      current["args"] = Val::array();
       const Val *change = profiles->find(profile);
       if (change && change->isObj() && change->obj)
         for (const auto &entry : *change->obj) current[entry.first] = entry.second;
@@ -882,7 +887,7 @@ int main(int argc, char **argv) {
       b.ctx = num("ctx");
       b.model = artifact_from(spec.find("model"), "model");
       // A profile never inherits a drafter/projector from another model.
-      b.draft = b.profile == "default" ? artifact_from(spec.find("draft"), "draft") : artifact_from(profiles->find(b.profile)->find("draft"), "draft");
+      b.draft = artifact_from(spec.find("draft"), "draft");
       b.mmproj = artifact_from(spec.find("mmproj"), "mmproj");
       b.spec_hash = spec_hash(spec);
       if (!b.model.configured || b.port <= 0) {

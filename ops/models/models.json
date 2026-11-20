@@ -25,7 +25,14 @@
         "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/mtp-gemma-4-26B-A4B-it.gguf",
         "size": 251937728,
         "sha256": "62bd3af7f66c9308de9a5454233852f8c7324c93767e8dfb824ed45b9179864a",
-        "args": ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3", "--spec-draft-p-min", "0.75"]
+        "args": [
+          "--spec-type",
+          "draft-mtp",
+          "--spec-draft-n-max",
+          "3",
+          "--spec-draft-p-min",
+          "0.75"
+        ]
       },
       "mmproj": {
         "path": "/home/chris/models/gemma4-26b-a4b-uncensored/mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
@@ -33,7 +40,18 @@
         "size": 1194827776,
         "sha256": "b5346e5bfd906f5e16878c2d0b8243e948ca7410fa28ea35be9b0c54a0ac10b7"
       },
-      "args": ["--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0", "--repeat-penalty", "1.0"]
+      "args": [
+        "--temp",
+        "1.0",
+        "--top-k",
+        "64",
+        "--top-p",
+        "0.95",
+        "--min-p",
+        "0.0",
+        "--repeat-penalty",
+        "1.0"
+      ]
     },
     "noah": {
       "label": "Gemma 4 26B-A4B · Q4_K_M",
@@ -54,7 +72,14 @@
         "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/mtp-gemma-4-26B-A4B-it.gguf",
         "size": 251937728,
         "sha256": "62bd3af7f66c9308de9a5454233852f8c7324c93767e8dfb824ed45b9179864a",
-        "args": ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3", "--spec-draft-p-min", "0.75"]
+        "args": [
+          "--spec-type",
+          "draft-mtp",
+          "--spec-draft-n-max",
+          "3",
+          "--spec-draft-p-min",
+          "0.75"
+        ]
       },
       "mmproj": {
         "path": "/home/chris/models/gemma4-26b-a4b-uncensored/mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
@@ -62,7 +87,50 @@
         "size": 1194827776,
         "sha256": "b5346e5bfd906f5e16878c2d0b8243e948ca7410fa28ea35be9b0c54a0ac10b7"
       },
-      "args": ["--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0", "--repeat-penalty", "1.0"]
+      "args": [
+        "--temp",
+        "1.0",
+        "--top-k",
+        "64",
+        "--top-p",
+        "0.95",
+        "--min-p",
+        "0.0",
+        "--repeat-penalty",
+        "1.0"
+      ]
+    }
+  },
+  "profiles": {
+    "mistral-small-4-q4": {
+      "label": "Mistral Small 4 119B · UD-Q4_K_M",
+      "thinking_control": "toggle",
+      "model": {
+        "path": "/home/chris/models/mistral-small-4/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003.gguf",
+        "url": "https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF/resolve/main/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003.gguf",
+        "repo": "unsloth/Mistral-Small-4-119B-2603-GGUF",
+        "include": "UD-Q4_K_M/*.gguf",
+        "local_dir": "/home/chris/models/mistral-small-4"
+      },
+      "mmproj": {
+        "path": "/home/chris/models/mistral-small-4/mmproj-BF16.gguf",
+        "url": "https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF/resolve/main/mmproj-BF16.gguf",
+        "repo": "unsloth/Mistral-Small-4-119B-2603-GGUF",
+        "file": "mmproj-BF16.gguf",
+        "local_dir": "/home/chris/models/mistral-small-4"
+      },
+      "args": [
+        "--temp",
+        "0.7",
+        "--top-k",
+        "40",
+        "--top-p",
+        "0.9",
+        "--min-p",
+        "0.0",
+        "--repeat-penalty",
+        "1.0"
+      ]
     }
   }
 }

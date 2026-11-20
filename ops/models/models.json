@@ -6,7 +6,7 @@
   },
   "state_dir": "/var/lib/mag-models",
   "bots": {
-    "lena": {
+    "bot1": {
       "label": "Gemma 4 26B-A4B · Q4_K_M",
       "numa": 0,
       "cpus": "0-13",
@@ -35,7 +35,7 @@
       },
       "args": ["--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0", "--repeat-penalty", "1.0"]
     },
-    "noah": {
+    "bot2": {
       "label": "Gemma 4 26B-A4B · Q4_K_M",
       "numa": 1,
       "cpus": "14-27",

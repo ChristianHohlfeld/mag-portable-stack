@@ -51,7 +51,8 @@
         "0.0",
         "--repeat-penalty",
         "1.0"
-      ]
+      ],
+      "reasoning_adapter": "gemma"
     },
     "noah": {
       "label": "Gemma 4 26B-A4B · Q4_K_M",
@@ -98,7 +99,8 @@
         "0.0",
         "--repeat-penalty",
         "1.0"
-      ]
+      ],
+      "reasoning_adapter": "gemma"
     }
   },
   "profiles": {

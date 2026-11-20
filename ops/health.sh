@@ -9,7 +9,16 @@ for unit in mag-audit-gateway.service mag-modeld.service; do
 done
 curl --noproxy '*' --fail --silent --show-error --max-time 5 -o /dev/null http://127.0.0.1:8766/readyz
 if [[ -r /run/mag-models/status.json ]]; then
-  jq -r '.bots | to_entries[] | "model \(.key): \(.value.state)" + (if .value.detail != "" then " (\(.value.detail))" else "" end)' \
-    /run/mag-models/status.json 2>/dev/null || true
+  if [[ -r /var/lib/magbot/room/bots.json ]]; then
+    jq -r --slurpfile bots /var/lib/magbot/room/bots.json '
+      ($bots[0] // [] | map({(.id): .name}) | add // {}) as $names |
+      .bots | to_entries[] |
+      "model \($names[.key] // .key): \(.value.state)" +
+      (if .value.detail != "" then " (\(.value.detail))" else "" end)' \
+      /run/mag-models/status.json 2>/dev/null || true
+  else
+    jq -r '.bots | to_entries[] | "model \(.key): \(.value.state)" + (if .value.detail != "" then " (\(.value.detail))" else "" end)' \
+      /run/mag-models/status.json 2>/dev/null || true
+  fi
 fi
 echo ok

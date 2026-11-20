@@ -2017,8 +2017,11 @@ private:
   }
 
   void model_control(int fd, const http::Request &r) {
-    const std::string action = jstr(jparse(r.body), "action");
-    if (!engine_.model_control(bot_of(r.path), action)) return http::send_error(fd, 400, "Aktion nicht möglich");
+    const Val input = jparse(r.body);
+    std::string action = jstr(input, "action");
+    if (action == "select") action += ":" + jstr(input, "profile");
+    if (!engine_.model_control(bot_of(r.path), action))
+      return http::send_error(fd, 409, "Modellwechsel nicht möglich (unbekanntes Profil oder Bot beschäftigt)");
     http::send_ok(fd);
   }
 

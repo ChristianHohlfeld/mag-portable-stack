@@ -130,7 +130,8 @@
         "0.0",
         "--repeat-penalty",
         "1.0"
-      ]
+      ],
+      "reasoning_adapter": "mistral"
     }
   }
 }

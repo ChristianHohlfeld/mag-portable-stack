@@ -697,7 +697,7 @@ private:
         if (!text.empty()) { if (!joined.empty()) joined += "\n\n"; joined += text; }
       }
     }
-    const bool known = jstr(b, "id") == "lena" || jstr(b, "id") == "noah";
+    const bool known = jstr(b, "id") == "bot1" || jstr(b, "id") == "bot2";
     self["narrator"] = clip(had_legacy ? joined : known ? default_narrator() : "", 1200);
     return true;
   }
@@ -777,11 +777,14 @@ private:
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");
+    if (bots_.isArr()) for (const auto &b : bots_.asArr())
+      if (jstr(b, "id") == "lena" || jstr(b, "id") == "noah")
+        throw std::runtime_error("Legacy bot identity in bots.json: run the explicit neutral-ID migration before launching the room");
     if (!bots_.isArr() || bots_.asArr().empty()) {
       bots_ = Val::array();
-      Val lena = default_bot("lena", "Lena"), noah = default_bot("noah", "Noah");
-      bots_.push(lena);
-      bots_.push(noah);
+      Val first = default_bot("bot1", "Blake"), second = default_bot("bot2", "Noah");
+      bots_.push(first);
+      bots_.push(second);
       save_bots_locked();
     } else {
       bool fill = false;

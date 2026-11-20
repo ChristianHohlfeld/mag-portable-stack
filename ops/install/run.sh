@@ -268,7 +268,7 @@ p_bots() {
   for _ in $(seq 1 30); do [[ -s $state ]] && break; sleep 2; done
   [[ -s $state ]] || stop 'the room has not written bots.json yet (journalctl -u mag-120)'
   local n=1 bot vm
-  for bot in lena noah; do
+  for bot in bot1 bot2; do
     vm=$(jq -r --arg b "$bot" '.[] | select(.id==$b) | .vm // ""' "$state")
     if [[ -z $vm ]]; then
       vm=agent$n

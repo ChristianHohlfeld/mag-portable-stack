@@ -895,7 +895,7 @@ int main(int argc, char **argv) {
       auto num = [&](const char *k) { auto p = spec.find(k); return p ? (int)p->asNum() : 0; };
       b.label = spec.find("label") ? spec.find("label")->asStr() : b.id;
       b.thinking_control = spec.find("thinking_control") ? spec.find("thinking_control")->asStr() : "none";
-      b.reasoning_adapter = spec.find("reasoning_adapter") ? spec.find("reasoning_adapter")->asStr() : "default";
+      b.reasoning_adapter = spec.find("reasoning_adapter") ? spec.find("reasoning_adapter")->asStr() : "generic";
       if (b.thinking_control != "toggle" && b.thinking_control != "effort") b.thinking_control = "none";
       b.port = num("port");
       b.numa = num("numa");

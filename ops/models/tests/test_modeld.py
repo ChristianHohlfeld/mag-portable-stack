@@ -60,7 +60,15 @@ echo "$@" >> {tmp}/calls
 case "$1" in
   show) if [ -e {tmp}/active.$2 ]; then echo ActiveState=active; echo ActiveEnterTimestampMonotonic=$(cat {tmp}/active.$2); else echo ActiveState=inactive; fi
         echo SubState=x; echo Result=success; echo NRestarts=0; echo FreezerState=running ;;
-  start|restart) date +%s%N | cut -c1-16 > {tmp}/active.$3 ;;
+  start|restart)
+    date +%s%N | cut -c1-16 > {tmp}/active.$3
+    case "$3" in
+      mag-model@*)
+        bot=${{3#mag-model@}}; bot=${{bot%.service}}
+        {BIN} --config {tmp}/models.json spec-hash "$bot" > {state}/slots/"$bot"/.spec
+        ;;
+    esac
+    ;;
   stop) rm -f {tmp}/active.$3 ;;
 esac
 """)

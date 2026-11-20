@@ -119,18 +119,7 @@
         "file": "mmproj-BF16.gguf",
         "local_dir": "/home/chris/models/mistral-small-4"
       },
-      "args": [
-        "--temp",
-        "0.7",
-        "--top-k",
-        "40",
-        "--top-p",
-        "0.9",
-        "--min-p",
-        "0.0",
-        "--repeat-penalty",
-        "1.0"
-      ],
+      "args": [],
       "reasoning_adapter": "mistral"
     }
   }

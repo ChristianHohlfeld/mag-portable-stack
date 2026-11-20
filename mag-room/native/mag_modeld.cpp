@@ -391,7 +391,7 @@ static int health(int port) {
 }
 
 struct Bot {
-  std::string id, label, unit, spec_hash, thinking_control, profile = "default";
+  std::string id, label, unit, spec_hash, thinking_control, reasoning_adapter, profile = "default";
   int port = 0, numa = 0, ctx = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
 
@@ -736,6 +736,7 @@ static void write_status(const std::map<std::string, Bot> &bots, const Val &cata
     v["label"] = b.label;
     v["thinking_control"] = b.thinking_control;
     v["profile"] = b.profile;
+    v["reasoning_adapter"] = b.reasoning_adapter;
     // The exact weights: file name without directory and ".gguf".
     std::string file = b.model.path.substr(b.model.path.find_last_of('/') + 1);
     if (file.size() > 5 && file.compare(file.size() - 5, 5, ".gguf") == 0) file.resize(file.size() - 5);
@@ -881,6 +882,7 @@ int main(int argc, char **argv) {
       auto num = [&](const char *k) { auto p = spec.find(k); return p ? (int)p->asNum() : 0; };
       b.label = spec.find("label") ? spec.find("label")->asStr() : b.id;
       b.thinking_control = spec.find("thinking_control") ? spec.find("thinking_control")->asStr() : "none";
+      b.reasoning_adapter = spec.find("reasoning_adapter") ? spec.find("reasoning_adapter")->asStr() : "default";
       if (b.thinking_control != "toggle" && b.thinking_control != "effort") b.thinking_control = "none";
       b.port = num("port");
       b.numa = num("numa");

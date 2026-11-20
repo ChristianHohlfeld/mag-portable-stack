@@ -20,7 +20,7 @@ spec=$(jq -ce --arg b "$bot" --arg p "$profile" '
   if $base == null then empty
   elif $p == "default" then $base
   elif .profiles[$p] == null then empty
-  else $base + .profiles[$p]
+  else ($base + {model: null, draft: null, mmproj: null, args: []}) + .profiles[$p]
   end' "$CONF") || { echo "model $bot: unknown model profile $profile" >&2; exit 78; }
 q() { jq -r "$1" <<<"$spec"; }
 REV=$(jq -r '.runtime.rev' "$CONF")

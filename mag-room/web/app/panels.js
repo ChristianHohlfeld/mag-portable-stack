@@ -343,6 +343,37 @@
       }
 
       if (owner()) {
+        // The existing per-bot sheet is the only UI for selecting weights.
+        // mag-modeld owns downloads, process restart, NUMA and verification;
+        // this does not reset the bot's VM, memory or coding context policy.
+        const choice = el('select', { 'aria-label': 'Sprachmodell für ' + b.name, disabled: true });
+        const currentProfile = () => MAG.bot(id)?.model?.profile || 'default';
+        choice.onchange = async () => {
+          const previous = currentProfile();
+          const wanted = choice.value;
+          if (wanted === previous) return;
+          const label = choice.selectedOptions[0]?.textContent || wanted;
+          const yes = await MAG.confirm('Sprachmodell wechseln?', b.name + ' verwendet danach ' + label +
+            '. Nur das Sprachmodell wird entladen und gewechselt. VM, Erinnerungen und andere Bots bleiben erhalten. Der Download kann dauern.', 'Wechseln');
+          if (!yes) { choice.value = previous; return; }
+          choice.disabled = true;
+          call('POST', '/api/bot/' + id + '/model', { action: 'select', profile: wanted })
+            .then(() => MAG.toast(b.name + ': Modellwechsel angefordert'))
+            .catch(() => { choice.value = previous; })
+            .finally(() => { choice.disabled = false; });
+        };
+        content.append(el('h3', { text: 'Sprachmodell' }),
+          el('div', { class: 'card' }, row('Modell', 'Pro Bot unabhängig; Einstellungen automatisch.', choice)));
+        MAG.api('GET', '/api/models').then((data) => {
+          const profiles = Array.isArray(data.profiles) ? data.profiles : [];
+          choice.replaceChildren(...profiles.map((p) =>
+            el('option', { value: p.id, text: p.id === 'default'
+              ? (MAG.bot(id)?.model?.profile === 'default' ? MAG.bot(id)?.model?.label || 'Standardmodell' : 'Standardmodell') : p.label })));
+          choice.value = currentProfile();
+          choice.disabled = !profiles.length;
+        }).catch((err) => {
+          MAG.toast('Modellliste nicht verfügbar: ' + err.message, true);
+        });
         // The name is the address: the site follows it, earlier names lead there.
         const zone = S.zone ? '.' + S.zone : '';
         const name = el('input', { type: 'text', value: b.name, maxLength: 24, autocapitalize: 'words', autocomplete: 'off', spellcheck: false, 'aria-label': 'Name' });

@@ -20,7 +20,7 @@ spec=$(jq -ce --arg b "$bot" --arg p "$profile" '
   if $base == null then empty
   elif $p == "default" then $base
   elif .profiles[$p] == null then empty
-  else $base + .profiles[$p]
+  else ($base + {model: null, draft: null, mmproj: null, args: []}) + .profiles[$p]
   end' "$CONF") || exit 78
 q() { jq -r "$1" <<<"$spec"; }
 path=$(q ".$kind.path // empty")

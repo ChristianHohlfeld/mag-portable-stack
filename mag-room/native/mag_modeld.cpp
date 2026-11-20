@@ -671,7 +671,7 @@ static void step(Bot &b) {
   // Wait for a selected multimodal model's projector during the initial
   // download, so a text-only server is not started prematurely.
   const Artifact &vision = b.mmproj;
-  if (vision.configured && vision.verify != Artifact::OK && vision.verify != Artifact::BAD &&
+  if (b.profile != "default" && vision.configured && vision.verify != Artifact::OK && vision.verify != Artifact::BAD &&
       !flag(b.id, "mmproj.off") && now - b.model_verified_at < std::chrono::minutes(10)) {
     b.state = "downloading";
     b.detail = "Modell fertig, Bildprojektor folgt";

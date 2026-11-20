@@ -322,6 +322,12 @@
             acts.append(el('button', { class: 'btn', text: 'VM erstellen', onclick: () => call('POST', '/api/bot/' + id + '/vm').then(() => MAG.toast('VM wird erstellt (einige Minuten)')) }));
         }
         actsTitle.hidden = acts.hidden = actsHint.hidden = !acts.children.length;
+        // Keep an open Bot sheet synchronized with supervisor status updates:
+        // model downloads/switches update through the existing bots SSE.
+        if (sheet.modelSelect && !sheet.modelChanging) {
+          const selected = m.profile || 'default';
+          if (sheet.modelSelect.value !== selected) sheet.modelSelect.value = selected;
+        }
       };
       content.append(el('h3', { text: 'Status' }), status, actsTitle, acts, actsHint);
       sheet.refresh();
@@ -357,11 +363,17 @@
             '. Nur das Sprachmodell wird entladen und gewechselt. VM, Erinnerungen und andere Bots bleiben erhalten. Der Download kann dauern.', 'Wechseln');
           if (!yes) { choice.value = previous; return; }
           choice.disabled = true;
+          sheet.modelChanging = true;
           call('POST', '/api/bot/' + id + '/model', { action: 'select', profile: wanted })
             .then(() => MAG.toast(b.name + ': Modellwechsel angefordert'))
             .catch(() => { choice.value = previous; })
-            .finally(() => { choice.disabled = false; });
+            .finally(() => {
+              sheet.modelChanging = false;
+              choice.disabled = false;
+              sheet.refresh?.();
+            });
         };
+        sheet.modelSelect = choice;
         content.append(el('h3', { text: 'Sprachmodell' }),
           el('div', { class: 'card' }, row('Modell', 'Pro Bot unabhängig; Einstellungen automatisch.', choice)));
         MAG.api('GET', '/api/models').then((data) => {

@@ -1811,8 +1811,30 @@
     });
     if (node.open && follow) out.scrollTop = out.scrollHeight;
   });
+  const lastBotNames = new Map();
   MAG.on('bots', () => {
     paintActivity();
+    const renamed = new Map();
+    for (const b of S.bots || []) {
+      const prev = lastBotNames.get(b.id);
+      if (prev && prev !== b.name) renamed.set(b.id, b.name);
+      lastBotNames.set(b.id, b.name);
+    }
+    if (renamed.size) {
+      for (const [id, name] of renamed) {
+        const safeId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : String(id).replace(/[^a-zA-Z0-9_-]/g, '');
+        for (const node of list.querySelectorAll(`.msg[data-from="${safeId}"]`)) {
+          const m = S.messages.get(node.dataset.id);
+          const picture = m?.model3d && (m.model3d.kind === 'image' || m.model3d.kind === 'video');
+          const who = node.querySelector(':scope > .meta > .who');
+          if (who && !picture) who.textContent = name;
+          const willSum = node.querySelector(':scope > details.self-orientation > summary');
+          if (willSum) willSum.textContent = willSum.textContent.replace(/^Wille · [^·]+/, 'Wille · ' + name + ' ').replace(/\s+$/, '');
+        }
+        for (const at of list.querySelectorAll(`.at[data-bot="${safeId}"]`))
+          at.textContent = '@' + name;
+      }
+    }
     for (const m of S.messages.values()) {
       if (!m.goal_id || groupAnchor(m).id !== m.id) continue;
       const phase = groupInfo(m).state, key = groupKey(m);

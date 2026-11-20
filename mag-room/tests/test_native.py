@@ -1501,6 +1501,14 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((code, headers["location"]), (302, "https://lena.bot.stardenburg.de/"))
         self.assertEqual(site("lena", "/")[0], 200)
 
+    def test_rename_updates_vm_context_automatically(self):
+        r = self.room
+        ctx = pathlib.Path(r.env["FAKE_GUEST_HOME"]) / "agent1" / "MAG_CONTEXT.md"
+        r.wait(lambda: ctx.exists() and "Lena und Noah" in ctx.read_text(), "initial MAG_CONTEXT.md", 10)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"name": "Blake"})[0], 200)
+        r.wait(lambda: "Du bist Blake" in ctx.read_text() and "Blake und Noah" in ctx.read_text() and "Lena" not in ctx.read_text(),
+               "renamed MAG_CONTEXT.md", 10)
+
     def test_owner_terminal_and_files_of_a_bots_vm(self):
         r = self.room
 

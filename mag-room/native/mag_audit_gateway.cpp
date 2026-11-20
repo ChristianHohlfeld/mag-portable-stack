@@ -356,6 +356,42 @@ static int peer_uid(int fd,int server_port){
   }
   return -1;
 }
+static std::string read_small_file(const std::string &path){
+  std::ifstream in(path); if(!in) return "";
+  std::ostringstream out; out << in.rdbuf(); return out.str();
+}
+static std::string live_model_label(const std::string &bot_id,const std::string &fallback){
+  std::string name;
+  const std::string bots_raw=read_small_file(env("MAG_ROOM_BOTS_FILE","/var/lib/magbot/room/bots.json"));
+  if(!bots_raw.empty()){
+    Val bots;
+    if(mj::parse(bots_raw,bots)&&bots.isArr()) for(const auto &b:bots.asArr()){
+      if(const Val *id=b.find("id");id&&id->asStr()==bot_id){
+        if(const Val *n=b.find("name");n&&!n->asStr().empty()){name=n->asStr();break;}
+      }
+    }
+  }
+  std::string model_label;
+  const std::string st_raw=read_small_file(env("MAG_MODELS_STATUS_FILE","/run/mag-models/status.json"));
+  if(!st_raw.empty()){
+    Val st;
+    if(mj::parse(st_raw,st)){
+      if(const Val *bots=st.find("bots");bots&&bots->isObj()){
+        if(const Val *b=bots->find(bot_id);b&&b->isObj()){
+          if(const Val *l=b->find("label");l&&!l->asStr().empty()) model_label=l->asStr();
+        }
+      }
+    }
+  }
+  if(name.empty()&&model_label.empty()) return fallback;
+  if(name.empty()) name=bot_id;
+  if(model_label.empty()){
+    const size_t open=fallback.find('('),close=fallback.rfind(')');
+    if(open!=std::string::npos&&close!=std::string::npos&&close>open+1)
+      model_label=fallback.substr(open+1,close-open-1);
+  }
+  return model_label.empty()?name:(name+" ("+model_label+")");
+}
 static void proxy(int fd){
   Http r;if(!request_read(fd,r))return;
   const bool quiet=r.path=="/health"||r.path=="/v1/models"||r.path=="/props"||r.path=="/metrics"||r.path=="/slots";
@@ -363,12 +399,12 @@ static void proxy(int fd){
   int upstream=0;
   if((r.method=="GET"||r.method=="HEAD")&&(r.path=="/v1/models"||r.path=="/v1/models/")){
     Val data=Val::array();
-    auto add=[&](const char *name,const char *label,int port){
+    auto add=[&](const char *name,const std::string &label,int port){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
     std::set<std::string> seen;
     for (const auto &b : cfg.room.backends)
-      if (seen.insert(b.id).second) add(b.id.c_str(),b.label.c_str(),b.port);
+      if (seen.insert(b.id).second) add(b.id.c_str(),live_model_label(b.id,b.label),b.port);
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
     json_response(fd,200,listed); return;
   }

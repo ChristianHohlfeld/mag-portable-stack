@@ -21,8 +21,10 @@ Environment=MAG_ROOM_MODEL_PORTS=8191:0,8192:1
 Environment=MAG_ROOM_MAX_BOTS=2
 Environment=MAG_ROOM_MODEL_ID_0=lena
 Environment=MAG_ROOM_MODEL_ID_1=noah
-Environment="MAG_ROOM_MODEL_LABEL_0=Lena (Gemma 4)"
-Environment="MAG_ROOM_MODEL_LABEL_1=Noah (gpt-oss)"
+Environment="MAG_ROOM_MODEL_LABEL_0=Bot 0 (Gemma 4)"
+Environment="MAG_ROOM_MODEL_LABEL_1=Bot 1 (Gemma 4)"
+Environment=MAG_ROOM_BOTS_FILE=/var/lib/magbot/room/bots.json
+Environment=MAG_MODELS_STATUS_FILE=/run/mag-models/status.json
 Environment=MAG_AUDIT_LOG_DIR=/var/log/mag-audit
 Environment=MAG_AUDIT_SECRETS_FILE=/etc/mag-audit/secrets.list
 ExecStart=/opt/mag-audit/bin/mag-audit-gateway
@@ -36,7 +38,7 @@ ProtectSystem=strict
 ProtectHome=yes
 StateDirectory=mag-audit
 ReadWritePaths=/var/log/mag-audit /var/lib/mag-audit
-ReadOnlyPaths=/etc/mag-audit /opt/mag-audit
+ReadOnlyPaths=/etc/mag-audit /opt/mag-audit -/var/lib/magbot/room/bots.json -/run/mag-models/status.json
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

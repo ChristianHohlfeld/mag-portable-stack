@@ -1,6 +1,10 @@
 [Unit]
 Description=Gitea access for isolated MAG bot VMs
+After=libvirtd.service
+
 [Socket]
 ListenStream=192.168.122.1:3001
+FreeBind=true
+
 [Install]
 WantedBy=sockets.target

@@ -11,6 +11,7 @@
 //  - bots do nothing without a trigger; tool work continues on its own only
 //    after a successful tool result, distinct progress and [[MAG:WEITER]].
 #pragma once
+#include "bot_context.hpp"
 #include "group_dispatcher.hpp"
 #include "llm.hpp"
 #include "assist.hpp"
@@ -116,6 +117,7 @@ public:
         }
       }
       guests_.netmode(jbool(room_.settings(), "web", true));
+      sync_vm_contexts_now();
     }).detach();
   }
 
@@ -680,6 +682,7 @@ public:
         const RunResult r = guests_.spawn(vm);
         if (r.code == 0) {
           room_.update_bot(bot, [&](Val &b) { b["vm"] = vm; b["vm_lost"] = ""; });
+          sync_vm_context_one(bot, vm);
           note.clear();
         } else {
           note = "error: " + clip(trim(r.out), 300);
@@ -700,6 +703,55 @@ public:
   void apply_netmode() {
     const bool online = jbool(room_.settings(), "web", true);
     std::thread([this, online] { guests_.netmode(online); }).detach();
+  }
+
+  // Renders ~/MAG_CONTEXT.md with the current display names from bots.json so
+  // every bot VM always sees the live names set in the frontend.
+  std::string render_bot_context(const Val &me) const {
+    const std::string name = jstr(me, "name", jstr(me, "id"));
+    std::vector<std::string> all_names;
+    const Val bots = room_.bots();
+    for (auto &b : bots.asArr()) {
+      const std::string n = jstr(b, "name", jstr(b, "id"));
+      if (!n.empty()) all_names.push_back(n);
+    }
+    std::string roster;
+    for (size_t i = 0; i < all_names.size(); ++i) {
+      if (i > 0) roster += (i + 1 == all_names.size()) ? " und " : ", ";
+      roster += all_names[i];
+    }
+    std::string doc = BOT_CONTEXT_MD;
+    const std::string needle = "Du bist ein lokaler KI-Assistent im privaten Chatraum von Chris. Diese VM\ngehört dir allein.";
+    std::string intro = "Du bist " + name + ", ein lokaler KI-Assistent";
+    if (all_names.size() > 1) intro = "Du bist " + name + ", einer von " + std::to_string(all_names.size()) + " lokalen KI-Assistenten (" + roster + ")";
+    intro += " im privaten\nChatraum von Chris. Diese VM gehört dir allein.";
+    if (const size_t pos = doc.find(needle); pos != std::string::npos)
+      doc.replace(pos, needle.size(), intro);
+    return doc;
+  }
+
+  void sync_vm_context_one(const std::string &bot_id, const std::string &vm) {
+    if (!vm::valid_name(vm)) return;
+    const Val me = room_.bot(bot_id);
+    if (!me.isObj()) return;
+    const auto r = guests_.write(vm, "MAG_CONTEXT.md", render_bot_context(me), false);
+    if (r.code != 0) logf("engine: could not update MAG_CONTEXT.md in " + vm + " for " + bot_id);
+  }
+
+  void sync_vm_contexts_now() {
+    const Val bots = room_.bots();
+    for (auto &b : bots.asArr()) {
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (stop_) return;
+      }
+      const std::string vm = jstr(b, "vm");
+      if (vm::valid_name(vm)) sync_vm_context_one(jstr(b, "id"), vm);
+    }
+  }
+
+  void sync_vm_contexts() {
+    std::thread([this] { sync_vm_contexts_now(); }).detach();
   }
 
   // The bot message a VM upload belongs to ("" when the bot is idle).
@@ -2285,6 +2337,7 @@ private:
     // 3. Only after a confirmed new VM, forget this bot's old memories,
     // model conversation and slot. Interrupted resets resume from the
     // persisted state; the other bot is never modified.
+    sync_vm_context_one(bot, vm);
     step("memory");
     room_.update_bot(bot, [&](Val &b) { b["memory"] = Val::array(); });
     {

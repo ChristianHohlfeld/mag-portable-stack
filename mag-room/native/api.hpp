@@ -1980,6 +1980,7 @@ private:
             if (!old || !old->isArr()) return;
             old->arr->erase(std::remove_if(old->arr->begin(), old->arr->end(), [&](const Val &a) { return a.asStr() == slug; }), old->arr->end());
           });
+      engine_.sync_vm_contexts();
     }
     if (disabled) engine_.stop(id);
     engine_.settings_changed();

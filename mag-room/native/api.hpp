@@ -99,6 +99,13 @@ public:
       if (starts_with(p, "/static/") || starts_with(p, "/app/")) return static_file(fd, r);
       if (p == "/api/version") { Val v = Val::object(); v["version"] = version_; return http::send_json(fd, 200, v); }
       if (p == "/api/state") return state(fd, r, who);
+      if (p == "/api/models") {
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        const Val status = read_json(room_.cfg.models_status);
+        Val out = Val::object();
+        out["profiles"] = status.find("profiles") ? *status.find("profiles") : Val::array();
+        return http::send_json(fd, 200, out, {{"Cache-Control", "no-store"}});
+      }
       if (p == "/api/messages") return messages(fd, r);
       // Never put private orientation in the shared state/messages/SSE payload.
       if (p == "/api/self-orientation") {

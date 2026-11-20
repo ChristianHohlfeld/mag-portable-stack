@@ -38,7 +38,7 @@ fi
 # names the models, the room and the Idol worker.
 if command -v perl >/dev/null; then
   perl -e 'our %nrconf; do "./ops/boot/needrestart-mag.conf" or die "needrestart rule: $@$!";
-           for my $unit ("mag-model\@noah.service", "mag-120.service", "mag-idol.service", "mag-scene.service", "mag-stt.service") {
+           for my $unit ("mag-model\@bot2.service", "mag-120.service", "mag-idol.service", "mag-scene.service", "mag-stt.service") {
              grep { $unit =~ $_ } @{$nrconf{blacklist_rc}} or die "needrestart rule misses $unit\n" }'
 fi
 # The MI50 power cap may only ever be lowered, and the clock helper never

@@ -292,7 +292,28 @@ class Room:
             except (KeyError, IndexError):
                 pass
             time.sleep(0.05)
-        raise AssertionError("timeout waiting for " + what)
+        # A timeout must show why the worker stayed busy; otherwise each CI
+        # failure costs twenty seconds and only says "room idle".
+        diagnostics = []
+        try:
+            with urllib.request.urlopen(self.url("/api/state"), timeout=2) as response:
+                state = json.load(response)
+            diagnostics.append("bots=" + repr([
+                {k: bot.get(k) for k in ("id", "busy", "phase", "model")}
+                for bot in state.get("bots", [])]))
+        except Exception as err:
+            diagnostics.append("state unavailable: " + repr(err))
+        for name, model in (("lena", self.lena), ("noah", self.noah)):
+            recent = model.chats()
+            if recent:
+                tail = recent[-1].get("messages", [])[-2:]
+                diagnostics.append(name + " calls=" + str(len(recent)) +
+                                   " last=" + repr(tail)[:750])
+        log_path = self.tmp / "magroom.log"
+        if log_path.exists():
+            diagnostics.append("room log tail=" +
+                               repr(log_path.read_text(errors="replace").splitlines()[-16:])[:1900])
+        raise AssertionError("timeout waiting for " + what + "\\n" + "\\n".join(diagnostics))
 
     def idle(self, seconds=20):
         """Wait until no bot is working and nothing is queued."""

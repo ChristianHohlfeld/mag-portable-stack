@@ -3272,6 +3272,11 @@ private:
     // a peer's name. Strip all leading speaker captions, not just one.
     std::vector<std::string> candidates = peers;
     candidates.push_back(name);
+    // The initial streamed chunk can end mid-word boundary. Strip leading
+    // speaker labels without eating the whitespace that belongs before the
+    // next chunk (e.g. "Hallo Chris, " + "Noah").
+    const size_t last_content = text.find_last_not_of(" \\t\\r\\n");
+    const std::string trailing = last_content == std::string::npos ? "" : text.substr(last_content + 1);
     std::string t = trim(text);
     while (!t.empty()) {
       // The room's own head ("[Sprecher Blake]", with a clock in front) first.
@@ -3292,7 +3297,7 @@ private:
       }
       if (!changed) break;
     }
-    return t;
+    return t.empty() ? t : t + trailing;
   }
 
   bool cleared(const TurnState &t) {

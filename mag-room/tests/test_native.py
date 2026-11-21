@@ -2805,7 +2805,12 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: reply_after_reset() == ["Frisch."], "queued human reply after VM reset")
         r.idle()
         self.assertEqual(reply_after_reset(), ["Frisch."])
-        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
+        # The fresh VM receives MAG's built-in, current identity context;
+        # the bot's old notes and any other guest files must be gone.
+        fresh_home = guests / "agent1"
+        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"]), ("agent1", True))
+        self.assertEqual(sorted(p.name for p in fresh_home.iterdir()), ["MAG_CONTEXT.md"])
+        self.assertIn("Du bist Lena", (fresh_home / "MAG_CONTEXT.md").read_text())
         self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
         # Noah may erase an EMPTY slot while creating his first cold prefix at
         # startup. Only actions after the initial warmup count as a bot reset.

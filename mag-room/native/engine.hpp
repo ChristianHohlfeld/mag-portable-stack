@@ -3674,7 +3674,13 @@ private:
             "nur dieser Modellanfrage beigefügt, nicht Teil des Gesprächslogs. " +
             paragraph + " Diese Orientierung nicht ausgeben. "
             "Werkzeuge nur als echte native Aufrufe, niemals als JSON-Text oder Python.)";
-        body["messages"].push(inner);
+        // Put the request-only orientation after the stable system prefix,
+        // before the append-only chat. A tail injection masquerades as the
+        // latest user/tool instruction and breaks the warm KV-prefix across
+        // tool steps. Never persist this private cue to the wire.
+        auto &prompt = *body["messages"].arr;
+        const size_t at = !prompt.empty() && jstr(prompt.front(), "role") == "system" ? 1 : 0;
+        prompt.insert(prompt.begin() + at, inner);
       }
       // Keep the SAME tool schemas, order and sampler template across all
       // browser steps and retries. Changing tools only for recovery rewrites

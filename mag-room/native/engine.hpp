@@ -3275,7 +3275,7 @@ private:
     // The initial streamed chunk can end mid-word boundary. Strip leading
     // speaker labels without eating the whitespace that belongs before the
     // next chunk (e.g. "Hallo Chris, " + "Noah").
-    const size_t last_content = text.find_last_not_of(" \\t\\r\\n");
+    const size_t last_content = text.find_last_not_of(" \t\r\n");
     const std::string trailing = last_content == std::string::npos ? "" : text.substr(last_content + 1);
     std::string t = trim(text);
     while (!t.empty()) {

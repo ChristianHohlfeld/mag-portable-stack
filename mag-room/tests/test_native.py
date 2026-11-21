@@ -517,7 +517,9 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.lena.chats()), 2)
         self.assertEqual(len(r.noah.chats()), 2)
         self.assertIn("[Sprecher Chris] Hi beide", r.lena.chats()[0]["messages"][-1]["content"])
-        self.assertIn("[Sprecher Noah] Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
+        self.assertTrue(any("[Sprecher Noah] Hallo von Noah." in text_of(m.get("content"))
+                            for m in r.lena.chats()[1]["messages"]),
+                        "Lena sees Noah in the preserved chat even when a request-local bot cue follows")
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
 

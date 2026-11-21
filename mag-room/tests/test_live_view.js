@@ -187,7 +187,8 @@ function tap(window, canvas, px, py) {
   assert.strictEqual(onField({ x: 200, y: 100 }, null), null);
   assert.strictEqual(keysAction({ kind: 'tap', pointerType: 'touch', moved: false, fingers: 1, onField: true }), 'focus');
   assert.strictEqual(keysAction({ kind: 'tap', pointerType: 'touch', moved: false, fingers: 1, onField: false }), 'blur');
-  assert.strictEqual(keysAction({ kind: 'tap', pointerType: 'touch', moved: false, fingers: 1, onField: null }), 'focus');
+  assert.strictEqual(keysAction({ kind: 'tap', pointerType: 'touch', moved: false, fingers: 1, onField: null }), 'none',
+    'a tap while no field is known does not open the phone keyboard');
   assert.strictEqual(keysAction({ kind: 'tap', pointerType: 'touch', moved: true, fingers: 1, onField: true }), 'none');
   assert.strictEqual(keysAction({ kind: 'tap', pointerType: 'mouse', moved: false, fingers: 1, onField: true }), 'none');
   for (const kind of ['frame', 'state', 'timer', 'visibility', 'reconnect', 'render', 'drag', 'pinch']) {
@@ -289,6 +290,31 @@ function tap(window, canvas, px, py) {
   miss.window.document.dispatchEvent(new miss.window.Event('visibilitychange'));
   assert.strictEqual(miss.focusLog.length, 1, 'it stays closed');
   miss.view.stop();
+
+  // No field anywhere: taps take control of the page, the keyboard stays shut.
+  const plain = await boot({ state: { url: 'https://example.test/', editable: false, field: null, can_go_back: false, can_go_forward: false } });
+  await plain.clock.advance(100);
+  for (const [px, py] of [[200, 100], [700, 400], [1200, 800]]) {
+    tap(plain.window, plain.canvas, px, py);
+    await plain.clock.advance(1200);
+  }
+  assert.strictEqual(plain.focusLog.length, 0, 'taps on a page without a field never focus the keyboard');
+  assert.notStrictEqual(plain.window.document.activeElement, plain.keys);
+  assert.strictEqual(plain.sent().filter((s) => s.includes('"action":"tap"')).length, 3, 'every tap reaches the page');
+  // The tap lands on a field the page did not name yet: the guest's answer,
+  // right after that tap, offers the keyboard once. The next tap on it
+  // focuses from inside the gesture (a phone that kept it shut opens it now).
+  plain.window.__state = { url: 'https://example.test/', editable: true, secret: false, field: [160, 80, 200, 40], can_go_back: false, can_go_forward: false };
+  tap(plain.window, plain.canvas, 200, 100);
+  assert.strictEqual(plain.focusLog.length, 0, 'an unknown spot does not focus inside the tap');
+  await plain.clock.advance(800);
+  assert.strictEqual(plain.focusLog.length, 1, 'the page focusing the tapped field offers the keyboard');
+  assert.strictEqual(plain.window.document.activeElement, plain.keys);
+  tap(plain.window, plain.canvas, 200, 100);
+  assert.strictEqual(plain.focusLog.length, 2, 'a tap on the known field focuses inside the gesture');
+  await plain.clock.advance(5000);
+  assert.strictEqual(plain.focusLog.length, 2, 'polls do not focus again');
+  plain.view.stop();
 
   // One finger at 100% does nothing. Magnified, it pans. It never scrolls.
   const hand = await boot();

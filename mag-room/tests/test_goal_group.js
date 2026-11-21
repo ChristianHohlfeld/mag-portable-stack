@@ -104,6 +104,23 @@ assert(groups[0].open && groups[0].classList.contains('history-open'), 'history 
 test.upsert(first, false);
 assert(document.querySelector('.goal-group').open, 'user expansion survives a refreshed message');
 
+// "Live bedienen" holds: Chris opens the browser of a finished task, and
+// later step updates neither close it nor move the live node he touches.
+const browser = document.querySelector('.goal-browser');
+assert.strictEqual(browser.open, false, 'finished task: browser launcher closed');
+browser.querySelector('summary').click();
+assert(browser.open, 'a tap opens the live browser');
+browser.dispatchEvent(new window.Event('toggle'));
+const live = browser.querySelector('.live');
+assert(live, 'opening attaches the live view');
+test.refreshGroup(second);
+test.refreshGroup(first);
+assert.strictEqual(document.querySelector('.goal-browser'), browser, 'a step update keeps the browser in place');
+assert(browser.open, 'a step update does not close what Chris opened');
+assert.strictEqual(browser.querySelector('.live'), live, 'the live node is not moved');
+test.upsert(first, false);
+assert(document.querySelector('.goal-browser').open, 'his choice survives a rebuilt message');
+
 // Mobile: stable narrow layout, no forced minimum widths or hidden live controls.
 assert(read('app.css').includes('@media (max-width: 430px)'), 'phone-specific compact group style missing');
 assert(read('app.css').includes('.goal-browser-slot > .live { width: 100%; max-width: 100%'),

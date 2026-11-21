@@ -90,13 +90,16 @@ jobs:
       - name: Room regression (VM reset + unattended tool retry)
         run: |
           python3 mag-room/tests/test_native.py RoomContract.test_a_bot_is_reset_to_its_first_day_whatever_state_it_is_in RoomContract.test_autonomous_tool_call_cannot_end_dialogue_or_run_tool
-      - name: Room contract (fake models, fake guest)
+      - name: Room smoke (direct and group replies)
+        run: |
+          python3 mag-room/tests/test_native.py RoomContract.test_unaddressed_message_is_answered_by_all_bots_then_rests RoomContract.test_named_bot_answers_alone
+      - name: Room contract (fake models, fake guest; four isolated shards)
         run: |
           command -v ffmpeg
           command -v ffprobe
           ./build/test-group-dispatcher
           ./build/test-model-text
-          python3 mag-room/tests/test_native.py
+          python3 mag-room/tests/run_native_parallel.py
   secrets:
     name: No secrets
     runs-on: ubuntu-24.04

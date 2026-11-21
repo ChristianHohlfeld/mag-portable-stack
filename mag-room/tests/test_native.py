@@ -199,6 +199,7 @@ class Room:
         # no firewall helper, no model supervisor, no Idol or scene worker.
         self.env = dict(os.environ, MAG_ROOM_STATE=str(self.tmp / "state"), MAG_ROOM_WEB=str(ROOT / "mag-room/web"),
                         MAG_ROOM_PORT=str(self.port), MAG_ROOM_BRIDGE_PORT="0", MAG_ROOM_GATEWAY="direct",
+                        MAG_ROOM_BOT_ROUNDS="2",  # bounded legacy-contract fixture; production default 0 stays unlimited
                         MAG_LLM_PORT_LENA=str(self.lena.port), MAG_LLM_PORT_NOAH=str(self.noah.port),
                         MAG_MODELS_STATUS=str(self.tmp / "no-status.json"), MAG_MODELS_CONTROL=str(self.tmp / "control"),
                         MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_SCENE_URL="http://127.0.0.1:%d" % self.scene.port,
@@ -724,8 +725,6 @@ class RoomContract(unittest.TestCase):
 
         def converse(body):
             turns[0] += 1
-            if turns[0] >= 29:
-                return "PASS"
             return "Ein weiterer Gedanke %d." % turns[0]
 
         r.lena.reply = r.noah.reply = converse
@@ -734,8 +733,12 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: len([m for m in r.messages()
                             if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 26,
                "more than 24 visible unattended bot turns", 55)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 29,
+               "unlimited dialogue continues until the owner stops it", 35)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
         r.idle(25)
-        self.assertGreaterEqual(len(r.lena.chats()) + len(r.noah.chats()), 27)
+        self.assertGreaterEqual(len(r.lena.chats()) + len(r.noah.chats()), 29)
         self.assertEqual([m for m in r.messages() if m["from"] == "chris"], [])
         for model in (r.lena, r.noah):
             self.assertTrue(any("Chris kann alle eure Nachrichten im Raum-Chat lesen" in
@@ -793,10 +796,10 @@ class RoomContract(unittest.TestCase):
                    "Lena's next bot turn must read new policy", 35)
             latest = seen["lena"][1]
             self.assertIn("für diesen Gesprächszug deaktiviert", latest)
-            # This is still an autonomous bot round: it uses the autonomous
-            # PASS instruction, not the human-started observer variant.
-            self.assertIn("Wenn die Unterhaltung erschöpft ist, antworte exakt PASS", latest)
-            self.assertNotIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert", latest)
+            # Unlimited rounds intentionally disable PASS, regardless of the
+            # stored switch. The new bot turn must reflect that effective policy.
+            self.assertIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert", latest)
+            self.assertNotIn("Wenn die Unterhaltung erschöpft ist, antworte exakt PASS", latest)
             self.assertFalse("Chris kann alle eure Nachrichten im Raum-Chat lesen" in latest,
                              "old observer notice may remain in history, NOT the latest directive")
             self.assertEqual(r.state()["settings"]["bot_rounds"], 0)
@@ -1404,7 +1407,7 @@ class RoomContract(unittest.TestCase):
     def test_finished_html_becomes_a_live_page_on_the_bots_site(self):
         r = self.room
         home = r.tmp / "guests" / "agent1"
-        home.mkdir(parents=True)
+        home.mkdir(parents=True, exist_ok=True)
         (home / "publish-site").write_text("ls www > published.txt\n")  # stands in for the VM's publisher script
         lena = [b for b in r.state()["bots"] if b["id"] == "lena"][0]
         self.assertEqual(lena["site"], "https://lena.bot.stardenburg.de")  # the address is the name
@@ -2412,7 +2415,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((code, sent["message"]["about"], sent["message"]["mentions"]), (201, scene["id"], ["lena"]))
         r.idle()
         asked = text_of(r.lena.chats()[before]["messages"][-1]["content"])
-        note = ('Chris: @Lena Der Fuchs springt über den Gnom\n[Chris schreibt das zur 3D-Szene "Fuchs besucht Gnom": Er möchte eine neue Fassung mit denselben Figuren. '
+        note = ('[Sprecher Chris] @Lena Der Fuchs springt über den Gnom\n[Chris schreibt das zur 3D-Szene "Fuchs besucht Gnom": Er möchte eine neue Fassung mit denselben Figuren. '
                 "So wurde sie mit scene_3d gebaut: " + json.dumps(recipe, ensure_ascii=False, separators=(",", ":")) +
                 " Baue die neue mit dem Werkzeug scene_3d (nicht als JSON im Text): dieselben actors, die actions nach seinem Wunsch.]")
         self.assertIn(note, asked)
@@ -3241,7 +3244,8 @@ class RoomContract(unittest.TestCase):
         before = len(r.noah.chats())
         r.say("@Noah weiter")
         r.idle()
-        roles = [m["role"] for m in r.noah.chats()[before]["messages"]]
+        roles = [m["role"] for m in r.noah.chats()[before]["messages"]
+                 if "PRIVATE SELBSTORIENTIERUNG" not in str(m.get("content", ""))]
         self.assertEqual(roles[:4], ["system", "user", "assistant", "user"])  # the prompt log is append-only
 
     def test_dictation_shows_text_while_it_is_spoken(self):

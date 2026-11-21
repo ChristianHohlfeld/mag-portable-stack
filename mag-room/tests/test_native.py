@@ -1993,7 +1993,11 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena was war das Geheimnis?")
         r.idle()
         sent = r.lena.chats()[before]["messages"]
-        self.assertEqual([m["role"] for m in sent], ["system", "user"])
+        self.assertEqual([m["role"] for m in sent
+                          if "PRIVATE SELBSTORIENTIERUNG" not in text_of(m.get("content"))],
+                         ["system", "user"])
+        self.assertEqual(sum("PRIVATE SELBSTORIENTIERUNG" in text_of(m.get("content"))
+                             for m in sent), 1, "one request-local self orientation, not persisted wire")
         self.assertNotIn("Banane", json.dumps(sent, ensure_ascii=False))
         # Nothing of the old conversation survives a restart either.
         wires = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire"
@@ -3075,7 +3079,7 @@ class RoomContract(unittest.TestCase):
         told = [c["messages"][-1]["content"] for c in r.noah.chats() if "seitdem passiert" in text_of(c["messages"][-1]["content"])][0]
         self.assertIn("Auftrag an Foto zu 3D", told)
         self.assertIn("[Bild figur.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", told)
-        self.assertIn("Foto zu 3D: 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
+        self.assertIn("[Sprecher Foto zu 3D] 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
         # A picture painted from words is an ordinary image for them, with the words it was painted from.
         # It asks the bots nothing, the same as the 3D order above.
         before = len(r.lena.chats()) + len(r.noah.chats())

@@ -199,6 +199,7 @@ class Room:
         # no firewall helper, no model supervisor, no Idol or scene worker.
         self.env = dict(os.environ, MAG_ROOM_STATE=str(self.tmp / "state"), MAG_ROOM_WEB=str(ROOT / "mag-room/web"),
                         MAG_ROOM_PORT=str(self.port), MAG_ROOM_BRIDGE_PORT="0", MAG_ROOM_GATEWAY="direct",
+                        MAG_ROOM_BOT_ROUNDS="2",  # bounded legacy-contract fixture; production default 0 stays unlimited
                         MAG_LLM_PORT_LENA=str(self.lena.port), MAG_LLM_PORT_NOAH=str(self.noah.port),
                         MAG_MODELS_STATUS=str(self.tmp / "no-status.json"), MAG_MODELS_CONTROL=str(self.tmp / "control"),
                         MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_SCENE_URL="http://127.0.0.1:%d" % self.scene.port,
@@ -291,7 +292,28 @@ class Room:
             except (KeyError, IndexError):
                 pass
             time.sleep(0.05)
-        raise AssertionError("timeout waiting for " + what)
+        # A timeout must show why the worker stayed busy; otherwise each CI
+        # failure costs twenty seconds and only says "room idle".
+        diagnostics = []
+        try:
+            with urllib.request.urlopen(self.url("/api/state"), timeout=2) as response:
+                state = json.load(response)
+            diagnostics.append("bots=" + repr([
+                {k: bot.get(k) for k in ("id", "busy", "phase", "model")}
+                for bot in state.get("bots", [])]))
+        except Exception as err:
+            diagnostics.append("state unavailable: " + repr(err))
+        for name, model in (("lena", self.lena), ("noah", self.noah)):
+            recent = model.chats()
+            if recent:
+                tail = recent[-1].get("messages", [])[-2:]
+                diagnostics.append(name + " calls=" + str(len(recent)) +
+                                   " last=" + repr(tail)[:750])
+        log_path = self.tmp / "magroom.log"
+        if log_path.exists():
+            diagnostics.append("room log tail=" +
+                               repr(log_path.read_text(errors="replace").splitlines()[-16:])[:1900])
+        raise AssertionError("timeout waiting for " + what + "\\n" + "\\n".join(diagnostics))
 
     def idle(self, seconds=20):
         """Wait until no bot is working and nothing is queued."""
@@ -495,7 +517,9 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.lena.chats()), 2)
         self.assertEqual(len(r.noah.chats()), 2)
         self.assertIn("[Sprecher Chris] Hi beide", r.lena.chats()[0]["messages"][-1]["content"])
-        self.assertIn("[Sprecher Noah] Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
+        self.assertTrue(any("[Sprecher Noah] Hallo von Noah." in text_of(m.get("content"))
+                            for m in r.lena.chats()[1]["messages"]),
+                        "Lena sees Noah in the preserved chat even when a request-local bot cue follows")
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
 
@@ -724,8 +748,6 @@ class RoomContract(unittest.TestCase):
 
         def converse(body):
             turns[0] += 1
-            if turns[0] >= 29:
-                return "PASS"
             return "Ein weiterer Gedanke %d." % turns[0]
 
         r.lena.reply = r.noah.reply = converse
@@ -734,8 +756,12 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: len([m for m in r.messages()
                             if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 26,
                "more than 24 visible unattended bot turns", 55)
+        r.wait(lambda: len([m for m in r.messages()
+                            if m["from"] in ("lena", "noah") and m["state"] == "done"]) >= 29,
+               "unlimited dialogue continues until the owner stops it", 35)
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
         r.idle(25)
-        self.assertGreaterEqual(len(r.lena.chats()) + len(r.noah.chats()), 27)
+        self.assertGreaterEqual(len(r.lena.chats()) + len(r.noah.chats()), 29)
         self.assertEqual([m for m in r.messages() if m["from"] == "chris"], [])
         for model in (r.lena, r.noah):
             self.assertTrue(any("Chris kann alle eure Nachrichten im Raum-Chat lesen" in
@@ -793,10 +819,10 @@ class RoomContract(unittest.TestCase):
                    "Lena's next bot turn must read new policy", 35)
             latest = seen["lena"][1]
             self.assertIn("für diesen Gesprächszug deaktiviert", latest)
-            # This is still an autonomous bot round: it uses the autonomous
-            # PASS instruction, not the human-started observer variant.
-            self.assertIn("Wenn die Unterhaltung erschöpft ist, antworte exakt PASS", latest)
-            self.assertNotIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert", latest)
+            # Unlimited rounds intentionally disable PASS, regardless of the
+            # stored switch. The new bot turn must reflect that effective policy.
+            self.assertIn("PASS und eigene Beendigungsentscheidungen sind deaktiviert", latest)
+            self.assertNotIn("Wenn die Unterhaltung erschöpft ist, antworte exakt PASS", latest)
             self.assertFalse("Chris kann alle eure Nachrichten im Raum-Chat lesen" in latest,
                              "old observer notice may remain in history, NOT the latest directive")
             self.assertEqual(r.state()["settings"]["bot_rounds"], 0)
@@ -1070,7 +1096,11 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(cue), 1)
         self.assertIn("Ich spreche für mich selbst.", cue[0]["content"])
         self.assertIn("Du bist Lena.", cue[0]["content"])
-        self.assertNotIn(custom, json.dumps(messages[:-1], ensure_ascii=False))
+        # The request-only narrator precedes the append-only conversation.
+        # The last actual instruction/tool result must remain the last prompt item.
+        self.assertLess(messages.index(cue[0]), len(messages) - 1)
+        self.assertNotIn(custom, json.dumps([m for m in messages if m is not cue[0]], ensure_ascii=False))
+        self.assertNotIn("PRIVATE SELBSTORIENTIERUNG", json.dumps(messages[-1], ensure_ascii=False))
         visible = [m for m in r.messages() if m["from"] == "lena"][-1]
         sidecar = r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]
         self.assertIn("Ich spreche für mich selbst.", sidecar["narrator"])
@@ -1400,7 +1430,7 @@ class RoomContract(unittest.TestCase):
     def test_finished_html_becomes_a_live_page_on_the_bots_site(self):
         r = self.room
         home = r.tmp / "guests" / "agent1"
-        home.mkdir(parents=True)
+        home.mkdir(parents=True, exist_ok=True)
         (home / "publish-site").write_text("ls www > published.txt\n")  # stands in for the VM's publisher script
         lena = [b for b in r.state()["bots"] if b["id"] == "lena"][0]
         self.assertEqual(lena["site"], "https://lena.bot.stardenburg.de")  # the address is the name
@@ -1963,7 +1993,11 @@ class RoomContract(unittest.TestCase):
         r.say("@Lena was war das Geheimnis?")
         r.idle()
         sent = r.lena.chats()[before]["messages"]
-        self.assertEqual([m["role"] for m in sent], ["system", "user"])
+        self.assertEqual([m["role"] for m in sent
+                          if "PRIVATE SELBSTORIENTIERUNG" not in text_of(m.get("content"))],
+                         ["system", "user"])
+        self.assertEqual(sum("PRIVATE SELBSTORIENTIERUNG" in text_of(m.get("content"))
+                             for m in sent), 1, "one request-local self orientation, not persisted wire")
         self.assertNotIn("Banane", json.dumps(sent, ensure_ascii=False))
         # Nothing of the old conversation survives a restart either.
         wires = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "wire"
@@ -2408,7 +2442,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((code, sent["message"]["about"], sent["message"]["mentions"]), (201, scene["id"], ["lena"]))
         r.idle()
         asked = text_of(r.lena.chats()[before]["messages"][-1]["content"])
-        note = ('Chris: @Lena Der Fuchs springt über den Gnom\n[Chris schreibt das zur 3D-Szene "Fuchs besucht Gnom": Er möchte eine neue Fassung mit denselben Figuren. '
+        note = ('[Sprecher Chris] @Lena Der Fuchs springt über den Gnom\n[Chris schreibt das zur 3D-Szene "Fuchs besucht Gnom": Er möchte eine neue Fassung mit denselben Figuren. '
                 "So wurde sie mit scene_3d gebaut: " + json.dumps(recipe, ensure_ascii=False, separators=(",", ":")) +
                 " Baue die neue mit dem Werkzeug scene_3d (nicht als JSON im Text): dieselben actors, die actions nach seinem Wunsch.]")
         self.assertIn(note, asked)
@@ -2805,7 +2839,12 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: reply_after_reset() == ["Frisch."], "queued human reply after VM reset")
         r.idle()
         self.assertEqual(reply_after_reset(), ["Frisch."])
-        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
+        # The fresh VM receives MAG's built-in, current identity context;
+        # the bot's old notes and any other guest files must be gone.
+        fresh_home = guests / "agent1"
+        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"]), ("agent1", True))
+        self.assertEqual(sorted(p.name for p in fresh_home.iterdir()), ["MAG_CONTEXT.md"])
+        self.assertIn("Du bist Lena", (fresh_home / "MAG_CONTEXT.md").read_text())
         self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
         # Noah may erase an EMPTY slot while creating his first cold prefix at
         # startup. Only actions after the initial warmup count as a bot reset.
@@ -3040,7 +3079,7 @@ class RoomContract(unittest.TestCase):
         told = [c["messages"][-1]["content"] for c in r.noah.chats() if "seitdem passiert" in text_of(c["messages"][-1]["content"])][0]
         self.assertIn("Auftrag an Foto zu 3D", told)
         self.assertIn("[Bild figur.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", told)
-        self.assertIn("Foto zu 3D: 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
+        self.assertIn("[Sprecher Foto zu 3D] 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
         # A picture painted from words is an ordinary image for them, with the words it was painted from.
         # It asks the bots nothing, the same as the 3D order above.
         before = len(r.lena.chats()) + len(r.noah.chats())
@@ -3232,7 +3271,8 @@ class RoomContract(unittest.TestCase):
         before = len(r.noah.chats())
         r.say("@Noah weiter")
         r.idle()
-        roles = [m["role"] for m in r.noah.chats()[before]["messages"]]
+        roles = [m["role"] for m in r.noah.chats()[before]["messages"]
+                 if "PRIVATE SELBSTORIENTIERUNG" not in str(m.get("content", ""))]
         self.assertEqual(roles[:4], ["system", "user", "assistant", "user"])  # the prompt log is append-only
 
     def test_dictation_shows_text_while_it_is_spoken(self):

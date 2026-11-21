@@ -52,8 +52,11 @@ def plain_unwrap(verts, faces, size, gap=2):
     axis = np.abs(around).argmax(axis=1)
     edge_on = np.abs(own[np.arange(count), axis]) < 0.3
     axis[edge_on] = np.abs(own[edge_on]).argmax(axis=1)
-    facing = np.where(edge_on[:, None], own, around)
-    way = axis * 2 + (facing[np.arange(count), axis] > 0)
+    # Smoothing may choose the projection axis, but never its orientation:
+    # a face folded back against its neighbours must start another chart.
+    # Using the smoothed sign puts both sides of a fold on the same texels,
+    # so the bake overwrites one side's colours with the other's.
+    way = axis * 2 + (own[np.arange(count), axis] > 0)
     # Faces that share an edge and look the same way belong together.
     same = way[one] == way[other]
     graph = coo_matrix((np.ones(int(same.sum()), np.int8), (one[same], other[same])), shape=(count, count))

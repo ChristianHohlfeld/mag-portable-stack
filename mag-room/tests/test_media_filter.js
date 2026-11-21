@@ -138,7 +138,9 @@ const visible = (w,node) => !!node && !node.hidden && w.getComputedStyle(node).d
 
   // Reset while a previous media page is in flight: the latest first page
   // must win, and the previous response must not mutate cursor or messages.
-  const raced = await fixture([human, lena]);
+  const raced = await fixture([human, lena]); await wait();
+  // The snapshot sync is asynchronous; don't click before the room is ready.
+  assert(raced.S.ready, 'snapshot loaded before racing media requests');
   const pendingPages = [];
   raced.w.MAG.api = async (method, url) => {
     if (!url.startsWith('/api/media')) throw Error('unexpected ' + url);

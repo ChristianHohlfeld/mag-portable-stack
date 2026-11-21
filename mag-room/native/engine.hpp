@@ -3272,6 +3272,11 @@ private:
     // a peer's name. Strip all leading speaker captions, not just one.
     std::vector<std::string> candidates = peers;
     candidates.push_back(name);
+    // The initial streamed chunk can end mid-word boundary. Strip leading
+    // speaker labels without eating the whitespace that belongs before the
+    // next chunk (e.g. "Hallo Chris, " + "Noah").
+    const size_t last_content = text.find_last_not_of(" \t\r\n");
+    const std::string trailing = last_content == std::string::npos ? "" : text.substr(last_content + 1);
     std::string t = trim(text);
     while (!t.empty()) {
       // The room's own head ("[Sprecher Blake]", with a clock in front) first.
@@ -3292,7 +3297,7 @@ private:
       }
       if (!changed) break;
     }
-    return t;
+    return t.empty() ? t : t + trailing;
   }
 
   bool cleared(const TurnState &t) {
@@ -3674,7 +3679,13 @@ private:
             "nur dieser Modellanfrage beigefügt, nicht Teil des Gesprächslogs. " +
             paragraph + " Diese Orientierung nicht ausgeben. "
             "Werkzeuge nur als echte native Aufrufe, niemals als JSON-Text oder Python.)";
-        body["messages"].push(inner);
+        // Put the request-only orientation after the stable system prefix,
+        // before the append-only chat. A tail injection masquerades as the
+        // latest user/tool instruction and breaks the warm KV-prefix across
+        // tool steps. Never persist this private cue to the wire.
+        auto &prompt = *body["messages"].arr;
+        const size_t at = !prompt.empty() && jstr(prompt.front(), "role") == "system" ? 1 : 0;
+        prompt.insert(prompt.begin() + at, inner);
       }
       // Keep the SAME tool schemas, order and sampler template across all
       // browser steps and retries. Changing tools only for recovery rewrites
@@ -4987,8 +4998,11 @@ private:
           if (o->reason != "human") o->want = false;
       return;
     }
-    // Under unlimited rounds PASS/filler cannot end an exchange.
-    if (!visible && (limit != 0 || reason != "bot")) return;
+    // An invisible or rejected reply must never schedule another peer turn.
+    // Unlimited mode removes the numeric cap, not the requirement that a
+    // new round begins with a substantive, visible contribution. Otherwise
+    // two repeated/PASS-off replies can ping-pong forever at CPU expense.
+    if (!visible) return;
     passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.

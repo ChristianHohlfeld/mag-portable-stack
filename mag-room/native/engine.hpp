@@ -4998,8 +4998,11 @@ private:
           if (o->reason != "human") o->want = false;
       return;
     }
-    // Under unlimited rounds PASS/filler cannot end an exchange.
-    if (!visible && (limit != 0 || reason != "bot")) return;
+    // An invisible or rejected reply must never schedule another peer turn.
+    // Unlimited mode removes the numeric cap, not the requirement that a
+    // new round begins with a substantive, visible contribution. Otherwise
+    // two repeated/PASS-off replies can ping-pong forever at CPU expense.
+    if (!visible) return;
     passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.

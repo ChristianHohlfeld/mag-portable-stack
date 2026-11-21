@@ -43,6 +43,23 @@ def laid_out(verts, faces, size):
 
 def main():
     size = 512
+    # Deep dents can point against the smoothed neighbourhood normal. Two
+    # faces sharing a UV edge must not fold onto the same side of that edge.
+    # Exercise several rough surfaces; disjoint chart boxes alone
+    # do not catch a chart overlapping itself.
+    for seed in (3, 7, 19):
+        verts, faces = ball(24, 0.15, seed)
+        uv_faces, texel, _, _ = laid_out(verts, faces, size)
+        p = texel[uv_faces]
+        a, b = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+        sign = np.sign(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+        edges = np.sort(uv_faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+        owner = np.repeat(np.arange(len(faces)), 3)
+        order = np.lexsort((edges[:, 1], edges[:, 0]))
+        edges, owner = edges[order], owner[order]
+        shared = (edges[1:] == edges[:-1]).all(axis=1)
+        assert np.all(sign[owner[1:][shared]] == sign[owner[:-1][shared]]), "UV chart folds over itself"
+
     for rough in (0.0, 0.03):                              # a smooth ball, and one as rough as a model from a photo
         verts, faces = ball(48, rough)
         uv_faces, texel, charts, took = laid_out(verts, faces, size)

@@ -1070,7 +1070,11 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(cue), 1)
         self.assertIn("Ich spreche für mich selbst.", cue[0]["content"])
         self.assertIn("Du bist Lena.", cue[0]["content"])
-        self.assertNotIn(custom, json.dumps(messages[:-1], ensure_ascii=False))
+        # The request-only narrator precedes the append-only conversation.
+        # The last actual instruction/tool result must remain the last prompt item.
+        self.assertLess(messages.index(cue[0]), len(messages) - 1)
+        self.assertNotIn(custom, json.dumps([m for m in messages if m is not cue[0]], ensure_ascii=False))
+        self.assertNotIn("PRIVATE SELBSTORIENTIERUNG", json.dumps(messages[-1], ensure_ascii=False))
         visible = [m for m in r.messages() if m["from"] == "lena"][-1]
         sidecar = r.api("GET", "/api/self-orientation?message=" + visible["id"])[1]
         self.assertIn("Ich spreche für mich selbst.", sidecar["narrator"])

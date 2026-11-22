@@ -150,10 +150,10 @@ def prepare():
     env = os.environ.copy()
     env["PATH"] = f"{ROCM / 'bin'}:{env.get('PATH', '')}"
     env["LD_LIBRARY_PATH"] = f"{ROCM / 'lib'}:{ROCM / 'lib64'}:{env.get('LD_LIBRARY_PATH', '')}"
-    run_command(["cmake", "-S", SOURCE, "-B", BUILD, "-G", "Ninja",
+    run_command(["taskset", "-c", "28-55", "cmake", "-S", SOURCE, "-B", BUILD, "-G", "Ninja",
                  "-DCMAKE_BUILD_TYPE=Release", "-DGGML_HIP=ON",
                  "-DAMDGPU_TARGETS=gfx906", f"-DCMAKE_PREFIX_PATH={ROCM}"], env=env)
-    run_command(["cmake", "--build", BUILD, "--parallel", "8",
+    run_command(["taskset", "-c", "28-55", "cmake", "--build", BUILD, "--parallel", "8",
                  "--target", "llama-cli", "llama-bench"], env=env)
     (WORK / "revision.txt").write_text(revision + "\n")
     print("Build fertig: Produktions-runtime und mag-modeld unverändert.")
@@ -224,7 +224,8 @@ def guarded_command(argv, dev, outfile, env, limit=180):
 
 
 def benchmark():
-    dev, quant = mi50()[0], quant_for(mi50()[1])
+    dev, total, _ = mi50()
+    quant = quant_for(total)
     model = MODELS / f"Inkling-2-Mini-{quant}.gguf"
     cli = BUILD / "bin" / "llama-cli"
     bench = BUILD / "bin" / "llama-bench"
@@ -246,7 +247,7 @@ def benchmark():
         inspect(strict=True)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         sample_log = WORK / f"inkling-sample-{timestamp}.log"
-        guarded_command([cli, "-m", model, "-ngl", "99", "-c", "4096",
+        guarded_command(["taskset", "-c", "28-55", cli, "-m", model, "-ngl", "99", "-c", "4096",
                          "-n", "128", "--temp", "1.0", "--top-p", "1.0",
                          "--top-k", "0", "--min-p", "0.0",
                          "-p", "Write a C++17 function that detects whether a singly linked list has a cycle. Explain time and space complexity."],
@@ -256,7 +257,7 @@ def benchmark():
         if not matches or not any(int(a) == int(b) and int(a) > 0 for a, b in matches):
             fail(f"Vollständiges GPU-Offloading nicht bestätigt. Kein CPU-Fallback akzeptiert: {sample_log}")
         perf_log = WORK / f"inkling-perf-{timestamp}.json"
-        guarded_command([bench, "-m", model, "-ngl", "99", "-p", "128",
+        guarded_command(["taskset", "-c", "28-55", bench, "-m", model, "-ngl", "99", "-p", "128",
                          "-n", "128", "-r", "1", "-o", "json"],
                         dev, perf_log, env)
         print("Ausgabe und GPU-Geschwindigkeit:", sample_log, perf_log)

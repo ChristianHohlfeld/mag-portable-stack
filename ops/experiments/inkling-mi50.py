@@ -152,7 +152,7 @@ def prepare():
     env["LD_LIBRARY_PATH"] = f"{ROCM / 'lib'}:{ROCM / 'lib64'}:{env.get('LD_LIBRARY_PATH', '')}"
     run_command(["taskset", "-c", "28-55", "cmake", "-S", SOURCE, "-B", BUILD, "-G", "Ninja",
                  "-DCMAKE_BUILD_TYPE=Release", "-DGGML_HIP=ON",
-                 "-DAMDGPU_TARGETS=gfx906", f"-DCMAKE_PREFIX_PATH={ROCM}"], env=env)
+                 "-DAMDGPU_TARGETS=gfx906", "-DGGML_HIP_NO_VMM=ON", f"-DCMAKE_PREFIX_PATH={ROCM}"], env=env)
     run_command(["taskset", "-c", "28-55", "cmake", "--build", BUILD, "--parallel", "8",
                  "--target", "llama-cli", "llama-bench"], env=env)
     (WORK / "revision.txt").write_text(revision + "\n")

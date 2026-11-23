@@ -3261,6 +3261,46 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("Zitrone", sent)
         self.assertNotIn("Hallo von Lena.", sent)
 
+    def test_mistral_small4_chat_roles_and_effort_without_touching_gemma(self):
+        r = self.room
+        # A live modeld status identifies the current model; bot IDs are NOT
+        # model families. MAG's persisted append-only wire is left untouched.
+        status = {"updated": time.time(), "bots": {
+            "lena": {"state": "ready", "file": "gemma-4-26B", "since": 1},
+            "noah": {"state": "ready", "file": "Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003", "since": 1},
+        }}
+        pathlib.Path(r.env["MAG_MODELS_STATUS"]).write_text(json.dumps(status))
+
+        def strict_mistral(body):
+            roles = [msg["role"] for msg in body["messages"] if msg["role"] != "system"]
+            if any(a == b == "user" for a, b in zip(roles, roles[1:])):
+                return {"http_error": "Mistral template: user roles must alternate"}
+            return "Mistral OK"
+
+        r.noah.reply = strict_mistral
+        r.say("@Noah erster Test")
+        r.idle()
+        req = r.noah.chats()[-1]
+        self.assertEqual(req["chat_template_kwargs"]["reasoning_effort"], "none")
+        self.assertEqual([m["role"] for m in req["messages"]][:2], ["system", "user"])
+        self.assertTrue(all(not (a["role"] == b["role"] == "user")
+                            for a, b in zip(req["messages"], req["messages"][1:])))
+        self.assertIn("Mistral OK", [m.get("text", "") for m in r.messages() if m["from"] == "noah"])
+
+        # Changing the model family must not alter Blake/Lena's Gemma requests.
+        r.say("@Lena kontrolliere Gemma")
+        r.idle()
+        gemma = r.lena.chats()[-1]
+        self.assertNotIn("reasoning_effort", gemma["chat_template_kwargs"])
+
+        # A second message also has alternating roles, including the private
+        # orientation cue that the original MAG wire intentionally keeps.
+        r.say("@Noah zweiter Test")
+        r.idle()
+        req2 = r.noah.chats()[-1]
+        self.assertTrue(all(not (a["role"] == b["role"] == "user")
+                            for a, b in zip(req2["messages"], req2["messages"][1:])))
+
     def test_state_survives_a_restart(self):
         r = self.room
         r.say("@Noah hallo")

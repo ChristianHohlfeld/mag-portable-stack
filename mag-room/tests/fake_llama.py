@@ -30,6 +30,7 @@ class FakeLlama:
         self.pieces = 0         # pieces of the last answer that went out
         self.hung_up = 0        # answers the room ended before they were complete
         self.refused = 0        # requests refused for unreadable tool-call arguments
+        self.strict_roles = False  # emulate Mistral Small 4 Jinja role validation
         self.lock = threading.Lock()
         fake = self
 
@@ -73,6 +74,20 @@ class FakeLlama:
                 body = json.loads(raw)
                 with fake.lock:
                     fake.requests.append(body)
+                if fake.strict_roles:
+                    non_tool = 0
+                    for item in body.get("messages", []):
+                        role = item.get("role")
+                        if role == "system" and non_tool == 0:
+                            continue
+                        if role == "tool" or (role == "assistant" and item.get("tool_calls")):
+                            continue
+                        expected = "user" if non_tool % 2 == 0 else "assistant"
+                        if role != expected:
+                            fake.refused += 1
+                            return self._json(500, {"error": {"message":
+                                "After the optional system message, conversation roles must alternate user and assistant roles except for tool calls and results."}})
+                        non_tool += 1
                 # The real server reads the arguments of every tool call in the
                 # history and refuses the request when one is no JSON, quoting it.
                 for message in body.get("messages", []):

@@ -398,7 +398,7 @@ inline std::string error_text(const http::ClientResult &r) {
 inline void merge_adjacent_user_turns(Val &body) {
   if (!body["messages"].isArr()) return;
   Val merged = Val::array();
-  for (const Val &message : body["messages"].asArr()) {
+  for (Val message : body["messages"].asArr()) {
     if (jstr(message, "role") != "user" || merged.asArr().empty() ||
         jstr(merged.asArr().back(), "role") != "user") {
       merged.push(message);

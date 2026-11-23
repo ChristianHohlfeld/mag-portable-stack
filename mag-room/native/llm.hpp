@@ -391,11 +391,56 @@ inline std::string error_text(const http::ClientResult &r) {
   return "HTTP " + std::to_string(r.status);
 }
 
+// Mistral Small 4's Jinja template rejects adjacent user turns. MAG's
+// append-only room deliberately stores distinct user messages (including
+// transient self-orientation), so combine them only in the outgoing request.
+// Never mutate the saved conversation or alter other model families' prefixes.
+inline void merge_adjacent_user_turns(Val &body) {
+  if (!body["messages"].isArr()) return;
+  Val merged = Val::array();
+  for (const Val &message : body["messages"].asArr()) {
+    if (jstr(message, "role") != "user" || merged.asArr().empty() ||
+        jstr(merged.asArr().back(), "role") != "user") {
+      merged.push(message);
+      continue;
+    }
+    Val &previous = merged.arr->back();
+    const Val &before = previous["content"];
+    const Val &after = message["content"];
+    if (before.type == Val::STR && after.type == Val::STR) {
+      previous["content"] = before.asStr() + "\\n\\n" + after.asStr();
+      continue;
+    }
+    // Preserve multimodal content in order (text/image_url/text); never
+    // turn an image payload into JSON or drop a part when joining messages.
+    Val parts = Val::array();
+    auto append = [&](const Val &content) {
+      if (content.isArr()) {
+        for (const Val &part : content.asArr()) parts.push(part);
+      } else if (content.type == Val::STR && !content.asStr().empty()) {
+        Val part = Val::object();
+        part["type"] = "text";
+        part["text"] = content.asStr();
+        parts.push(part);
+      }
+    };
+    append(before);
+    Val separator = Val::object();
+    separator["type"] = "text";
+    separator["text"] = "\\n\\n";
+    parts.push(separator);
+    append(after);
+    previous["content"] = parts;
+  }
+  body["messages"] = merged;
+}
+
 // Streams one chat completion. `body` is the complete request (messages,
 // tools, sampling); stream, cache and slot fields are set here.
 inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const ChatCallbacks &cb,
-                       int budget_s = 3600) {
+                       int budget_s = 3600, bool mistral_small4 = false) {
   ChatResult out;
+  if (mistral_small4) merge_adjacent_user_turns(body);
   body["model"] = be.bot;
   body["stream"] = true;
   Val so = Val::object();

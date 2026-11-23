@@ -1293,14 +1293,30 @@ private:
     return list;
   }
 
+  // The model supervisor reports the exact GGUF loaded on each NUMA node.
+  // Keep all Gemma prompts byte-for-byte unchanged; only Mistral needs its
+  // stricter role sequence and reasoning_effort vocabulary.
+  bool mistral_small4(const std::string &bot) {
+    const Val models = models_snapshot();
+    const Val *model = models.find(bot);
+    if (!model) return false;
+    const std::string file = jstr(*model, "file");
+    return file.find("Mistral-Small-4-") != std::string::npos ||
+           file.find("mistral-small-4-") != std::string::npos;
+  }
+
   Val template_kwargs(const Val &me) {
     Val k = Val::object();
     const bool thinking = jbool(me, "thinking", false);
-    k["enable_thinking"] = thinking;
-    // When Thinking is off, do not send an unrelated reasoning effort.
-    // A legacy client can enable it without saving the dropdown first:
-    // the backend and UI both choose the same explicit "low" default.
-    if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
+    if (mistral_small4(jstr(me, "id"))) {
+      // The embedded Mistral Small 4 Jinja template permits only none/high.
+      // Its reasoning switch is unrelated to Gemma's enable_thinking flag.
+      k["reasoning_effort"] = thinking ? "high" : "none";
+    } else {
+      k["enable_thinking"] = thinking;
+      // Other models keep their existing effort presets and warm prefixes.
+      if (thinking) k["reasoning_effort"] = jstr(me, "effort", "low");
+    }
     k["model_identity"] = "You are " + jstr(me, "name") + ", a helpful local AI assistant.";
     return k;
   }
@@ -1449,7 +1465,7 @@ private:
     }
     // Cold CPU prefills can be silent for several minutes. Warmup has no
     // arbitrary wall/stall timeout; explicit Stop/shutdown still cancels.
-    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0);
+    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0, mistral_small4(b.id));
     {
       std::lock_guard<std::mutex> lk(mu_);
       b.warming = false;
@@ -2247,7 +2263,7 @@ private:
         }
         saved_slot = true;
       }
-      const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0);
+      const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0, mistral_small4(b.id));
       if (!res.ok()) {
         // The model did not get to answer (stopped, too slow, away): the picture stays to be described.
         logf("engine: " + b.id + " could not describe " + job.name + ": " + (res.cancelled ? "cancelled" : res.error));
@@ -2481,7 +2497,7 @@ private:
       logf("engine: " + b.id + " cannot save image locator KV state: " + clip(error, 160));
       return;
     }
-    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0);
+    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0, mistral_small4(b.id));
     error.clear();
     if (!llm::slot_restore(b.backend, backup, &error)) {
       set_kv(b, "cold");
@@ -3752,7 +3768,7 @@ private:
       llm::ChatResult res;
       {
         std::lock_guard<std::mutex> inference(b.inference_mu);
-        res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
+        res = llm::chat(b.backend, body, cancel.get(), cb, budget_s, mistral_small4(b.id));
       }
       const int64_t call_ms = mono_ms() - call_started_ms;
       ++model_calls_in_turn;
@@ -4451,7 +4467,7 @@ private:
                     } else {
                       // The peer is another local CPU model; avoid an
                       // artificial timeout during productive reviews too.
-                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {}, 0);
+                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {}, 0, mistral_small4(peer->id));
                       std::string restore_error;
                       const bool restored = llm::slot_restore(peer->backend, backup, &restore_error);
                       if (!restored) {

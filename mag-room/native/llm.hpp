@@ -408,7 +408,7 @@ inline void merge_adjacent_user_turns(Val &body) {
     const Val &before = previous["content"];
     const Val &after = message["content"];
     if (before.type == Val::STR && after.type == Val::STR) {
-      previous["content"] = before.asStr() + "\\n\\n" + after.asStr();
+      previous["content"] = before.asStr() + "\n\n" + after.asStr();
       continue;
     }
     // Preserve multimodal content in order (text/image_url/text); never
@@ -427,7 +427,7 @@ inline void merge_adjacent_user_turns(Val &body) {
     append(before);
     Val separator = Val::object();
     separator["type"] = "text";
-    separator["text"] = "\\n\\n";
+    separator["text"] = "\n\n";
     parts.push(separator);
     append(after);
     previous["content"] = parts;

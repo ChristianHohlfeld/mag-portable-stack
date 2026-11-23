@@ -391,11 +391,73 @@ inline std::string error_text(const http::ClientResult &r) {
   return "HTTP " + std::to_string(r.status);
 }
 
+// Mistral Small 4's Jinja chat template requires alternating user/assistant
+// messages (tool calls/results are the exception). The MAG room deliberately
+// has an append-only wire log with extra local user cues, so adapt the outgoing
+// request only. Never rewrite persisted chat history or change other models.
+inline bool is_mistral_small4(const Backend &be) {
+  const Val status = read_json(env("MAG_MODELS_STATUS", "/run/mag-models/status.json"));
+  const Val *bots = status.find("bots");
+  const Val *entry = bots && bots->isObj() ? bots->find(be.bot) : nullptr;
+  if (!entry || !entry->isObj()) return false;
+  const std::string file = jstr(*entry, "file");
+  const std::string label = jstr(*entry, "label");
+  return file.find("Mistral-Small-4-119B") != std::string::npos ||
+         label.find("Mistral Small 4") != std::string::npos;
+}
+
+inline Val mistral_content_parts(const Val &content) {
+  if (content.isArr()) return content;
+  Val parts = Val::array(), item = Val::object();
+  item["type"] = "text";
+  item["text"] = content.type == Val::STR ? content.asStr() : mj::dump(content);
+  parts.push(item);
+  return parts;
+}
+
+inline void mistral_append_user_content(Val &first, const Val &next) {
+  Val &dst = first["content"];
+  const Val *src = next.find("content");
+  if (!src) return;
+  if (dst.type == Val::STR && src->type == Val::STR) {
+    dst = dst.asStr() + "\n\n" + src->asStr();
+  } else {
+    Val combined = mistral_content_parts(dst);
+    if (!combined.asArr().empty()) {
+      Val sep = Val::object();
+      sep["type"] = "text";
+      sep["text"] = "\n\n";
+      combined.push(sep);
+    }
+    const Val parts = mistral_content_parts(*src);
+    for (const Val &part : parts.asArr()) combined.push(part);
+    dst = combined;
+  }
+}
+
+inline void prepare_mistral_request(Val &body) {
+  Val &kw = body["chat_template_kwargs"];
+  kw["reasoning_effort"] = jbool(kw, "enable_thinking", false) ? "high" : "none";
+  const Val *original = body.find("messages");
+  if (!original || !original->isArr()) return;
+  Val normalized = Val::array();
+  for (const Val &msg : original->asArr()) {
+    if (jstr(msg, "role") == "user" && !normalized.asArr().empty() &&
+        jstr(normalized.asArr().back(), "role") == "user") {
+      mistral_append_user_content(normalized.arr->back(), msg);
+    } else {
+      normalized.push(msg);
+    }
+  }
+  body["messages"] = normalized;
+}
+
 // Streams one chat completion. `body` is the complete request (messages,
 // tools, sampling); stream, cache and slot fields are set here.
 inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const ChatCallbacks &cb,
                        int budget_s = 3600) {
   ChatResult out;
+  if (is_mistral_small4(be)) prepare_mistral_request(body);
   body["model"] = be.bot;
   body["stream"] = true;
   Val so = Val::object();

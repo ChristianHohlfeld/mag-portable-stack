@@ -246,9 +246,22 @@ phase=3
 log "release $RELEASE_ID is live"
 
 # ------------------------------------------------------ 5. independent layers
-# Model layer: installs/refreshes the supervisor only. It never restarts a
-# running model; a changed launch spec is reported as "restart pending".
-soft bash "$SOURCE/ops/models/install.sh"
+# Model layer: install only if its release inputs changed. The model
+# selector can be customized locally on MAG; reinstalling on every room-only
+# release would overwrite Noah's active Mistral/Gemma configuration with the
+# repository default. A changed model specification, launcher, unit or modeld
+# binary still installs normally (without restarting a running model).
+previous_model_release=""
+[[ ! -f $BACKUP/previous-release ]] || previous_model_release=$(cat "$BACKUP/previous-release")
+if [[ -n $previous_model_release && -d $previous_model_release/ops/models &&
+      -f $previous_model_release/bin/mag-modeld ]] &&
+   diff -qr "$SOURCE/ops/models" "$previous_model_release/ops/models" >/dev/null 2>&1 &&
+   cmp -s "$RELEASE/bin/mag-modeld" "$previous_model_release/bin/mag-modeld"; then
+  log "model layer unchanged; preserving MAG's installed model selection"
+else
+  # A changed launch spec is reported as "restart pending" by mag-modeld.
+  soft bash "$SOURCE/ops/models/install.sh"
+fi
 # Documents in the chat are read for the bots with pdftotext; without it a
 # PDF is only a file name to them.
 command -v pdftotext >/dev/null || warn 'pdftotext missing: the bots cannot read PDFs (apt-get install poppler-utils)'

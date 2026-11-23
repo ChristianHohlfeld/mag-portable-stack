@@ -391,6 +391,48 @@ class RoomContract(unittest.TestCase):
             self.assertEqual(noah["effort"], "low")
             self.assertTrue(noah["thinking"])
 
+    def test_mistral_small4_accepts_room_turns_and_maps_reasoning_without_affecting_gemma(self):
+        """Mistral's actual template rejects the extra room-side user turn."""
+        r = self.room
+        r.noah.strict_roles = True
+        pathlib.Path(r.env["MAG_MODELS_STATUS"]).write_text(json.dumps({
+            "updated": time.time(),
+            "bots": {
+                "lena": {"state": "ready", "since": 1, "file": "Gemma4-QAT-Q4_K_M"},
+                "noah": {"state": "ready", "since": 2, "file": "Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003"},
+            },
+        }))
+        r.wait(lambda: any(q.get("chat_template_kwargs", {}).get("reasoning_effort") == "none"
+                           for q in r.noah.requests),
+               "Mistral model detected and prefix prewarmed", 15)
+        r.say("@Noah Antworte jetzt auf meine Frage")
+        r.idle()
+        self.assertEqual(r.noah.refused, 0, "Mistral's strict alternating-role check must pass")
+        self.assertIn("Hallo von Noah", r.texts("noah"))
+        sent = r.noah.chats()[-1]
+        roles = [m["role"] for m in sent["messages"] if m["role"] != "tool" and not m.get("tool_calls")]
+        self.assertEqual(roles[0], "system")
+        self.assertEqual(roles[1:], ["user" if i % 2 == 0 else "assistant"
+                                     for i in range(len(roles) - 1)])
+        self.assertIn("PRIVATE SELBSTORIENTIERUNG", text_of(sent["messages"][1]["content"]))
+        self.assertIn("Antworte jetzt", text_of(sent["messages"][1]["content"]))
+        self.assertEqual(sent["chat_template_kwargs"]["reasoning_effort"], "none")
+        self.assertNotIn("enable_thinking", sent["chat_template_kwargs"])
+        # Thinking preset 'low' in MAG means Mistral's only thinking level 'high'.
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"thinking": True, "effort": "low"})[0], 200)
+        r.say("@Noah Denke nach, dann antworte")
+        r.idle()
+        self.assertEqual(r.noah.refused, 0)
+        self.assertEqual(r.noah.chats()[-1]["chat_template_kwargs"]["reasoning_effort"], "high")
+        # The other bot retains its original Gemma template and unmerged log.
+        r.say("@Lena Hallo")
+        r.idle()
+        gemma = r.lena.chats()[-1]
+        self.assertEqual(gemma["chat_template_kwargs"]["enable_thinking"], False)
+        self.assertNotIn("reasoning_effort", gemma["chat_template_kwargs"])
+        gemma_roles = [m["role"] for m in gemma["messages"]]
+        self.assertEqual(gemma_roles[:3], ["system", "user", "user"])
+
     def test_auto_chat_off_cuts_off_human_started_bot_followup_now(self):
         """OFF stops even a Chris-initiated bot exchange, not just auto_burst_."""
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")

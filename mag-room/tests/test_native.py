@@ -408,7 +408,7 @@ class RoomContract(unittest.TestCase):
         r.say("@Noah Antworte jetzt auf meine Frage")
         r.idle()
         self.assertEqual(r.noah.refused, 0, "Mistral's strict alternating-role check must pass")
-        self.assertIn("Hallo von Noah", r.texts("noah"))
+        self.assertIn("Hallo von Noah.", r.texts("noah"))
         sent = r.noah.chats()[-1]
         roles = [m["role"] for m in sent["messages"] if m["role"] != "tool" and not m.get("tool_calls")]
         self.assertEqual(roles[0], "system")
@@ -3836,7 +3836,7 @@ class RoomContract(unittest.TestCase):
         # that a prefix is in fact saved and restored.
         source = (ROOT / "mag-room" / "native" / "engine.hpp").read_text()
         prefix = source[source.index("void warm_prefix("):source.index("void set_kv(", source.index("void warm_prefix("))]
-        self.assertIn("llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0)", prefix)
+        self.assertIn("llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0, mistral_small4(b.id))", prefix)
         self.assertNotIn("{}, 900", prefix)
 
     def test_goal_length_before_tool_call_gets_extra_tokens_without_pausing(self):

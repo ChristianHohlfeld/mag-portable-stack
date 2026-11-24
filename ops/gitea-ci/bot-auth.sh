@@ -4,7 +4,13 @@
 set +x
 set -euo pipefail
 mode=${1:-};user=${2:-}
-[[ $EUID == 0 && $user =~ ^magbot-agent[0-9A-Za-z_-]+$ && $mode =~ ^(issue|commit|lock)$ ]] || exit 64
+[[ $EUID == 0 && $mode =~ ^(issue|commit|lock)$ ]] || exit 64
+# Legacy VM IDs are valid for revocation only, never issuance or conversion.
+if [[ $mode == lock ]]; then
+ [[ $user =~ ^magbot-agent[0-9A-Za-z_-]+$ || $user =~ ^magbot-deepseek-numa[01]$ ]] || exit 64
+else
+ [[ $user =~ ^magbot-agent[0-9A-Za-z_-]+$ ]] || exit 64
+fi
 cli() { runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini admin user "$@"; }
 if [[ $mode == issue ]]; then
  # A VM name that was used before keeps its account. "admin user list" does

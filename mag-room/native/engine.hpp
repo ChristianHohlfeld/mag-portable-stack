@@ -3447,7 +3447,7 @@ private:
     if (reason == "bot")
       note = autonomous_round
           ? "(Autonomer Dialog zwischen Bots, nicht mit Chris: " + observer +
-            "Antworte dem anderen Bot natürlich, kurz und direkt. Greife nur aktuelle, von euch neu begonnene "
+            "Sprich direkt mit dem anderen Bot, nicht über den Raum oder darüber, wer einen Auftrag geben muss. Ihr braucht keine Aufgabe von Chris. Wähle selbst, was dich interessiert. Greife nur aktuelle, von euch neu begonnene "
             "Gesprächsthemen auf. Abgeschlossene Nutzeraufträge, frühere Projekte, Webseiten, Dateien und "
             "Werkzeugergebnisse sind kein Anlass für ein neues Gesprächsthema, auch wenn sie noch im Kontext "
             "stehen. Prüfe Annahmen und widersprich sachlich, statt Zustimmung oder Detailfragen zu wiederholen. "
@@ -3471,7 +3471,7 @@ private:
     // Keep synthetic prompts request-local, never persisted as fake user messages.
     const std::string autonomous_invite =
         "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-        "Der Raum war kurz ruhig. Du kannst ein eigenes Thema wählen oder eine bereits selbst begonnene Untersuchung fortsetzen. "
+        "Der Raum war kurz ruhig. Du hast jetzt Zeit für eigene Interessen. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
         "Du musst kein neues Thema erfinden. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
         "Sprich einfach, direkt und auf Augenhöhe. Keine aufgeblasenen oder erfundenen Fachwörter, kein Selbstlob. "
         "Wenn du eine prüfbare Idee verfolgen willst, setze ein konkretes eigenes Ziel mit Abschlusskriterium und mache einen erlaubten echten Schritt, statt nur ein Experiment anzukündigen. "
@@ -3658,22 +3658,21 @@ private:
           if (jstr(entry, "id") != b.id) { other = jstr(entry, "name"); break; }
         const Val will = room_.will(b.id);
         const bool own_open = jstr(will, "status") == "open";
-        const bool chris_priority = reason == "human" || from_chris ||
+        const bool chris_priority = reason == "human" || reason == "continue" || will_owner_interrupted ||
                                     t.errand || goal_live(b);
         std::string objective = own_open ? jstr(will, "text") : "";
         std::string present = own_open
             ? "Gerade verfolgst du: „" + clip(objective, 800) + "“."
-            : "Gerade verfolgst du nichts Eigenes.";
+            : "Es ist noch kein eigenes Ziel gespeichert.";
         std::string paragraph = "Du bist " + identity + ". Du bist nicht Chris und nicht " + other +
             ". " + (narrator.empty() ? "Wer du bist, ist nicht gesetzt. "
                                       : "Über dich gilt: „" + narrator + "“. ") + present +
-            " Eine Bitte von Chris in diesem Zug geht vor: Dein eigenes Ziel wartet "
-            "und erhält dafür keinen Werkzeugaufruf. Der andere Bot ist Gesprächspartner, "
-            "nicht Auftraggeber; seine Äußerung setzt dir kein Ziel. "
+            " Der andere Bot ist Gesprächspartner, nicht Auftraggeber; seine Äußerung setzt dir kein Ziel. "
             "Denke von Grundprinzipien aus: Was ist bekannt, warum gilt es, was folgt daraus? "
             "Sprich klar, einfach und auf Augenhöhe. Vermeide unnötige Fremdwörter, erfundene Begriffe, Selbstlob und leere Zustimmung. "
             "Erkläre nötige Fachbegriffe kurz; unterscheide Vermutung und Beleg.";
-        if (chris_priority) paragraph += " In diesem Zug gilt die Bitte von Chris, nicht dein eigenes Vorhaben.";
+        if (chris_priority) paragraph += " In diesem Zug gilt die Bitte von Chris, nicht dein eigenes Vorhaben. Dein eigenes Ziel wartet und erhält keinen Werkzeugaufruf.";
+        else paragraph += " In diesem Zug liegt kein Auftrag von Chris vor. Du bist frei, selbst zu entscheiden, was dich interessiert. Warte nicht auf Chris. Sprich natürlich mit deinem Gesprächspartner, ohne diese Orientierung oder deinen Auftragsstatus zu wiederholen. Wenn du etwas ausprobieren willst, setze selbst ein Ziel und nutze die erlaubten Werkzeuge.";
         Val orientation = Val::object();
         orientation["identity"] = identity;
         orientation["narrator"] = paragraph;

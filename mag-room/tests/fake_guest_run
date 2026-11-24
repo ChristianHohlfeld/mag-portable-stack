@@ -16,6 +16,7 @@ case "${1:-}" in
     exit "$rc" ;;
   --write|--append)
     target=$2; [[ $target == /* ]] || target="$home/$target"
+    if [[ ${FAKE_GUEST_DROP_WRITE:-} == "$2" ]]; then cat >/dev/null; echo "saved $target 0 bytes"; exit 0; fi
     mkdir -p "$(dirname "$target")"
     if [[ $1 == --append ]]; then cat >> "$target"; else cat > "$target"; fi
     echo "saved $target $(stat -c %s "$target") bytes" ;;

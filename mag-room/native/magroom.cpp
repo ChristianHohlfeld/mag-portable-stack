@@ -61,7 +61,7 @@ int main() {
     to.push(bot);
     m["mentions"] = to;
     room.add(m);
-    engine.on_routine(bot);
+    engine.on_routine(bot, jstr(m, "text"));
   };
   // For a file routine: the files below /home/bot of the bot's VM, read only.
   // Dot files and folders, node_modules and unfinished downloads are left

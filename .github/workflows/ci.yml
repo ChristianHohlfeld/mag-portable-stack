@@ -53,6 +53,7 @@ jobs:
           python3 mag-room/tests/test_native.py \
             RoomContract.test_unaddressed_message_is_answered_by_all_bots_then_rests \
             RoomContract.test_named_bot_answers_alone \
+            RoomContract.test_third_bot_from_existing_roster_routes_by_id_through_audit \
             RoomContract.test_autonomous_chat_can_start_without_human_or_browser \
             RoomContract.test_autonomous_chat_respects_paused_bot \
             RoomContract.test_autonomous_peer_can_start_while_other_bot_is_working \
@@ -74,6 +75,8 @@ jobs:
         run: bash ops/ci/check.sh
       - name: Model supervisor
         run: python3 ops/models/tests/test_modeld.py
+      - name: Idol priority over Qwen
+        run: python3 ops/idol/tests/test_worker.py --gpu-priority
       - name: GPU thermal safety
         run: python3 ops/idol/tests/test_thermal.py
       - name: Idol worker (complete graphics regression)

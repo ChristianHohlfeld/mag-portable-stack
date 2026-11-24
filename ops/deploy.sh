@@ -246,9 +246,6 @@ phase=3
 log "release $RELEASE_ID is live"
 
 # ------------------------------------------------------ 5. independent layers
-# Model layer: installs/refreshes the supervisor only. It never restarts a
-# running model; a changed launch spec is reported as "restart pending".
-soft bash "$SOURCE/ops/models/install.sh"
 # Documents in the chat are read for the bots with pdftotext; without it a
 # PDF is only a file name to them.
 command -v pdftotext >/dev/null || warn 'pdftotext missing: the bots cannot read PDFs (apt-get install poppler-utils)'
@@ -262,11 +259,14 @@ soft bash "$SOURCE/ops/scene/install.sh"
 if [[ -x $MAG_IDOL_BASE/venv/bin/python && -d $MAG_IDOL_BASE/weights/idol ]]; then
   soft bash "$SOURCE/ops/idol/install.sh"
 fi
+# The audit firewall: the model ports for the gateway only (ops/audit/apply-nft.sh).
+[[ ! -e $UNITS/mag-audit-nft.service ]] || soft bash "$SOURCE/ops/audit/apply-nft.sh"
+# Model layer: installs/refreshes the supervisor only. It never restarts a
+# running model; a changed launch spec is reported as "restart pending".
+soft bash "$SOURCE/ops/models/install.sh"
 # The bots' sites (<name>.bot.stardenburg.de): vhost and publisher.
 soft bash "$SOURCE/ops/bots/install.sh"
 soft systemctl enable --now mag-stack-check.timer
-# The audit firewall: the model ports for the gateway only (ops/audit/apply-nft.sh).
-[[ ! -e $UNITS/mag-audit-nft.service ]] || soft bash "$SOURCE/ops/audit/apply-nft.sh"
 # Every bot VM is saved each night (magbot save-all; the last four per bot).
 soft systemctl enable --now mag-bot-saves.timer
 # The whole system, weekly (ops/backup/system.sh; a disk at /mnt/mag-backup is used by itself).

@@ -74,7 +74,7 @@ def main():
     arch = str(getattr(torch.cuda.get_device_properties(0), "gcnArchName", ""))
     if "gfx906" not in arch:
         raise RuntimeError("Erwartet MI50/gfx906, erhalten " + arch)
-    # The MI50 is Idol's alone (both bots are CPU-only): no VRAM fraction,
+    # Idol holds the exclusive MI50 lock: no VRAM fraction,
     # Idol may use the full card.
     print("MAG-IDOL: MI50 exclusive; no PyTorch VRAM cap", flush=True)
 

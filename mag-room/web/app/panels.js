@@ -94,7 +94,9 @@
       case 'downloading': return m.detail && f.bytes >= f.total ? m.detail : 'lädt herunter ' + pct + ' %' + (f.eta ? ' · ' + MAG.dur(f.eta * 1000) : '');
       case 'missing': return 'Modell fehlt';
       case 'verifying': return 'wird geprüft' + (f.verified ? ' ' + Math.floor(f.verified * 100) + ' %' : '');
-      case 'loading': return 'lädt ins RAM';
+      case 'loading': return m.gpu ? 'lädt auf die ' + m.gpu : 'lädt ins RAM';
+      case 'waiting_gpu': return 'wartet auf die ' + m.gpu;
+      case 'waiting_runtime': return m.detail;
       case 'paused': return 'pausiert';
       case 'stopped': return 'abgeschaltet';
       case 'failed': return 'Start fehlgeschlagen';
@@ -277,6 +279,7 @@
           if (goal.url && goal.state === 'active') add('Letzte Seite', goal.url);
           if (goal.error) add('Auftrags-Hinweis', goal.error);
         }
+        if (m.gpu) add('Rechner', m.gpu);
         if (m.numa !== undefined) add('Rechner', 'NUMA ' + m.numa + ' · nur CPU');
         add('VM', b.vm_note === 'creating' ? 'wird erstellt …' : b.vm || 'keine (nur Chat)');
         if (b.vm_note && b.vm_note !== 'creating') add('VM-Fehler', b.vm_note.replace(/^error: /, ''));
@@ -596,7 +599,7 @@
           el('div', { class: 'txt' }, b.name, el('small', { text: modelName(b) + ' · ' + modelText(b) }), b.site ? el('small', {}, siteLink(b)) : null),
           owner() ? toggle(b.enabled, (v) => call('PUT', '/api/bot/' + b.id, { enabled: v })) : null))));
 
-      // One coherent set of controls for BOTH bots. The reply limit is a
+      // One coherent set of controls for the bots. The reply limit is a
       // single selection (including unlimited), never a second competing toggle.
       content.append(el('h3', { text: 'Bots miteinander' }), el('div', { class: 'card' },
         row('Eigenständig reden', 'Beide Bots sprechen auch ohne neue Nachricht und ohne geöffneten Browser. Nach Gesprächsruhe starten sie zeitnah wieder.',

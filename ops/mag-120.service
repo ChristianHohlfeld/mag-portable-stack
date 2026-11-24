@@ -18,6 +18,7 @@ WorkingDirectory=/opt/mag-stack/current
 EnvironmentFile=-/etc/default/mag-room
 # Who and where this host is (MAG_DOMAIN, MAG_BOTS_ZONE, ...; ops/host.env).
 EnvironmentFile=-/etc/mag-stack/host.env
+Environment=MAG_ROOM_MODELS_CONFIG=/opt/mag-stack/current/ops/models/models.json
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room
 Environment=MAG_ROOM_WEB=/opt/mag-stack/current/web
 Environment=MAG_ROOM_BIND=127.0.0.1

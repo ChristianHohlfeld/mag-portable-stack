@@ -1,5 +1,5 @@
 // llama-server client. Every call goes through the audit gateway (which picks
-// the bot's server by X-Mag-Slot) or, without a gateway, straight to the port.
+// the bot's server by model ID) or, without a gateway, straight to the port.
 // One slot per server: slot 0 holds exactly this bot's conversation.
 #pragma once
 #include "http.hpp"
@@ -7,8 +7,7 @@
 namespace mag::llm {
 
 struct Backend {
-  std::string bot;     // "lena" / "noah": also the model id the gateway expects
-  int index = 0;       // gateway backend index (NUMA node)
+  std::string bot;     // stable bot ID, also used for audited routing
   int port = 0;        // llama-server port, used when there is no gateway
   std::string gateway; // e.g. http://127.0.0.1:8080, empty = direct
   std::string url(const std::string &path) const {
@@ -17,7 +16,7 @@ struct Backend {
   http::Headers headers() const {
     http::Headers h;
     if (!gateway.empty()) {
-      h.push_back({"X-Mag-Slot", std::to_string(index)});
+      h.push_back({"X-Mag-Model", bot});
       h.push_back({"X-Mag-Bot", bot});
     }
     return h;

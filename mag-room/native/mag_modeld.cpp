@@ -1,10 +1,11 @@
 // mag-modeld: the single owner of the model lifecycle.
 //
-// For every bot in models.json (lena: NUMA0 :8191, noah: NUMA1 :8192):
+// For each bot in models.json:
 //   GGUF missing/partial  -> "downloading"; resumes with mag-model-fetch@<bot>
 //                            when no other process is writing the file
 //   size == Hugging Face  -> one SHA256 pass, then a <bot>.<kind>.ok stamp
 //   verified              -> start mag-model@<bot>.service and watch /health
+// Locally provisioned GGUFs use a header check rather than remote metadata.
 // The result is /run/mag-models/status.json, which the room shows as
 // "lädt herunter", "wird geprüft", "lädt", "bereit". Control verbs arrive as
 // files in <state>/control/ (start, stop, restart, freeze, thaw).
@@ -30,10 +31,12 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -224,7 +227,7 @@ static bool has_open_handle(const std::string &path) {
 }
 
 struct Artifact {
-  std::string kind, path, url, pinned_sha;
+  std::string kind, path, url, pinned_sha, local_dir;
   bool built = false; // no GGUF published: fetch.sh converts the pinned weights (build-draft.sh)
   uint64_t pinned_size = 0;
   bool configured = false;
@@ -250,7 +253,11 @@ struct Artifact {
   uint64_t verify_size = 0;
   time_t verify_mtime = 0;
 
-  uint64_t expected() const { return remote.ok ? remote.size : pinned_size; }
+  uint64_t expected() const {
+    if (remote.ok) return remote.size;
+    if (pinned_size || local_dir.empty()) return pinned_size;
+    return size;
+  }
   std::string expected_sha() const { return !remote.sha256.empty() ? remote.sha256 : pinned_sha; }
   bool complete() const { return exists && expected() > 0 && size == expected(); }
   double rate() const {
@@ -262,6 +269,24 @@ struct Artifact {
 
 static std::string stamp_path(const std::string &bot, const Artifact &a, const char *suffix) {
   return g_state_dir + "/" + bot + "." + a.kind + "." + suffix;
+}
+
+// A locally provisioned model has no download URL. Accept a single regular
+// Q6 GGUF and reject ambiguous directories and split GGUFs.
+static std::string local_gguf(const std::string &dir) {
+  namespace fs = std::filesystem;
+  static const std::regex q6("(^|[-_.])q6(_k(_[a-z]+)?)?([-_.]|$)", std::regex::icase);
+  static const std::regex split("-[0-9]+-of-[0-9]+$", std::regex::icase);
+  std::error_code ec;
+  std::string path;
+  for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+    const fs::path file = it->path();
+    if (file.extension() != ".gguf" || !std::regex_search(file.stem().string(), q6)) continue;
+    if (!fs::is_regular_file(it->symlink_status(ec)) ||
+        std::regex_search(file.stem().string(), split) || !path.empty()) return "";
+    path = file.string();
+  }
+  return ec ? "" : path;
 }
 
 static void observe(Artifact &a) {
@@ -288,11 +313,17 @@ static void verify_async(const std::string &bot, Artifact &a) {
   auto result = a.verify_result;
   const std::string path = a.path, ok_stamp = stamp_path(bot, a, "ok"), bad_stamp = stamp_path(bot, a, "bad");
   const uint64_t size = a.size;
+  const bool local = !a.local_dir.empty();
   const time_t mtime = a.mtime;
   std::thread([=] {
     std::string got = "-";
     bool ok = true;
-    if (!want.empty()) {
+    if (local) {
+      std::ifstream file(path, std::ios::binary);
+      char header[24];
+      ok = file.read(header, sizeof header) && std::memcmp(header, "GGUF", 4) == 0;
+    }
+    if (ok && !want.empty()) {
       ok = false;
       int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
       EVP_MD_CTX *ctx = EVP_MD_CTX_new();
@@ -317,7 +348,7 @@ static void verify_async(const std::string &bot, Artifact &a) {
       if (fd >= 0) close(fd);
       if (g_stop) return;
     }
-    const std::string line = std::to_string(size) + " " + std::to_string((long long)mtime) + " " + got + "\n";
+    const std::string line = std::to_string(size) + " " + std::to_string((long long)mtime) + " " + got + (local ? " " + path : "") + "\n";
     if (ok) {
       unlink(bad_stamp.c_str());
       write_atomic(ok_stamp, line);
@@ -333,7 +364,12 @@ static bool stamp_matches(const std::string &path, const Artifact &a) {
   std::istringstream in(read_file(path, 256));
   uint64_t size = 0;
   long long mtime = 0;
-  return (in >> size >> mtime) && size == a.size && mtime == (long long)a.mtime;
+  if (!(in >> size >> mtime) || size != a.size || mtime != (long long)a.mtime) return false;
+  if (a.local_dir.empty()) return true;
+  std::string hash, file;
+  in >> hash;
+  std::getline(in >> std::ws, file);
+  return file == a.path;
 }
 
 // ---------------------------------------------------------------------- bots
@@ -392,6 +428,7 @@ static int health(int port) {
 }
 
 struct Bot {
+  std::string gpu_runtime;
   std::string id, label, unit, spec_hash, thinking_control, active_spec_hash;
   int port = 0, numa = 0, ctx = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
@@ -419,6 +456,7 @@ static void set_flag(const std::string &bot, const char *name, bool on) {
 
 static void track(const std::string &bot, Artifact &a) {
   if (!a.configured) return;
+  if (!a.local_dir.empty() && a.path.empty()) a.path = local_gguf(a.local_dir);
   observe(a);
   const auto now = Clock::now();
   // Remote facts are needed only while the file is not known to be good.
@@ -446,8 +484,8 @@ static void track(const std::string &bot, Artifact &a) {
       logf(bot + "/" + a.kind + ": verified " + a.path);
     } else if (res == 2) {
       a.verify = Artifact::BAD;
-      a.verify_detail = "SHA256 stimmt nicht mit Hugging Face überein";
-      logf(bot + "/" + a.kind + ": SHA256 mismatch, file left untouched: " + a.path);
+      a.verify_detail = a.local_dir.empty() ? "SHA256 stimmt nicht mit Hugging Face überein" : "Lokale GGUF-Datei ist ungültig";
+      logf(bot + "/" + a.kind + ": verification failed: " + a.path);
     }
     return;
   }
@@ -460,7 +498,7 @@ static void track(const std::string &bot, Artifact &a) {
     a.verify = Artifact::BAD;
     a.verify_size = a.size;
     a.verify_mtime = a.mtime;
-    a.verify_detail = "SHA256 stimmt nicht mit Hugging Face überein";
+    a.verify_detail = a.local_dir.empty() ? "SHA256 stimmt nicht mit Hugging Face überein" : "Lokale GGUF-Datei ist ungültig";
     return;
   }
   a.writer = a.exists && !a.complete() ? has_open_handle(a.path) : false;
@@ -505,7 +543,7 @@ static void apply_control(Bot &b, const std::string &verb) {
     systemctl("restart", b.unit);
     b.ever_ready = false;
   } else if (verb == "freeze") {
-    systemctl("freeze", b.unit);
+    if (b.gpu_runtime.empty()) systemctl("freeze", b.unit); // A GPU process must always be able to yield to Idol.
   } else if (verb == "thaw") {
     systemctl("thaw", b.unit);
   }
@@ -550,7 +588,7 @@ static void step(Bot &b) {
   // leaves every model missing.
   for (Artifact *a : {&b.model, &b.draft, &b.mmproj}) {
     if (!g_auto_download || access("/etc/mag-stack/no-model-download", F_OK) == 0) break;
-    if (!a->configured || (a->url.empty() && !a->built) || a->complete() || a->verify == Artifact::OK) continue;
+    if (!a->configured || !a->local_dir.empty() || (a->url.empty() && !a->built) || a->complete() || a->verify == Artifact::OK) continue;
     if (a != &b.model && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file
     if (now - a->last_growth < std::chrono::seconds(g_quiet_s)) break;
@@ -592,14 +630,21 @@ static void step(Bot &b) {
     if (u.freezer == "frozen") {
       b.state = "paused";
     } else {
-      const int code = u.active == "active" ? health(b.port) : 0;
+      long long generation = u.since_us;
+      std::string gpu_state;
+      if (!b.gpu_runtime.empty()) {
+        std::istringstream status(read_file(g_state_dir + "/slots/" + b.id + "/.gpu", 128));
+        generation = 0;
+        status >> gpu_state >> generation;
+      }
+      const int code = u.active == "active" && (b.gpu_runtime.empty() || generation > 0) ? health(b.port) : 0;
       if (code == 200) {
         if (b.state != "ready") b.ready_since = time(nullptr);
         b.state = "ready";
         b.ever_ready = true;
-        b.process_us = u.since_us;
+        b.process_us = generation;
       } else {
-        b.state = "loading";
+        b.state = gpu_state == "waiting" ? "waiting_gpu" : "loading";
       }
     }
     return;
@@ -616,12 +661,18 @@ static void step(Bot &b) {
   if (m.verify == Artifact::RUNNING) { b.state = "verifying"; return; }
   if (m.verify != Artifact::OK) {
     b.state = m.exists || m.writer ? "downloading" : "missing";
-    if (!m.expected()) b.detail = "Größe bei Hugging Face noch nicht bekannt";
+    if (!m.local_dir.empty()) b.detail = "Erwartet eine einzelne lokale Q6-GGUF-Datei";
+    else if (!m.expected()) b.detail = "Größe bei Hugging Face noch nicht bekannt";
     else if (!m.writer && now - m.last_growth > std::chrono::seconds(g_quiet_s))
       b.detail = "Download wird fortgesetzt";
     return;
   }
   if (flag(b.id, "stopped")) { b.state = "stopped"; return; }
+  if (!b.gpu_runtime.empty() && access(b.gpu_runtime.c_str(), X_OK) != 0) {
+    b.state = "waiting_runtime";
+    b.detail = "llama.cpp für gfx906 fehlt oder wird gebaut";
+    return;
+  }
   // The optional drafter usually completes moments after the model (same
   // download chain). Give it a few minutes instead of restarting later.
   const Artifact &d = b.draft;
@@ -677,11 +728,12 @@ static Artifact artifact_from(const Val *v, const char *kind) {
   if (!v || !v->isObj()) return a;
   auto s = [&](const char *k) { auto p = v->find(k); return p ? p->asStr() : std::string(); };
   a.path = s("path");
+  a.local_dir = s("local_dir");
   a.url = s("url");
   a.pinned_sha = s("sha256");
   if (auto p = v->find("size")) a.pinned_size = (uint64_t)p->asNum();
   if (auto b = v->find("build")) a.built = b->isObj() && a.pinned_size && !a.pinned_sha.empty();
-  a.configured = !a.path.empty();
+  a.configured = !a.path.empty() || !a.local_dir.empty();
   return a;
 }
 
@@ -710,7 +762,8 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     if (file.size() > 5 && file.compare(file.size() - 5, 5, ".gguf") == 0) file.resize(file.size() - 5);
     v["file"] = file;
     v["port"] = b.port;
-    v["numa"] = b.numa;
+    if (!b.gpu_runtime.empty()) v["gpu"] = "MI50";
+    else v["numa"] = b.numa;
     v["ctx"] = b.ctx;
     v["spec_hash"] = b.active_spec_hash.empty() ? b.spec_hash : b.active_spec_hash; // active launch identity for prefix restore
     v["slot_dir"] = g_state_dir + "/slots/" + b.id; // same directory passed to llama-server --slot-save-path
@@ -786,19 +839,31 @@ int main(int argc, char **argv) {
   const std::string rev = runtime && runtime->find("rev") ? runtime->find("rev")->asStr() : "";
   // Identity of a bot's launch configuration; run.sh records it at start.
   // The launcher is part of that identity: changed flags need a restart too.
-  const std::string launcher = read_file(config.substr(0, config.find_last_of('/') + 1) + "run.sh");
+  const std::string lib = config.substr(0, config.find_last_of('/') + 1);
+  const std::string launcher = read_file(lib + "run.sh");
+  const std::string gpu_launcher = read_file(lib + "run-mi50.sh") + read_file(lib + "gpu-guard.py");
   // UI-only thinking capability must not restart a 200-second CPU warmup.
   auto spec_hash = [&](const Val &bot) {
     Val launch = bot;
     if (launch.isObj() && launch.obj)
       launch.obj->erase(std::remove_if(launch.obj->begin(), launch.obj->end(),
         [](const auto &kv) { return kv.first == "thinking_control"; }), launch.obj->end());
-    return sha256_hex(mj::dump(launch) + "\n" + rev + "\n" + launcher);
+    const auto *gpu = bot.find("gpu");
+    return sha256_hex(mj::dump(launch) + "\n" + rev + "\n" +
+                      (gpu && gpu->asStr() == "mi50" ? gpu_launcher : launcher));
   };
   if (!args.empty() && args[0] == "spec-hash") {
     const Val *bot = args.size() == 2 && list ? list->find(args[1]) : nullptr;
     if (!bot) return usage();
     std::cout << spec_hash(*bot) << "\n";
+    return 0;
+  }
+  if (args.size() == 2 && args[0] == "model-path") {
+    const Val *bot = list ? list->find(args[1]) : nullptr;
+    const Artifact model = artifact_from(bot ? bot->find("model") : nullptr, "model");
+    const std::string path = model.local_dir.empty() ? model.path : local_gguf(model.local_dir);
+    if (path.empty()) return 78;
+    std::cout << path << "\n";
     return 0;
   }
   if (!args.empty()) return usage();
@@ -813,6 +878,9 @@ int main(int argc, char **argv) {
       b.label = kv.second.find("label") ? kv.second.find("label")->asStr() : b.id;
       b.thinking_control = kv.second.find("thinking_control") ? kv.second.find("thinking_control")->asStr() : "none";
       if (b.thinking_control != "toggle" && b.thinking_control != "effort") b.thinking_control = "none";
+      if (auto gpu = kv.second.find("gpu"); gpu && gpu->asStr() == "mi50")
+        b.gpu_runtime = runtime && runtime->find("dir") ? runtime->find("dir")->asStr() : "";
+      if (!b.gpu_runtime.empty()) b.gpu_runtime += "/" + rev + "/hip-gfx906/bin/llama-server";
       b.port = num("port");
       b.numa = num("numa");
       b.ctx = num("ctx");

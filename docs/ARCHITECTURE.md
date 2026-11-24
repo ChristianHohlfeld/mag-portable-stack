@@ -1,6 +1,6 @@
 # MAG architecture
 
-One home server, one user (Chris, phone and desktop), one room, two bots.
+One home server, one user (Chris, phone and desktop), one room, three bots.
 This document describes the processes, how a request travels, where state
 lives and what happens on a restart. Installation is in
 [INSTALL.md](INSTALL.md), day-to-day operation in
@@ -139,13 +139,20 @@ everything else runs on CPUs 28-55.
 `mag-cpu-tune.service` runs before the models: performance governor,
 uncore frequency fixed at its maximum, energy bias 0, C1E disabled.
 
-The AMD MI50 belongs to `mag-idol` alone. No bot model offloads to it: the
-llama.cpp runtime is built without a GPU backend
-(`ops/models/build-runtime.sh`) and `ops/ci/check.sh` refuses GPU flags in
-`models.json`. `mag-scene` has `PrivateDevices=true`. The card's power cap
-is 78 W: `ops/idol/power-cap.sh` runs as `ExecStartPre` of `mag-idol` and
-only ever lowers the cap to 78 W, never raises it. Every stage that uses
-the card holds the flock `/var/lib/mag-idol/gpu.lock`.
+Blake and Noah use the CPU-only llama.cpp runtime. Qwen (`qwen`, port 8193)
+uses the separate HIP gfx906 build from `ops/models/build-runtime.sh hip`
+and a single local Q6 GGUF in `/home/chris/models/qwen3.8-27b`.
+The model installer schedules the HIP build in the background if the ROCm
+6.3.4 toolchain is present. The gateway routes by stable bot ID. Each model
+server exposes its own slot 0.
+
+Idol takes precedence as soon as work is queued. The queue holds a shared
+lock on `/var/lib/mag-idol/gpu.lock.idol`, and each GPU stage also holds it
+across worker restarts. Qwen's guard detects that lock and ends and reaps
+llama-server before releasing the exclusive `/var/lib/mag-idol/gpu.lock`.
+Once Idol is idle, the guard takes the GPU lock, unloads any cached H3
+context, and starts a fresh llama-server. The MI50's power cap is clamped
+down to 72 W before Idol starts. `mag-scene` keeps device access disabled.
 
 Heat is answered by the card's clocks before anything is paused. At 82 °C
 the worker sets `power_dpm_force_performance_level` to `manual` and limits
@@ -502,12 +509,9 @@ runs (`POST /api/routines/<id>/<what>`) and removes (`DELETE`) them.
 
 ## Models (`ops/models`)
 
-`models.json` declares both bots: the GGUF (path, Hugging Face URL, size,
-SHA256), each bot's drafter and vision projector (today both bots run the same
-Gemma 4 file with the MTP head and projector from its repo),
-NUMA node, CPUs, threads, port, context and sampling arguments, and the
-pinned llama.cpp revision (`runtime.rev`), which `build-runtime.sh` builds
-CPU-only. A drafter only proposes the next few tokens; the bot's own model
+`models.json` declares the three model servers, their GGUFs, resources,
+ports, context sizes and sampling arguments. It also pins the llama.cpp
+revision for the separate CPU and HIP builds. A drafter only proposes the next few tokens; the bot's own model
 checks every one and keeps only what it would have written itself, so a
 drafter changes speed, never the answer. A drafter published as weights
 only gets a `build` (repository and commit, SHA256, the target's tokenizer by
@@ -523,6 +527,8 @@ checked against the size and SHA256 pinned in `models.json` like a download.
   file has exactly one writer;
 - a file whose size equals the Hugging Face size gets one SHA256 pass and a
   `<bot>.<kind>.ok` stamp in `/var/lib/mag-models`;
+- for the locally provisioned Qwen GGUF, the supervisor checks the header and
+  records a stamp tied to the local path, size and modification time;
 - a verified model is started as `mag-model@<bot>.service` and watched on
   `/health`;
 - the state is published in `/run/mag-models/status.json` ("lädt herunter",
@@ -1141,7 +1147,7 @@ What resumes:
 | room restart (deploy) | turns cut off before anything was visible run again; resets and VM restores in progress go on; MI50 jobs and scene renders are picked up again and mirrored into their messages; a whole-room scene whose objects are done is assembled |
 | Idol worker restart | running stages keep running and are followed again; the queue keeps its order |
 | scene worker restart | a running film render keeps running and is followed again |
-| reboot | mag-modeld verifies stamps and starts the models; 3D jobs continue at their first missing stage, videos after their last finished step, pictures start again; films go on at the first missing frame; the queue order is restored from each job's `order`; the MI50 cap is clamped to 78 W before the worker starts; VMs boot; missed timers (`Persistent=true`) run |
+| reboot | mag-modeld verifies stamps and starts the models; 3D jobs continue at their first missing stage, videos after their last finished step, pictures start again; films go on at the first missing frame; the queue order is restored from each job's `order`; the MI50 cap is clamped to 72 W before the worker starts; VMs boot; missed timers (`Persistent=true`) run |
 | a VM save cut off | the next save or restore of that VM commits the side overlay back first |
 
 Nothing writes a 3D job off as "interrupted".

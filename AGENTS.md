@@ -1,6 +1,6 @@
 # MAG stack
 
-One home server, one user (Chris, phone and desktop), one room, two bots.
+One home server, one user (Chris, phone and desktop), one room, three bots.
 This repository is the only source of the room, the model layer, the VM
 helpers and the deployment. Architecture: `docs/ARCHITECTURE.md`.
 
@@ -48,18 +48,20 @@ output; read only the configuration needed for a specific operation.
 Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
 Blake (internal ID lena) on NUMA0 (cores 0-13, :8191) runs original Gemma 4
 26B-A4B-it QAT UD-Q4_K_XL with MTP and vision; Noah on NUMA1 (cores 14-27,
-:8192) runs Mistral Small 4 119B UD-Q4_K_M with vision. There are exactly
-two selected models, no automatic replacements or downloads. Normal deploys
-preserve the installed models.json; an explicit model change uses
+:8192) runs Mistral Small 4 119B UD-Q4_K_M with vision. The model layer makes
+no automatic replacements or downloads. Normal deploys preserve the installed
+CPU specs in models.json. An explicit model change uses
 `MAG_REPLACE_MODEL_CONFIG=1` with ops/models/install.sh. A drafter only guesses ahead,
-the bot's model checks every token, so it changes speed, never words. No GPU offload: the MI50 belongs to MAG
-Idol alone and its power cap stays at 78 W (Chris, 2026-11-13; 82 W, 100 W, 85 W,
-78 W and 73 W for a while that day, 72 W before; the card is cooled passively,
-at 85 W its junction was 83 °C of 100; `ops/idol/power-cap.sh` only ever
-lowers it; never add anything that raises it, and nothing above 78 W). From 82 °C the Idol worker limits the MI50's sclk (manual, levels 0-2; from 88 °C only the lowest; auto again after a minute at or under 78 °C; `ops/idol/gpu-clock.sh`, which never writes the power cap). SIGSTOP of the stage (and of h3d for a video) is only the last resort at 90 °C. It lets go at 80 °C, or, once it has been held for two minutes, if the card is under 85 °C and has fallen less than 1 °C over the last minute, or after 15 minutes while the card is under 90 °C: a job is never parked or ended for the heat, it only takes longer (2026-11-14: at 96-107 °C the PCIe link to the card failed and took the host down; 2026-11-15: a hold that left queued GPU work running never resumed). `mag-modeld` is the single
-owner of the model lifecycle: it checks each GGUF against the Hugging Face
-size, verifies its SHA256 once, starts `mag-model@<bot>.service` and publishes
-`/run/mag-models/status.json`. Do not start, stop or enable model units by
+the bot's model checks every token, so it changes speed, never words.
+Qwen (ID qwen, :8193) uses a separate gfx906 HIP runtime and a single local
+Q6 GGUF in `/home/chris/models/qwen3.8-27b`. Idol holds a shared demand lock
+while it has queued or running work. Qwen's guard ends the llama-server
+process before giving up `/var/lib/mag-idol/gpu.lock` and starts a new process
+when Idol's demand ends. The passive MI50 cap is 72 W. `ops/idol/power-cap.sh`
+only lowers it. From 82 °C the Idol worker limits the MI50's sclk (manual, levels 0-2; from 88 °C only the lowest; auto again after a minute at or under 78 °C; `ops/idol/gpu-clock.sh`, which never writes the power cap). SIGSTOP of the stage (and of h3d for a video) is only the last resort at 90 °C. It lets go at 80 °C, or, once it has been held for two minutes, if the card is under 85 °C and has fallen less than 1 °C over the last minute, or after 15 minutes while the card is under 90 °C: a job is never parked or ended for the heat, it only takes longer (2026-11-14: at 96-107 °C the PCIe link to the card failed and took the host down; 2026-11-15: a hold that left queued GPU work running never resumed). `mag-modeld` is the single
+owner of the model lifecycle: it checks remote artifacts against the Hugging Face
+size and SHA256 and verifies the local Qwen header. It starts
+`mag-model@<bot>.service` and publishes `/run/mag-models/status.json`. Do not start, stop or enable model units by
 hand or from a deploy; use `mag-modeld ctl <bot> start|stop|restart|freeze|thaw`.
 A model file has exactly one writer: never start a second download on a file
 another process has open. Never delete a model file, including the retired
@@ -294,7 +296,7 @@ repository, a backup, a shared place or an installer that runs by itself,
 and every H3 video is marked "KI-generiert · MiniMax H3" in the chat and in
 its file. Wan 2.2 made the videos before; its weights stay on disk, unused.
 3D, pictures and videos are jobs of one line
-on the MI50: whoever has the card has it alone (at 78 W), the others wait
+on the MI50: whoever has the card has it alone (at 72 W), the others wait
 with their place shown (Chris moves them forwards or backwards, or cancels
 them, at their message; the line survives restarts and reboots) and run
 after it by themselves; the bots order 3D and videos too
@@ -419,12 +421,12 @@ PASS, empty output, duplicate filler and forbidden tool attempts are corrected
 once, then a visible error ends the problematic turn. No tool is executed in
 unattended bot dialogue. Without browser/SSE, the room starts fresh autonomous
 sessions after a short idle interval (60 s by default,
-`MAG_ROOM_AUTO_CHAT_INTERVAL_S`, minimum 5 s), only when both bots and their
-models are ready and no human task is pending. A newly received human message
-reserves 15 s for the human before a fresh spontaneous session. New human input
-and Stop immediately preempt active bot rounds. The system prompts, PASS
-handling and default 16k conversation budget are identical for both bots;
-the starting bot rotates across restarts. The room never silently imposes
+`MAG_ROOM_AUTO_CHAT_INTERVAL_S`, minimum 5 s) for bots whose models are ready
+and who have no pending human task. A newly received human message reserves
+15 s for the human before a fresh spontaneous session. New human input and Stop
+immediately preempt active bot rounds. The system prompts and PASS handling
+apply to all bots. Qwen uses a smaller conversation budget to leave room in its
+16k context. The starting bot rotates across restarts. The room never silently imposes
 a separate hidden fuse or rounds cap, and room markers `[[MAG:…]]` never
 reach the chat.
 An explicit @mention decides who is asked: after `@Lena …` only Lena answers

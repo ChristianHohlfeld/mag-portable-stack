@@ -1,4 +1,4 @@
-// MAG room: one process, one room, two bots.
+// MAG room: one process, one room, independently managed bots.
 #include "api.hpp"
 
 #include <csignal>

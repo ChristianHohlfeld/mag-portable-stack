@@ -101,8 +101,7 @@ install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/gpu-clock.sh /us
 install -o root -g root -m 0644 /opt/mag-stack/current/ops/idol/99-mag-mi50-clock.rules /etc/udev/rules.d/99-mag-mi50-clock.rules
 udevadm control --reload-rules || true
 /usr/local/lib/mag-idol/gpu-clock.sh prepare || true
-# The GPU lease that paused Lena is gone (both bots are CPU-only), and the
-# MIOpen cache paths of the first hotfix drop-in are part of the unit file.
+# Retire the old Lena GPU lease and the MIOpen cache drop-in.
 rm -f /usr/local/lib/mag-idol/gpu-lease.sh /etc/sudoers.d/mag-idol
 if grep -q '^Environment=MIOPEN_USER_DB_PATH=' /opt/mag-stack/current/ops/idol/mag-idol.service; then
   rm -f /etc/systemd/system/mag-idol.service.d/miopen.conf

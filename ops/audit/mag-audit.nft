@@ -16,11 +16,11 @@ table inet mag_audit {
 	chain output {
 		type filter hook output priority filter; policy accept;
 
-		# 1) The model servers (Lena :8191, Noah :8192) only for root (mag-modeld,
+		# 1) The model servers (Blake :8191, Noah :8192, Qwen :8193) only for root (mag-modeld,
 		#    health) and mag-audit (the gateway). Everyone else goes through the
 		#    gateway :8080, so every request is in the audit log. mag-stt (:8194)
 		#    is not a model server: the room talks to it directly.
-		ip daddr 127.0.0.1 tcp dport { 8191, 8192 } meta skuid != @backend_ok_uids counter reject with tcp reset
+		ip daddr 127.0.0.1 tcp dport { 8191, 8192, 8193 } meta skuid != @backend_ok_uids counter reject with tcp reset
 
 		# 2) Bot-User magbot: kein direkter Web-Zugriff, nur über mag-audit-webproxy (127.0.0.1:8888).
 		#    VM-Netz bleibt erreichbar (Steuerung der Agent-VMs).

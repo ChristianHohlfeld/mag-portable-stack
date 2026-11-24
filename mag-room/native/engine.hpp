@@ -1163,7 +1163,7 @@ private:
            "- Dateien aus dem Chat liegen in deiner VM unter /home/bot/room/. Mit share_file zeigst du Chris eine Datei. " +
            std::string(sees(id) ? "Bilder aus dem Chat siehst du direkt." : "Bilder siehst du nicht selbst: du bekommst eine Beschreibung, und read_image liest Text in einem Bild.") + "\n"
            "- Wenn Chris eine Webseite, Demo oder ein Spiel als HTML verlangt, liefere eine vollständige HTML-Datei: entweder als ```html-Codeblock in deiner Antwort oder mit write_file nach /home/bot/www/<name>.html. "
-           "Beides erscheint automatisch auf deiner Website " + site::base_url(me) + " und läuft bei Chris direkt im Chat als Live-Vorschau; Skripte von CDNs sind erlaubt. Mache davon keine Screenshots.\n"
+           "Bei einem Codeblock erfolgt die automatische Speicherung erst nach deiner Antwort; behaupte davor keine bestätigte Speicherung oder Prüfung. Beides erscheint bei erfolgreicher Veröffentlichung automatisch auf deiner Website " + site::base_url(me) + " und läuft bei Chris direkt im Chat als Live-Vorschau; Skripte von CDNs sind erlaubt. Mache davon keine Screenshots.\n"
            "- Braucht dein Auftrag nach einem erfolgreichen Werkzeugschritt noch einen konkreten weiteren Schritt, den du in dieser Antwort nicht mehr schaffst, beende sie mit " + std::string(kContinue) + ". Sonst nie.\n";
     else
       s += "\nDu hast keine eigene VM: keine Shell, kein Browser. Behaupte nie, etwas ausgeführt oder geöffnet zu haben.\n";
@@ -4993,8 +4993,19 @@ private:
         logf("engine: " + b.id + " page " + name + " not written: " + clip(trim(saved.out), 300));
         continue;
       }
+      const Val seen = tools::observe_file(guests_, vm, "www/" + name, true);
+      if (!seen.isObj() || jstr(seen, "sha256") != sha256_hex(doc) ||
+          jnum(seen, "bytes") != (double)doc.size()) {
+        logf("engine: " + b.id + " page " + name + " readback not verified");
+        continue;
+      }
       Val page = site::page(b.id, name, title);
       page["sig"] = site::sig(block.code);
+      page["fs_evidence"] = Val::object();
+      page["fs_evidence"]["kind"] = "write_verified";
+      page["fs_evidence"]["vm"] = vm;
+      page["fs_evidence"]["path"] = jstr(seen, "path");
+      page["fs_evidence"]["sha256"] = jstr(seen, "sha256");
       pages.push_back(page);
     }
     if (pages.empty()) return;

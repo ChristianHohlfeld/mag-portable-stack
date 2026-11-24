@@ -5298,8 +5298,9 @@ private:
     // before this lock could undo a simultaneous settings_changed() update.
     const long limit = round_limit_;
     if (b.running == "routine") return;
+    const bool autonomous_turn = reason == "autonomous" || (reason == "bot" && auto_burst_);
     if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous")) return;
-    if (auto_burst_ && !auto_enabled_) return;
+    if (autonomous_turn && !auto_enabled_) return;
     // Only a visible answer is a round; a PASS or a stopped turn gives it back.
     if (reason == "bot" && !visible && bot_turns_ > 0) --bot_turns_;
     size_t active = 0;
@@ -5338,16 +5339,16 @@ private:
     if (dialogue_stopped_ || (limit > 0 && bot_turns_ >= limit)) return;
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
-      if (reason != "autonomous" && !auto_burst_ && !audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name
+      if (!autonomous_turn && !audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name
       bool enabled = false;
       for (auto &c : bots.asArr())
         if (jstr(c, "id") == o->id) enabled = jbool(c, "enabled", true);
       if (!enabled) continue;
       if (o->want || o->routine_pending || o->running == "routine") continue;
-      if ((reason == "autonomous" || auto_burst_) && (o->running == "human" || o->running == "continue")) continue;
+      if (autonomous_turn && (o->running == "human" || o->running == "continue")) continue;
       if (silenced_.count(o->id)) continue;
       // Private work does not inherit the peer's browser goal.
-      if (reason == "autonomous" || auto_burst_) {
+      if (autonomous_turn) {
         if (o->goal_on || o->goal_arm || o->resetting || o->reset_pending || o->wipe_pending ||
             model_state(o->id) != "ready") continue;
       } else {

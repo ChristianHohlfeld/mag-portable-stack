@@ -380,7 +380,7 @@ exec bash -l "$1" > "$2" 2>&1
         Val got;
         try { file_cmd("guest-file-seek", seek); got = file_cmd("guest-file-read", rd); }
         catch (...) { close_log(); return; }
-        const std::string chunk = unbase64(str(got, "buf-b64"));
+        std::string chunk = unbase64(str(got, "buf-b64"));
         if (chunk.empty()) return;
         offset += chunk.size();
         if (!capped) {
@@ -388,6 +388,9 @@ exec bash -l "$1" > "$2" 2>&1
             capped = true;
             std::cout << "\n[Ausgabe sehr lang; der Rest steht nur im Log der VM]\n";
           } else {
+            // Guest output is data. It may not manufacture our control records.
+            // The original bytes remain in the guest log.
+            std::replace(chunk.begin(), chunk.end(), '\x1e', '?');
             std::cout << chunk;
           }
           std::cout.flush();

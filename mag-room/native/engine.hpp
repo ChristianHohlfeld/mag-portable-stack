@@ -3576,7 +3576,6 @@ private:
     const int recovery_tolerance = (int)std::clamp(envl("MAG_ROOM_RECOVERY_TOLERANCE", 8), 4L, 32L);
     int rejected_dialogue = 0, repeated_observations = 0;
     bool slice_handoff = false;
-    std::set<std::string> observed_work;
     bool will_owner_interrupted = from_chris;
     int pseudo_retries = 0;
     bool require_real_call = false;
@@ -3693,14 +3692,23 @@ private:
                               jstr(current_will, "status") == "open";
         cue["content"] = own_task
             ? "(Interne Selbstgesprächsrunde, kein Auftrag von Chris: Dein eigenes Ziel ist offen: „" +
-              clip(jstr(current_will, "text"), 800) + "“. Abschluss: „" +
+              clip(jstr(current_will, "text"), 800) + "“. Orientierung: „" +
               clip(jstr(current_will, "done_when"), 600) +
-              "“. Nutze deine VM-Werkzeuge direkt und arbeite anhand echter Ergebnisse. Das Ziel ist eine Arbeitsnotiz, keine Zugriffsvoraussetzung. "
-              "Prüfe das tatsächliche Ergebnis am Abschlusskriterium; dokumentiere Fortschritt bei Bedarf mit will_progress und beende mit will_finish erst bei erreichtem Kriterium. "
-              "Sprich anschließend mit dem anderen Bot.)"
+              "“. Das Ziel ist eine Entwicklungsrichtung, keine Zugriffsvoraussetzung und kein Zwang zum exakten Endpunkt. "
+              "Beobachte den tatsächlichen Zustand, wähle selbst eine Handlung, prüfe ihre Wirkung und passe deinen Ansatz an. "
+              "Auch Umwege und Rückschritte sind erlaubt. Dokumentiere bei Bedarf mit will_progress; einen tatsächlichen Abschluss behauptest du nur mit Nachweis. "
+              "Du kannst zwischendurch sprechen und später weiterarbeiten.)"
             : reason == "autonomous" ? autonomous_invite : note;
         if (jstr(current_will, "status") == "blocked")
           cue["content"] = jstr(cue, "content") + " Dein bisheriges Ziel ist wegen fehlendem Fortschritt blockiert. Wiederhole es nicht unverändert. Du kannst ein anderes Vorhaben wählen oder einfach über ein anderes Thema sprechen.";
+        if (const Val *driver = b.wire.find("state_driver"); driver && driver->isObj()) {
+          const Val *evidence = driver->find("last_evidence");
+          if (evidence && evidence->isObj())
+            cue["content"] = jstr(cue, "content") +
+                "\n(Letzte gespeicherte Werkzeugbeobachtung, historisch und kein aktueller Erfolgsnachweis: " +
+                clip(mj::dump(*evidence), 800) +
+                ". Prüfe den aktuellen Zustand bei Bedarf erneut. Eine neue Beobachtung ist nicht automatisch Annäherung an dein Ziel.)";
+        }
         body["messages"].push(cue);
       }
 
@@ -4772,12 +4780,48 @@ private:
         if (bot_dialogue && own_chat && vm_step && !bad_args && !cancel->stopped()) {
           const bool confirmed = result.ok && !jstr(result.fs_evidence, "kind").empty();
           const std::string signature = sha256_hex(c.name + "\n" + mj::dump(args));
-          // New attempts and new observed outcomes are allowed; unchanged
-          // results of the same operation count toward a soft recovery limit.
-          // The fingerprint is not a claim that a task has been completed.
-          const std::string outcome = sha256_hex(signature + "\n" + mj::dump(result.fs_evidence) + "\n" + result.text);
-          const bool new_observation = observed_work.insert(outcome).second;
+          // A durable observation vector, not a guessed scalar distance.
+          // Different invocations alone are NOT evidence of progress.
+          Val &driver = b.wire["state_driver"];
+          const bool has_direction = jstr(will_at_request, "status") == "open";
+          const std::string direction = has_direction
+              ? sha256_hex(jstr(will_at_request, "text") + "\n" + jstr(will_at_request, "done_when"))
+              : "exploration";
+          if (!driver.isObj() || jstr(driver, "direction_key") != direction) {
+            driver = Val::object();
+            driver["direction_key"] = direction;
+            driver["history"] = Val::array();
+          }
+          driver["aim"] = has_direction ? jstr(will_at_request, "text") : "";
+          driver["orientation"] = has_direction ? jstr(will_at_request, "done_when") : "";
+          Val evidence = result.fs_evidence;
+          if (!evidence.isObj()) {
+            evidence = Val::object();
+            evidence["kind"] = "unverified";
+            evidence["error"] = clip(result.text, 600);
+          }
+          Val observation = evidence;
+          const std::string kind = jstr(evidence, "kind");
+          // Reading and writing the same path/hash observe the same file
+          // state. A new command with identical output is not a new fact.
+          if (kind == "read_verified" || kind == "write_verified")
+            observation["kind"] = "file_observed";
+          const std::string outcome = sha256_hex(mj::dump(observation));
+          Val &history = driver["history"];
+          if (!history.isArr()) history = Val::array();
+          const bool new_observation = std::none_of(history.asArr().begin(), history.asArr().end(),
+              [&](const Val &entry) { return entry.asStr() == outcome; });
+          if (new_observation) {
+            history.push(outcome);
+            if (history.asArr().size() > 64) history.arr->erase(history.arr->begin());
+          }
           repeated_observations = new_observation ? 0 : repeated_observations + 1;
+          driver["last_evidence"] = evidence;
+          driver["last_tool"] = c.name;
+          driver["last_outcome"] = outcome;
+          driver["new_observation"] = new_observation;
+          driver["unchanged_in_turn"] = repeated_observations;
+          driver["revision"] = jnum(driver, "revision") + 1;
           if (jstr(will_at_request, "status") == "open") room_.update_will(b.id, [&](Val &w) {
             if (jstr(w, "status") != "open" ||
                 jstr(w, "text") != jstr(will_at_request, "text") ||
@@ -4982,11 +5026,12 @@ private:
     const bool handoff = (reason == "bot" || reason == "autonomous") &&
         !pass_enabled && !cancelled && !cancel->stopped() &&
         (slice_handoff || (t.steps > 0 && (t.id.empty() || room_.text_len(t.id) == 0)));
-    ensure_message(b, t, reason);
-    if (t.id.empty()) {
-      if (handoff) after_turn(b, reason, false, false, false, "", true);
+    if (handoff && t.id.empty()) {
+      after_turn(b, reason, false, false, false, "", true);
       return;
     }
+    ensure_message(b, t, reason);
+    if (t.id.empty()) return;
     // A bot that wanted to do what the other one already does leaves no message in the chat.
     if (t.yielded) room_.update(t.id, [](Val &m) { m["yielded"] = true; });
     show_thoughts(t);

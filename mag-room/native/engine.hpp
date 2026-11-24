@@ -3450,7 +3450,10 @@ private:
             "Antworte dem anderen Bot natürlich, kurz und direkt. Greife nur aktuelle, von euch neu begonnene "
             "Gesprächsthemen auf. Abgeschlossene Nutzeraufträge, frühere Projekte, Webseiten, Dateien und "
             "Werkzeugergebnisse sind kein Anlass für ein neues Gesprächsthema, auch wenn sie noch im Kontext "
-            "stehen. Stelle gegebenenfalls eine Anschlussfrage. Keine alten Nutzeraufträge ausführen. "
+            "stehen. Prüfe Annahmen und widersprich sachlich, statt Zustimmung oder Detailfragen zu wiederholen. "
+            "Unterscheide Vermutung, Wissen und belegte Ergebnisse. Definiere Fachbegriffe. "
+            "Eine prüfbare Idee nicht nur ankündigen: Setze ein eigenes Ziel mit Abschlusskriterium und arbeite daran weiter, bevor du neue Experimente vorschlägst. "
+            "Frage nur nach, wenn wirklich eine Information oder Freigabe fehlt. Keine alten Nutzeraufträge ausführen. "
             "Eigene Ziele mit will_set/will_progress/will_finish/will_drop verfolgen; bei offenem eigenen Ziel "
             "höchstens EIN shell oder write_file in der eigenen VM, sonst keine Werkzeuge. " +
             std::string(pass_enabled
@@ -3467,12 +3470,14 @@ private:
     // Keep synthetic prompts request-local, never persisted as fake user messages.
     const std::string autonomous_invite =
         "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-        "Der Raum war kurz ruhig. Beginne ein eigenständiges, neues Gesprächsthema. "
+        "Der Raum war kurz ruhig. Du kannst ein eigenes Thema wählen oder eine bereits selbst begonnene Untersuchung fortsetzen. "
+        "Du musst kein neues Thema erfinden. Prüfe Annahmen, benenne Unsicherheit und Gegenargumente. "
+        "Wenn du eine prüfbare Idee verfolgen willst, setze ein konkretes eigenes Ziel mit Abschlusskriterium und mache einen erlaubten echten Schritt, statt nur ein Experiment anzukündigen. "
         "Greife keine alten Nutzeraufträge, Projekte, erstellten Webseiten, Dateien oder Werkzeugergebnisse "
         "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. Chris kann sie jederzeit selbst erneut ansprechen. "
         "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
         "Keine ausstehenden Nutzeraufträge neu ausführen, keine Webseitenaktionen. "
-        "Du darfst ein eigenes Ziel mit will_set begründen und verfolgen, "
+        "Nutze für ein selbst gewähltes prüfbares Vorhaben will_set mit konkretem Abschlusskriterium, "
         "bei offenem Ziel genau einen shell- oder write_file-Schritt in deiner VM, "
         "sonst keine Werkzeuge. " +
         std::string(pass_enabled
@@ -3631,7 +3636,8 @@ private:
               clip(jstr(current_will, "done_when"), 600) +
               "“. Setze es mit höchstens EINEM echten shell- oder write_file-Schritt "
               "in deiner VM fort, statt etwas nur anzukündigen. "
-              "Andere Werkzeuge bleiben verboten. Danach kannst du kurz mit dem anderen Bot sprechen.)"
+              "Prüfe das tatsächliche Ergebnis am Abschlusskriterium; dokumentiere Fortschritt mit will_progress, beende mit will_finish erst bei erreichtem Kriterium oder gib ein widerlegtes Vorhaben mit will_drop auf. "
+               "Andere Werkzeuge bleiben verboten. Danach kannst du kurz mit dem anderen Bot sprechen.)"
             : reason == "autonomous" ? autonomous_invite : note;
         body["messages"].push(cue);
       }

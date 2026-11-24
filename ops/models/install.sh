@@ -31,9 +31,13 @@ else
 fi
 for f in run.sh fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
 # Paths and the unit's user follow this host's owner (ops/host.env).
-mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
-chmod 0644 "$LIB/models.json.next"
-mv -f "$LIB/models.json.next" "$LIB/models.json"
+# A software deploy must not silently change local model selection.
+# Replace the retired uncensored default once, or on explicit operator request.
+if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e '.bots | to_entries | any(.value.model.path | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
+  mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
+  chmod 0644 "$LIB/models.json.next"
+  mv -f "$LIB/models.json.next" "$LIB/models.json"
+fi
 install -m 0755 "$BIN" "$LIB/mag-modeld.next"
 mv -f "$LIB/mag-modeld.next" "$LIB/mag-modeld"
 for unit in mag-modeld.service mag-model@.service mag-model-fetch@.service; do

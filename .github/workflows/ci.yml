@@ -99,7 +99,8 @@ jobs:
           node mag-room/tests/test_tts_whisper.js
       - name: Live browser (gestures, keyboard only from a tap, HTTPS picture)
         run: |
-          npm install --prefix /tmp/mag-live-jsdom jsdom@26.1.0
+          npm install --prefix /tmp/mag-live-jsdom jsdom@26.1.0 playwright-core@1.56.1
+          NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_chat_header.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules MAG_SKIP_CHROME=1 node mag-room/tests/test_live_view.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_web_ui.js
           NODE_PATH=/tmp/mag-live-jsdom/node_modules node mag-room/tests/test_chip_pointer.js

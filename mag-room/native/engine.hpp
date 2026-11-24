@@ -5131,7 +5131,7 @@ private:
     // bare acknowledgement when nobody asked this bot anything.
     const std::string norm = group_chat::norm_reply(text);
     bool repeat = false;
-    if (pass_enabled && !cancelled && !failed && t.steps == 0 && !norm.empty()) {
+    if ((pass_enabled || !autonomous_round) && !cancelled && !failed && t.steps == 0 && !norm.empty()) {
       std::lock_guard<std::mutex> lk(mu_);
       repeat = std::find(b.said.begin(), b.said.end(), norm) != b.said.end();
       if (!repeat) b.said.push_back(norm);

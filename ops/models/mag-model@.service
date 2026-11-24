@@ -19,7 +19,8 @@ RestartSec=10
 RestartPreventExitStatus=78
 # Loading reads up to 65 GB into locked node-local memory.
 TimeoutStartSec=infinity
-TimeoutStopSec=20
+# Large locked GGUF mappings can take longer than 20 s to release.
+TimeoutStopSec=5min
 KillMode=control-group
 LimitMEMLOCK=infinity
 MemorySwapMax=0

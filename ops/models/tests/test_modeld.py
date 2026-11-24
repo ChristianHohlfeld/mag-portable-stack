@@ -180,7 +180,10 @@ def main():
 echo "$@" >> {tmp}/calls
 case "$1" in
   show) if [ -e {tmp}/active.$2 ]; then echo ActiveState=active; echo ActiveEnterTimestampMonotonic=$(cat {tmp}/active.$2); else echo ActiveState=inactive; fi
-        echo SubState=x; echo Result=success; echo NRestarts=0; echo FreezerState=running ;;
+        echo SubState=x; echo Result=success; echo NRestarts=0
+        if [ -e {tmp}/frozen.$2 ]; then echo FreezerState=frozen; else echo FreezerState=running; fi ;;
+  thaw) [ "$2" != "--no-block" ] || exit 99
+        [ -e {tmp}/frozen.$2 ] && rm {tmp}/frozen.$2 ;;
   start|restart) date +%s%N | cut -c1-16 > {tmp}/active.$3 ;;
   stop) rm -f {tmp}/active.$3 ;;
 esac
@@ -277,11 +280,27 @@ esac
         time.sleep(1.1)
         proc = subprocess.Popen([str(BIN), "--config", str(tmp / "models.json")], env=env, stderr=subprocess.PIPE, text=True)
         assert wait("lena", "ready")["since"] == since, (status("lena"), since)
+        lease = state / "control" / "lena.background"
+        lease.touch()
+        weight = "set-property --runtime mag-model@lena.service CPUWeight="
+        end = time.time() + 5
+        while weight + "10\n" not in calls() and time.time() < end:
+            time.sleep(0.1)
+        assert weight + "10\n" in calls(), calls()
+        os.utime(lease, (time.time() - 20, time.time() - 20))
+        end = time.time() + 5
+        while not calls().rpartition(weight + "10\n")[2].count(weight + "100\n") and time.time() < end:
+            time.sleep(0.1)
+        assert weight + "100\n" in calls().rpartition(weight + "10\n")[2], calls()
+        assert "thaw " not in calls(), "stop and start must leave an unfrozen unit alone"
+        (tmp / "frozen.mag-model@lena.service").touch()
         subprocess.check_call([str(BIN), "--config", str(tmp / "models.json"), "ctl", "lena", "restart"], env=env)
         end = time.time() + 20
         while status("lena").get("since") == since and time.time() < end:
             time.sleep(0.2)
         assert wait("lena", "ready")["since"] not in (since, None), status("lena")
+        assert "thaw mag-model@lena.service\n" in calls()
+        assert "thaw --no-block" not in calls()
         # Offline weights are discovered by quantization and never downloaded.
         local = models / "qwen"
         local.mkdir()

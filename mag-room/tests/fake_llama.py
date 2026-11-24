@@ -104,6 +104,10 @@ class FakeLlama:
 
                 try:
                     emit({"choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}]})
+                    if isinstance(answer, dict):
+                        for event, release in answer.get("stream_events", []):
+                            emit(event)
+                            release.wait(15)
                     if isinstance(answer, dict) and answer.get("reasoning"):
                         emit({"choices": [{"index": 0, "delta": {"reasoning_content": answer["reasoning"]}}]})
                     text = answer if isinstance(answer, str) else answer.get("content", "")

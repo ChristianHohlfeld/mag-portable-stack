@@ -94,6 +94,7 @@
       case 'downloading': return m.detail && f.bytes >= f.total ? m.detail : 'lädt herunter ' + pct + ' %' + (f.eta ? ' · ' + MAG.dur(f.eta * 1000) : '');
       case 'missing': return 'Modell fehlt';
       case 'verifying': return 'wird geprüft' + (f.verified ? ' ' + Math.floor(f.verified * 100) + ' %' : '');
+      case 'unloading': return 'entlädt das Modell';
       case 'loading': return m.gpu ? 'lädt auf die ' + m.gpu : 'lädt ins RAM';
       case 'waiting_gpu': return 'wartet auf die ' + m.gpu;
       case 'waiting_runtime': return m.detail;
@@ -104,7 +105,7 @@
       default: return 'nicht erreichbar';
     }
   }
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf dich', login: 'wartet auf deine Anmeldung', paying: 'wartet an der Kasse', warming: 'wärmt auf', resetting: 'leert Kontext' };
+  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', preparing_tool: 'bereitet Werkzeug vor', tool: 'arbeitet', approval: 'wartet auf dich', login: 'wartet auf deine Anmeldung', paying: 'wartet an der Kasse', warming: 'wärmt auf', resetting: 'leert Kontext' };
   // The exact weights, e.g. "gpt-oss-120b-heretic-v2 MXFP4".
   const modelName = (b) => (b.model?.file ? b.model.file.replace(/-([A-Za-z0-9_]+)$/, ' $1') : b.model?.label || '');
   const siteLink = (b) => (b.site ? el('a', { href: b.site + '/', target: '_blank', rel: 'noopener', text: b.site.replace(/^https?:\/\//, '') }) : null);
@@ -309,7 +310,10 @@
           if (m.state === 'paused') acts.append(model('thaw', 'Modell auftauen'));
           if (m.state === 'stopped' || m.state === 'failed') acts.append(model('start', 'Einschalten'));
           else {
-            if (m.state === 'ready') acts.append(model('restart', 'Modell neu laden'));
+            if (m.state === 'ready') acts.append(el('button', { class: 'btn', text: 'Modell neu laden', onclick: async () => {
+              if (await MAG.confirm(b.name + 's Modell neu laden?', 'Eine laufende Antwort wird abgebrochen. Das Modell wird entladen und neu geladen. Auch das erneute Verarbeiten des Chat-Kontexts kann mehrere Minuten dauern.', 'Modell neu laden', true))
+                call('POST', '/api/bot/' + id + '/model', { action: 'restart' }).then(() => MAG.toast('Modell neu laden angefordert'));
+            } }));
             acts.append(el('button', { class: 'btn danger', text: 'Abschalten', onclick: async () => {
               if (await MAG.confirm(b.name + ' abschalten?', 'Das Modell wird aus dem Arbeitsspeicher entladen und antwortet nicht mehr. Die Modelldatei bleibt. Einschalten lädt es neu, das dauert je nach Modell einige Minuten.', 'Abschalten', true))
                 call('POST', '/api/bot/' + id + '/model', { action: 'stop' }).then(() => MAG.toast(b.name + ' wird abgeschaltet'));

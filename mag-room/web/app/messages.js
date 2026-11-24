@@ -1672,13 +1672,30 @@
     }, Math.max(60, Math.min(700, cost * 4)));
   }
 
-  // ---- activity row: who is doing what right now --------------------------
-  // All model activity is displayed by the header chips. No growing
-  // activity card belongs in the timeline: it steals mobile reading space.
-  function paintActivity() {}
+  // Show live model work even before the first visible answer or step.
+  function paintActivity() {
+    if (!activity) return;
+    const labels = {
+      warming: 'wärmt den Systemprompt auf', reading: 'verarbeitet den Kontext',
+      thinking: 'denkt nach', writing: 'schreibt', preparing_tool: 'bereitet ein Werkzeug vor',
+      tool: 'arbeitet mit einem Werkzeug'
+    };
+    const rows = [];
+    for (const b of S.bots || []) {
+      const phase = b.model?.state === 'unloading' ? 'entlädt das Modell' : labels[b.phase];
+      if (!phase) continue;
+      const elapsed = b.phase_since ? MAG.stopwatch(Math.max(0, Date.now() - b.phase_since)) : '';
+      const progress = b.total > 0 ? `${b.processed} / ${b.total} Kontext-Token`
+        : b.generated_tokens > 0 ? `${b.generated_tokens} erzeugte Token` : '';
+      rows.push([b.name + ' ' + phase, progress, elapsed].filter(Boolean).join(' · '));
+    }
+    activity.hidden = !rows.length;
+    if (activity.textContent !== rows.join('\n')) activity.textContent = rows.join('\n');
+  }
 
   setInterval(() => {
-    if (!list) return; // not mounted yet; the activity row was intentionally removed
+    if (!list) return;
+    paintActivity();
     list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
       const m = S.messages.get(node.dataset.message || node.closest('.msg')?.dataset.id);

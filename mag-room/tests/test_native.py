@@ -1123,6 +1123,94 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(scheduled), 2, "exactly one coalesced run per bot")
         self.assertTrue(all(x["next"] > due for x in json.loads(path.read_text())))
 
+    def test_prefill_and_tool_only_stream_report_live_progress(self):
+        r = self.room
+        prefill, tool = threading.Event(), threading.Event()
+        r.noah.reply = lambda body: {"content": "Fertig.", "stream_events": [
+            ({"prompt_progress": {"processed": 6000, "total": 14000, "cache": 1000}}, prefill),
+            ({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "tool-only"}]}}],
+              "timings": {"predicted_n": 37}}, tool),
+        ]}
+
+        def noah():
+            return next(b for b in r.state()["bots"] if b["id"] == "noah")
+
+        try:
+            r.say("@Noah bitte kurz")
+            r.wait(lambda: noah().get("processed") == 6000, "prefill counters")
+            self.assertEqual(noah()["total"], 14000)
+            self.assertEqual(noah()["phase"], "reading")
+            self.assertEqual(r.texts("noah"), [])
+            self.assertTrue(r.noah.chats()[-1]["timings_per_token"])
+            prefill.set()
+            r.wait(lambda: noah()["phase"] == "preparing_tool", "tool work before any text")
+            self.assertEqual(noah()["generated_tokens"], 37)
+            self.assertEqual(r.texts("noah"), [])
+        finally:
+            prefill.set()
+            tool.set()
+        r.idle()
+        self.assertNotIn("generated_tokens", noah())
+
+    def test_human_reply_overlaps_peer_routine_and_filters_its_context(self):
+        r = self.room
+        started, release = threading.Event(), threading.Event()
+
+        def lena(body):
+            started.set()
+            release.wait(20)
+            return "Interner Routinebericht."
+
+        r.lena.reply = lena
+        r.noah.reply = lambda body: "Noah antwortet direkt."
+        code, job = r.api("POST", "/api/routines", {
+            "bot": "lena", "name": "Interner Job",
+            "instruction": "Interne Routineanweisung.", "when": {"every_minutes": 8}})
+        self.assertEqual(code, 200, job)
+        code, result = r.api("POST", "/api/routines/" + job["id"] + "/run", {})
+        self.assertEqual(code, 200, result)
+        try:
+            self.assertTrue(started.wait(10))
+            self.assertTrue((r.tmp / "control/lena.background").exists())
+            r.say("Noah, bist du da?")
+            r.wait(lambda: "Noah antwortet direkt." in r.texts("noah"), "reply during Lena's routine", 5)
+            self.assertTrue(next(b for b in r.state()["bots"] if b["id"] == "lena")["busy"])
+        finally:
+            release.set()
+        r.wait(lambda: "Interner Routinebericht." in r.texts("lena"), "routine finished")
+        r.idle()
+        self.assertFalse((r.tmp / "control/lena.background").exists())
+        r.say("@Noah Wie geht es weiter?")
+        r.idle()
+        prompt = json.dumps(r.noah.chats(), ensure_ascii=False)
+        self.assertNotIn("Interne Routineanweisung.", prompt)
+        self.assertNotIn("Interner Routinebericht.", prompt)
+
+    def test_human_reply_overlaps_peer_goal_inference(self):
+        r = self.room
+        started, release = threading.Event(), threading.Event()
+
+        def lena(body):
+            if body.get("tool_choice") == "required":
+                started.set()
+                release.wait(20)
+            return {"http_error": "test goal retry"}
+
+        r.lena.reply = lena
+        r.noah.reply = lambda body: "Noah bleibt ansprechbar."
+        try:
+            r.say("@Lena Suche auf https://example.com nach zwei passenden Angeboten")
+            self.assertTrue(started.wait(10))
+            r.say("Noah, bist du da?")
+            r.wait(lambda: "Noah bleibt ansprechbar." in r.texts("noah"), "direct reply during Lena's goal", 5)
+            self.assertTrue(next(b for b in r.state()["bots"] if b["id"] == "lena")["busy"])
+            r.noah.reply = lambda body: "Noah antwortet auch in die Runde."
+            r.say("Wie geht es euch heute?")
+            r.wait(lambda: "Noah antwortet auch in die Runde." in r.texts("noah"), "unaddressed reply during Lena's goal", 5)
+            self.assertTrue(next(b for b in r.state()["bots"] if b["id"] == "lena")["busy"])
+        finally:
+            release.set()
+
     def test_named_bot_answers_alone(self):
         r = self.room
         r.say("Lena, wie geht es dir?")
@@ -4039,7 +4127,7 @@ class RoomContract(unittest.TestCase):
         r.lena.reply = reply
         r.say("@Lena Nenne fuer mich zwei Schrumpfschlauch transparent auf Amazon.de 18650")
         r.wait(lambda: len(seen) >= 3, "opened and clicked")
-        r.say("Nicht 2 Stueck sondern 2s")
+        r.say("@Lena Nicht 2 Stueck sondern 2s")
         fix["go"] = True
         r.wait(lambda: len(seen) >= 6, "compacted request")
         compact = seen[5]
@@ -5379,6 +5467,8 @@ class RoomContract(unittest.TestCase):
         before = len(r.noah.chats())
         r.say("Und?")
         r.idle()
+        self.assertGreater(len(r.noah.chats()), before)
+        before = len(r.noah.chats())
         r.say("Noah du nicht")
         r.idle()
         self.assertEqual(len(r.noah.chats()), before)

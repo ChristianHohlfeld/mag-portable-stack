@@ -12,6 +12,7 @@ const { JSDOM } = require('jsdom');
 const root = path.join(__dirname, '..', 'web', 'app');
 const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 
+const messages = read('messages.js').replace(/\}\)\(\);\s*$/, 'window.__paintActivity = paintActivity;})();');
 const html = `<!doctype html><html><body>
 <div id="scroll"><button id="older" hidden></button><div id="empty" hidden></div><div id="list"></div><div id="activity"></div></div>
 <button id="jump" hidden></button>
@@ -25,7 +26,7 @@ window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 </script>
 <script>${read('core.js').replace(/<\/script/gi, '<\\/script')}</script>
 <script>${read('code_editor.js').replace(/<\/script/gi, '<\\/script')}</script>
-<script>${read('messages.js').replace(/<\/script/gi, '<\\/script')}</script>
+<script>${messages.replace(/<\/script/gi, '<\\/script')}</script>
 <script>${read('composer.js').replace(/<\/script/gi, '<\\/script')}</script>
 </body></html>`;
 
@@ -79,7 +80,19 @@ assert.strictEqual(file.accept, '');
 assert.strictEqual(file.multiple, true);
 
 const index = fs.readFileSync(path.join(root, '..', 'index.html'), 'utf8');
-assert(!index.includes('<div id="activity"></div>'), 'thinking must only occupy the header status');
+assert(index.includes('<div id="activity" hidden></div>'), 'the chat has a compact live activity row');
+const activity = document.getElementById('activity');
+MAG.state.bots = [
+  { id: 'noah', name: 'Noah', phase: 'reading', processed: 6000, total: 14000 },
+  { id: 'lena', name: 'Blake', phase: 'preparing_tool', generated_tokens: 37 },
+];
+window.__paintActivity();
+assert.strictEqual(activity.hidden, false);
+assert(activity.textContent.includes('Noah verarbeitet den Kontext · 6000 / 14000 Kontext-Token'));
+assert(activity.textContent.includes('Blake bereitet ein Werkzeug vor · 37 erzeugte Token'));
+MAG.state.bots = [{ id: 'noah', name: 'Noah', phase: 'idle' }];
+window.__paintActivity();
+assert.strictEqual(activity.hidden, true);
 const panels = read('panels.js');
 assert(panels.includes("class: 'chip-stop'"), 'stopping a busy bot remains one tap away');
 assert(panels.includes("'/api/stop'"), 'header stop must hit backend stop endpoint');

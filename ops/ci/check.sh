@@ -6,8 +6,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/prune-releases.sh
   ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/private-access/deploy-nginx.sh
-  ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh)
+  ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh
+  ops/agent-drift.sh ops/gitea-ci/bot-auth.sh ops/gitea-ci/admin-session.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
+python3 ops/gitea-ci/tests/test_cleanup.py
 python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py ops/scene/face.py ops/scene/phonemes.py
 # A restart of the Idol worker must leave a running stage alone, and one of
 # the scene worker a film that is being rendered.

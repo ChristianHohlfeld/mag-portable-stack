@@ -20,6 +20,7 @@
 #include "room.hpp"
 #include "tools.hpp"
 #include "goal.hpp"
+#include "state_driver.hpp"
 #include "vm.hpp"
 #include <atomic>
 
@@ -3530,7 +3531,7 @@ private:
         "Der Raum war kurz ruhig. Du hast jetzt Zeit für eigene Interessen. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
         "Vertiefe ein Thema, solange es etwas zu entdecken gibt, und wechsle sonst frei. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
         "Sprich einfach, direkt und auf Augenhöhe. Keine aufgeblasenen oder erfundenen Fachwörter, kein Selbstlob. "
-        "Du kannst einfach ein Gespräch führen, eine Idee entwickeln oder etwas erschaffen. Kein Ziel und keine Systemanalyse sind Pflicht. Wenn du etwas tun willst, arbeite anhand echter Ergebnisse daran. "
+        "Du kannst einfach ein Gespräch führen, eine Idee entwickeln oder etwas erschaffen. Kein Ziel und keine Systemanalyse sind Pflicht. Wenn du etwas tun willst, arbeite anhand echter Ergebnisse daran. Ein eigenes Ziel gibt eine Richtung vor, keinen erzwungenen Endpunkt. "
         "Greife keine alten Nutzeraufträge, Projekte, erstellten Webseiten, Dateien oder Werkzeugergebnisse "
         "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. "
         "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
@@ -3574,7 +3575,7 @@ private:
     // Tolerance counts completed decisions without new evidence, never
     // seconds spent thinking or pre-filling on a slow CPU.
     const int recovery_tolerance = (int)std::clamp(envl("MAG_ROOM_RECOVERY_TOLERANCE", 8), 4L, 32L);
-    int rejected_dialogue = 0, repeated_observations = 0;
+    int rejected_dialogue = 0;
     bool slice_handoff = false;
     bool will_owner_interrupted = from_chris;
     int pseudo_retries = 0;
@@ -3702,14 +3703,29 @@ private:
         if (jstr(current_will, "status") == "blocked")
           cue["content"] = jstr(cue, "content") + " Dein bisheriges Ziel ist wegen fehlendem Fortschritt blockiert. Wiederhole es nicht unverändert. Du kannst ein anderes Vorhaben wählen oder einfach über ein anderes Thema sprechen.";
         if (const Val *driver = b.wire.find("state_driver"); driver && driver->isObj()) {
-          const Val *evidence = driver->find("last_evidence");
-          if (evidence && evidence->isObj())
-            cue["content"] = jstr(cue, "content") +
-                "\n(Letzte gespeicherte Werkzeugbeobachtung, historisch und kein aktueller Erfolgsnachweis: " +
-                clip(mj::dump(*evidence), 800) +
-                ". Prüfe den aktuellen Zustand bei Bedarf erneut. Eine neue Beobachtung ist nicht automatisch Annäherung an dein Ziel.)";
+          const std::string current_direction = own_task
+              ? sha256_hex(jstr(current_will, "text") + "\n" + jstr(current_will, "done_when"))
+              : "exploration";
+          if (jstr(*driver, "direction_key") == current_direction) {
+            const std::string feedback = state_driver::cue(*driver);
+            if (!feedback.empty()) cue["content"] = jstr(cue, "content") + "\n" + feedback;
+          }
         }
         body["messages"].push(cue);
+      }
+
+      if (driving) {
+        const Val *driver = b.goal.find("state_driver");
+        if (driver && jstr(*driver, "direction_key") ==
+            jstr(b.goal, "id") + ":" + std::to_string((long)jnum(b.goal, "revision"))) {
+          const std::string feedback = state_driver::cue(*driver);
+          if (!feedback.empty()) {
+            Val hint = Val::object();
+            hint["role"] = "user";
+            hint["content"] = feedback;
+            body["messages"].push(hint);
+          }
+        }
       }
 
       // One private, request-local second-person narrator. Never persist it
@@ -4780,48 +4796,15 @@ private:
         if (bot_dialogue && own_chat && vm_step && !bad_args && !cancel->stopped()) {
           const bool confirmed = result.ok && !jstr(result.fs_evidence, "kind").empty();
           const std::string signature = sha256_hex(c.name + "\n" + mj::dump(args));
-          // A durable observation vector, not a guessed scalar distance.
-          // Different invocations alone are NOT evidence of progress.
-          Val &driver = b.wire["state_driver"];
           const bool has_direction = jstr(will_at_request, "status") == "open";
           const std::string direction = has_direction
               ? sha256_hex(jstr(will_at_request, "text") + "\n" + jstr(will_at_request, "done_when"))
               : "exploration";
-          if (!driver.isObj() || jstr(driver, "direction_key") != direction) {
-            driver = Val::object();
-            driver["direction_key"] = direction;
-            driver["history"] = Val::array();
-          }
-          driver["aim"] = has_direction ? jstr(will_at_request, "text") : "";
-          driver["orientation"] = has_direction ? jstr(will_at_request, "done_when") : "";
-          Val evidence = result.fs_evidence;
-          if (!evidence.isObj()) {
-            evidence = Val::object();
-            evidence["kind"] = "unverified";
-            evidence["error"] = clip(result.text, 600);
-          }
-          Val observation = evidence;
-          const std::string kind = jstr(evidence, "kind");
-          // Reading and writing the same path/hash observe the same file
-          // state. A new command with identical output is not a new fact.
-          if (kind == "read_verified" || kind == "write_verified")
-            observation["kind"] = "file_observed";
-          const std::string outcome = sha256_hex(mj::dump(observation));
-          Val &history = driver["history"];
-          if (!history.isArr()) history = Val::array();
-          const bool new_observation = std::none_of(history.asArr().begin(), history.asArr().end(),
-              [&](const Val &entry) { return entry.asStr() == outcome; });
-          if (new_observation) {
-            history.push(outcome);
-            if (history.asArr().size() > 64) history.arr->erase(history.arr->begin());
-          }
-          repeated_observations = new_observation ? 0 : repeated_observations + 1;
-          driver["last_evidence"] = evidence;
-          driver["last_tool"] = c.name;
-          driver["last_outcome"] = outcome;
-          driver["new_observation"] = new_observation;
-          driver["unchanged_in_turn"] = repeated_observations;
-          driver["revision"] = jnum(driver, "revision") + 1;
+          Val &driver = b.wire["state_driver"];
+          state_driver::orient(driver, direction, has_direction ? jstr(will_at_request, "text") : "",
+              has_direction ? jstr(will_at_request, "done_when") : "");
+          const auto feedback = state_driver::observe(driver, c.name, signature,
+              result.fs_evidence, Val(), result.ok, result.text, recovery_tolerance);
           if (jstr(will_at_request, "status") == "open") room_.update_will(b.id, [&](Val &w) {
             if (jstr(w, "status") != "open" ||
                 jstr(w, "text") != jstr(will_at_request, "text") ||
@@ -4835,9 +4818,9 @@ private:
             w["progress"] = clip(result.text, 700);
             return true;
           });
-          if (repeated_observations == recovery_tolerance / 2)
-            will_retry_note = "(Die letzten realen Werkzeugergebnisse sind unverändert. Du darfst weiter prüfen, aber versuche eine andere Methode, Eingabe oder Hypothese. Dein Ziel bleibt erhalten.)";
-          if (repeated_observations >= recovery_tolerance) {
+          if (feedback.suggest_change)
+            will_retry_note = state_driver::cue(driver);
+          if (feedback.yield) {
             // Soft yield only. Preserve the open goal, files and evidence.
             // Next conversation turn can continue with a different approach.
             slice_handoff = true;
@@ -4914,6 +4897,20 @@ private:
         ++t.steps;
         if (result.snapshot.isObj() && (goal_live(b) || jstr(b.goal, "state") == "blocked"))
           goal::absorb(b.goal, result.snapshot, look_version);
+        // The same feedback controller observes explicit browser tasks.
+        // A failed action can still provide a real, fresh page snapshot.
+        if (goal_live(b) && starts_with(c.name, "browser_") && !was_cancelled) {
+          Val &driver = b.goal["state_driver"];
+          state_driver::orient(driver, jstr(b.goal, "id") + ":" +
+              std::to_string((long)jnum(b.goal, "revision")), jstr(b.goal, "text"), jstr(b.goal, "done"));
+          const auto feedback = state_driver::observe(driver, c.name,
+              sha256_hex(c.name + "\n" + mj::dump(args)), Val(), result.snapshot,
+              result.ok, result.text, recovery_tolerance);
+          if (feedback.suggest_change)
+            will_retry_note = state_driver::cue(driver);
+          // A browser goal still needs actual goal_finish proofs or owner
+          // action. No observation or controller score can finish it.
+        }
         if (!result.ok && goal::active(b.goal)) b.goal["error"] = clip(result.text, 400);
         if (c.name == "web_search" && goal_live(b)) {
           const Val *seen_pages = b.goal.find("evidence_pages");

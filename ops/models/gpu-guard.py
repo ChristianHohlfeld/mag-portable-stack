@@ -27,12 +27,12 @@ def idol_waiting(priority):
 
 def unload_h3():
     # h3d caches H3 between video jobs. Only try this while owning gpu.lock.
-    # Refusal means the optional server is absent. Other failures leave the
-    # device to Idol and are retried without launching llama-server.
+    # Missing server or endpoint is OK under the GPU lock. Other failures
+    # are retried without launching llama-server.
     conn = http.client.HTTPConnection("127.0.0.1", int(os.environ.get("MAG_H3D_PORT", "8796")), timeout=2)
     try:
         conn.request("POST", "/sdcpp/v1/models/unload")
-        return conn.getresponse().status == 200
+        return conn.getresponse().status in (200, 404)
     except ConnectionRefusedError:
         return True
     except (OSError, http.client.HTTPException):

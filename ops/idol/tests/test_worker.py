@@ -5,6 +5,7 @@ again, a finished one is not repeated) and an earlier worker's "Unterbrochen".
 The stages are scripted stand-ins; this proves the worker's bookkeeping, not
 the GPU pipeline."""
 import fcntl
+import http.server
 import json
 import os
 import pathlib
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import urllib.error
 import urllib.request
 
@@ -111,7 +113,7 @@ def main():
                MAG_GPU_HOLD_MAX_S="8", MAG_GPU_THROTTLE_RESTORE_S="2",
                MAG_GPU_HOLD_BUSY_S="2", MAG_GPU_HOLD_REARM_S="5",
                MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
-    model = None
+    model, h3d = None, None
     gpu, priority, pid_file = (tmp / name for name in ("gpu.lock", "gpu.lock.idol", "qwen.pid"))
     (tmp / "rocm-6.3.4/current").mkdir(parents=True)
     for path in (gpu, priority, tmp / ".complete"):
@@ -226,12 +228,31 @@ def main():
         start()
         guard = WORKER.parents[1] / "models/gpu-guard.py"
         command = "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)"
+        unload_post = threading.Event()
+        route_missing = threading.Event()
+
+        class H3d(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                assert self.path == "/sdcpp/v1/models/unload", self.path
+                self.send_response(404 if route_missing.is_set() else 409)
+                self.end_headers()
+                unload_post.set()
+
+            def log_message(self, *_args):
+                pass
+
+        h3d = http.server.HTTPServer(("127.0.0.1", 0), H3d)
+        threading.Thread(target=h3d.serve_forever, daemon=True).start()
         with gpu.open("rb") as busy:
             fcntl.flock(busy, fcntl.LOCK_EX)
             model = subprocess.Popen([sys.executable, "-I", str(guard), str(tmp), sys.executable, "-c", command, str(pid_file)],
-                                     env=dict(env, MAG_H3D_PORT="9"))
+                                     env=dict(env, MAG_H3D_PORT=str(h3d.server_port)))
             time.sleep(0.5)
             assert not pid_file.exists()
+        assert unload_post.wait(timeout=5), "guard did not POST the unload route"
+        time.sleep(0.5)
+        assert not pid_file.exists(), "guard started Qwen while h3d reported model_busy"
+        route_missing.set()
         before = wait_model()
         generation = (tmp / ".gpu").read_text()
         # A picture from words is a job of the same queue, with its own result.
@@ -520,6 +541,9 @@ def main():
             sys.stderr.write((tmp / "worker.out").read_text(errors="replace")[-6000:])
         raise
     finally:
+        if h3d is not None:
+            h3d.shutdown()
+            h3d.server_close()
         if model is not None and model.poll() is None:
             model.terminate()
             model.wait(timeout=10)

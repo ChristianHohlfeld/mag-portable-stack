@@ -25,6 +25,52 @@ class Health(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def test_hip_build():
+    """A matching legacy binary and stale build tree cannot satisfy the PIC build."""
+    rev = json.loads((ROOT / "ops/models/models.json").read_text())["runtime"]["rev"]
+    with tempfile.TemporaryDirectory(prefix="model-hip-") as work:
+        home = pathlib.Path(work)
+        src = home / ".local/src/mag-coding-llama.cpp-hip"
+        stale = src / "build-mag-models"
+        stale.mkdir(parents=True)
+        (stale / "CMakeCache.txt").write_text("CMAKE_POSITION_INDEPENDENT_CODE:BOOL=OFF\n")
+        (src / ".git").mkdir()
+        (src / "src").mkdir()
+        (src / "src/llama-arch.cpp").write_text("LLM_ARCH_GEMMA4 LLM_ARCH_OPENAI_MOE\n")
+
+        def executable(path, script):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/bash\nset -euo pipefail\n" + script)
+            path.chmod(0o755)
+
+        bin_dir = home / ".local/mag-coding-rt" / rev / "hip-gfx906/bin"
+        executable(bin_dir / "llama-server", "echo legacy\n")
+        (bin_dir / "source-commit").write_text(rev + "\n")
+        executable(home / "idol-mi50/rocm-6.3.4/current/lib/llvm/bin/clang++", "exit 1\n")
+        tools = home / "tools"
+        executable(tools / "getent", 'printf "user:x:0:0::%s:/bin/bash\\n" "$TEST_HOME"\n')
+        executable(tools / "git", 'if [[ $3 == rev-parse ]]; then echo "$TEST_REV"; fi\n')
+        executable(tools / "cmake", r"""printf '%s\n' "$*" >> "$TEST_HOME/cmake.log"
+if [[ $1 == --build ]]; then
+  mkdir -p "$2/bin"
+  printf '#!/bin/bash\necho rebuilt\n' > "$2/bin/llama-server"
+  chmod +x "$2/bin/llama-server"
+fi
+""")
+        env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", MAG_BUILD_PINNED="1",
+                   MAG_OWNER=subprocess.check_output(["id", "-un"], text=True).strip(),
+                   MAG_HOST_ENV=str(home / "no-host-env"), MAG_IDOL_BASE=str(home / "idol-mi50"),
+                   TEST_HOME=work, TEST_REV=rev)
+        command = ["bash", str(ROOT / "ops/models/build-runtime.sh"), "hip"]
+        assert "rebuilt" in subprocess.check_output(command, env=env, text=True)
+        log = (home / "cmake.log").read_text().splitlines()
+        assert len(log) == 2 and str(stale) + "-hip-pic-" + rev in log[0], log
+        assert "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" in log[0], log
+        assert "-DCMAKE_HIP_FLAGS=-fPIC" in log[0], log
+        assert "already built" in subprocess.check_output(command, env=env, text=True)
+        assert (home / "cmake.log").read_text().splitlines() == log
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="modeld-"))
     state, run, models = tmp / "state", tmp / "run", tmp / "models"
@@ -158,9 +204,13 @@ esac
         local.mkdir()
         path = local / "Qwen3.8-27B-Q6_K.gguf"
         path.write_bytes(good)
+        projector = local / "mmproj-F16.gguf"
+        projector.write_bytes(mmproj)
         file = tmp / "models.json"
         conf["bots"]["qwen"] = {"gpu": "mi50", "port": free_port(), "ctx": 16384,
-                                  "model": {"local_dir": str(local)}}
+                                  "cpus": str(min(os.sched_getaffinity(0))), "threads": 2,
+                                  "model": {"local_dir": str(local)},
+                                  "mmproj": {"path": str(projector), "local": True}}
         file.write_text(json.dumps(conf))
         command = [str(BIN), "--config", str(file)]
         assert subprocess.check_output(command + ["model-path", "qwen"], text=True).strip() == str(path)
@@ -183,9 +233,30 @@ esac
         runtime.touch()
         runtime.chmod(0o755)
         assert wait("qwen", "waiting_gpu")["gpu"] == "MI50"
+        assert status("qwen")["mmproj"]["ok"] is True
         assert "mag-model-fetch@qwen" not in calls()
+        # Exercise the installed launcher with the supervisor's real stamps.
+        (tmp / "mag-modeld").symlink_to(BIN.resolve())
+        launch = tmp / "run-mi50.sh"
+        launch.write_bytes((ROOT / "ops/models/run-mi50.sh").read_bytes())
+        (tmp / "gpu-guard.py").write_text(
+            "import json, sys; print(json.dumps(sys.argv[3:]))\n"
+        )
+        def launch_args():
+            return json.loads(subprocess.check_output(
+                ["bash", str(launch), "qwen"], env=dict(env, MAG_MODELS_CONF=str(file)), text=True
+            ))
+
+        args = launch_args()
+        assert args[args.index("--mmproj") + 1] == str(projector)
+        assert (qwen_slots / ".spec").read_text().endswith("draft=0 mmproj=3\n")
+        assert status("qwen")["mmproj"]["total"] == len(mmproj)
         gpu_state.write_text("running 1234\n")
-        assert wait("qwen", "ready")["since"] == 1234
+        ready = wait("qwen", "ready")
+        assert ready["since"] == 1234 and ready["mmproj"]["active"]
+        (state / "qwen.mmproj.off").touch()
+        assert "--mmproj" not in launch_args()
+        assert (qwen_slots / ".spec").read_text().endswith("draft=0 mmproj=0\n")
         gpu_state.write_text("waiting\n")
         assert "since" not in wait("qwen", "waiting_gpu")
         gpu_state.write_text("running 5678\n")
@@ -200,4 +271,5 @@ esac
 
 
 if __name__ == "__main__":
+    test_hip_build()
     main()

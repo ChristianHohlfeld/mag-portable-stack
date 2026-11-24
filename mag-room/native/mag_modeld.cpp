@@ -230,7 +230,7 @@ struct Artifact {
   std::string kind, path, url, pinned_sha, local_dir;
   bool built = false; // no GGUF published: fetch.sh converts the pinned weights (build-draft.sh)
   uint64_t pinned_size = 0;
-  bool configured = false;
+  bool configured = false, local_file = false;
 
   Remote remote;
   Clock::time_point remote_checked{};
@@ -253,9 +253,10 @@ struct Artifact {
   uint64_t verify_size = 0;
   time_t verify_mtime = 0;
 
+  bool local() const { return local_file || !local_dir.empty(); }
   uint64_t expected() const {
     if (remote.ok) return remote.size;
-    if (pinned_size || local_dir.empty()) return pinned_size;
+    if (pinned_size || !local()) return pinned_size;
     return size;
   }
   std::string expected_sha() const { return !remote.sha256.empty() ? remote.sha256 : pinned_sha; }
@@ -313,7 +314,7 @@ static void verify_async(const std::string &bot, Artifact &a) {
   auto result = a.verify_result;
   const std::string path = a.path, ok_stamp = stamp_path(bot, a, "ok"), bad_stamp = stamp_path(bot, a, "bad");
   const uint64_t size = a.size;
-  const bool local = !a.local_dir.empty();
+  const bool local = a.local();
   const time_t mtime = a.mtime;
   std::thread([=] {
     std::string got = "-";
@@ -365,7 +366,7 @@ static bool stamp_matches(const std::string &path, const Artifact &a) {
   uint64_t size = 0;
   long long mtime = 0;
   if (!(in >> size >> mtime) || size != a.size || mtime != (long long)a.mtime) return false;
-  if (a.local_dir.empty()) return true;
+  if (!a.local()) return true;
   std::string hash, file;
   in >> hash;
   std::getline(in >> std::ws, file);
@@ -484,7 +485,7 @@ static void track(const std::string &bot, Artifact &a) {
       logf(bot + "/" + a.kind + ": verified " + a.path);
     } else if (res == 2) {
       a.verify = Artifact::BAD;
-      a.verify_detail = a.local_dir.empty() ? "SHA256 stimmt nicht mit Hugging Face überein" : "Lokale GGUF-Datei ist ungültig";
+      a.verify_detail = !a.local() ? "SHA256 stimmt nicht mit Hugging Face überein" : "Lokale GGUF-Datei ist ungültig";
       logf(bot + "/" + a.kind + ": verification failed: " + a.path);
     }
     return;
@@ -498,7 +499,7 @@ static void track(const std::string &bot, Artifact &a) {
     a.verify = Artifact::BAD;
     a.verify_size = a.size;
     a.verify_mtime = a.mtime;
-    a.verify_detail = a.local_dir.empty() ? "SHA256 stimmt nicht mit Hugging Face überein" : "Lokale GGUF-Datei ist ungültig";
+    a.verify_detail = !a.local() ? "SHA256 stimmt nicht mit Hugging Face überein" : "Lokale GGUF-Datei ist ungültig";
     return;
   }
   a.writer = a.exists && !a.complete() ? has_open_handle(a.path) : false;
@@ -588,7 +589,7 @@ static void step(Bot &b) {
   // leaves every model missing.
   for (Artifact *a : {&b.model, &b.draft, &b.mmproj}) {
     if (!g_auto_download || access("/etc/mag-stack/no-model-download", F_OK) == 0) break;
-    if (!a->configured || !a->local_dir.empty() || (a->url.empty() && !a->built) || a->complete() || a->verify == Artifact::OK) continue;
+    if (!a->configured || a->local() || (a->url.empty() && !a->built) || a->complete() || a->verify == Artifact::OK) continue;
     if (a != &b.model && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file
     if (now - a->last_growth < std::chrono::seconds(g_quiet_s)) break;
@@ -673,6 +674,13 @@ static void step(Bot &b) {
     b.detail = "llama.cpp für gfx906 fehlt oder wird gebaut";
     return;
   }
+  // Give a provisioned local projector time to get its stamp on first start.
+  const Artifact &p = b.mmproj;
+  if (p.local_file && p.exists && (p.verify == Artifact::UNKNOWN || p.verify == Artifact::RUNNING) &&
+      !flag(b.id, "mmproj.off") && now - b.model_verified_at < std::chrono::seconds(20)) {
+    b.state = "verifying";
+    return;
+  }
   // The optional drafter usually completes moments after the model (same
   // download chain). Give it a few minutes instead of restarting later.
   const Artifact &d = b.draft;
@@ -729,6 +737,7 @@ static Artifact artifact_from(const Val *v, const char *kind) {
   auto s = [&](const char *k) { auto p = v->find(k); return p ? p->asStr() : std::string(); };
   a.path = s("path");
   a.local_dir = s("local_dir");
+  if (auto local = v->find("local")) a.local_file = local->asBool();
   a.url = s("url");
   a.pinned_sha = s("sha256");
   if (auto p = v->find("size")) a.pinned_size = (uint64_t)p->asNum();

@@ -102,6 +102,10 @@
       "model": {
         "local_dir": "/home/chris/models/qwen3.8-27b"
       },
+      "mmproj": {
+        "path": "/home/chris/models/qwen3.8-27b/mmproj-F16.gguf",
+        "local": true
+      },
       "args": []
     }
   },

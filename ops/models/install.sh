@@ -38,12 +38,20 @@ if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e
   chmod 0644 "$LIB/models.json.next"
   mv -f "$LIB/models.json.next" "$LIB/models.json"
 fi
-# Add the new registered bot without replacing either installed CPU spec.
-if ! jq -e '.bots | has("qwen")' "$LIB/models.json" >/dev/null; then
-  mag_render "$SOURCE/ops/models/models.json" |
-    jq --slurpfile installed "$LIB/models.json" '.bots.qwen as $qwen | $installed[0] | .bots.qwen = $qwen' > "$LIB/models.json.next"
+# Add Qwen on older installs and add vision for the existing default weights.
+mag_render "$SOURCE/ops/models/models.json" |
+  jq --slurpfile installed "$LIB/models.json" '
+    .bots.qwen as $qwen | $installed[0] |
+    if (.bots | has("qwen") | not) then .bots.qwen = $qwen
+    elif (.bots.qwen | .gpu == "mi50" and .model.local_dir == $qwen.model.local_dir and (has("mmproj") | not))
+    then .bots.qwen.mmproj = $qwen.mmproj
+    else empty end
+  ' > "$LIB/models.json.next"
+if [[ -s $LIB/models.json.next ]]; then
   chmod 0644 "$LIB/models.json.next"
   mv -f "$LIB/models.json.next" "$LIB/models.json"
+else
+  rm -f "$LIB/models.json.next"
 fi
 install -m 0755 "$BIN" "$LIB/mag-modeld.next"
 mv -f "$LIB/mag-modeld.next" "$LIB/mag-modeld"

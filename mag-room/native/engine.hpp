@@ -3575,7 +3575,6 @@ private:
     // seconds spent thinking or pre-filling on a slow CPU.
     const int recovery_tolerance = (int)std::clamp(envl("MAG_ROOM_RECOVERY_TOLERANCE", 8), 4L, 32L);
     int rejected_dialogue = 0, repeated_observations = 0;
-    int will_actions = 0, will_successes = 0;
     bool slice_handoff = false;
     std::set<std::string> observed_work;
     bool will_owner_interrupted = from_chris;
@@ -4010,7 +4009,7 @@ private:
             show_thoughts(t);
           }
           logf("engine: " + b.id + " rejected pseudo VM call: " + pseudo);
-          if (++pseudo_retries <= 1) {
+          if (++pseudo_retries < (pass_enabled ? 2 : recovery_tolerance)) {
             const bool own = !will_owner_interrupted && !goal_live(b) && !t.errand;
             require_real_call = own;
             will_retry_note = "(Realitätscheck des Raums: Deine letzte Ausgabe enthielt einen Werkzeugaufruf als Chattext. "
@@ -4020,6 +4019,10 @@ private:
                                   "Nutze einen echten nativen shell/read_file/write_file-Aufruf direkt oder ein optionales Zielwerkzeug. ") +
                               "Kein Python- oder JSON-Aufruf im Chattext.)";
             continue;
+          }
+          if (!pass_enabled) {
+            slice_handoff = true;
+            break;
           }
           const std::string honest = "Der letzte Werkzeugaufruf wurde nicht ausgeführt. Ich habe daraus kein neues Messergebnis und keine bestätigte Datei.";
           Val corrected = Val::object();
@@ -4073,6 +4076,7 @@ private:
         continue;
       }
       rejected_dialogue = 0;
+      pseudo_retries = 0;
       // Flush only validated conversational content. Keeping it buffered in
       // PASS-off mode prevents invisible termination attempts from briefly
       // appearing in the chat before being withdrawn.
@@ -4766,9 +4770,7 @@ private:
           }
         }
         if (bot_dialogue && own_chat && vm_step && !bad_args && !cancel->stopped()) {
-          ++will_actions;
           const bool confirmed = result.ok && !jstr(result.fs_evidence, "kind").empty();
-          if (confirmed) ++will_successes;
           const std::string signature = sha256_hex(c.name + "\n" + mj::dump(args));
           // New attempts and new observed outcomes are allowed; unchanged
           // results of the same operation count toward a soft recovery limit.

@@ -541,9 +541,30 @@ inline Result look(Ctx &ctx, const std::string &vm) {
   return out;
 }
 
+// Old guest controllers serialize CDP exceptionDetails as JSON inside the
+// HTTP error string. Extract the useful message before applying any limit.
+// This also works with existing guests; no VM rebuild is needed.
+inline std::string browser_error_detail(const std::string &raw) {
+  const std::string prefix = "Browser script: ";
+  if (!starts_with(raw, prefix)) return raw;
+  const Val details = jparse(raw.substr(prefix.size()));
+  if (!details.isObj()) return raw;
+  const Val *exception = details.find("exception");
+  std::string message;
+  if (exception) {
+    message = jstr(*exception, "description", jstr(*exception, "value"));
+    // The description may include a long stack trace. The first line is
+    // the actual exception, including the stale/missing element number.
+    const size_t end = message.find_first_of("\r\n");
+    if (end != std::string::npos) message.resize(end);
+  }
+  if (trim(message).empty()) message = jstr(details, "text", "Unbekannter JavaScript-Fehler");
+  return prefix + message;
+}
+
 inline Result browser_result(const http::ClientResult &r, size_t budget) {
   if (!r.error.empty()) return fail("Browser nicht erreichbar: " + r.error);
-  if (r.status != 200) return fail("Browser HTTP " + std::to_string(r.status) + ": " + clip(jstr(jparse(r.body), "error", r.body), 300));
+  if (r.status != 200) return fail("Browser HTTP " + std::to_string(r.status) + ": " + clip(browser_error_detail(jstr(jparse(r.body), "error", r.body)), 300));
   Val v = jparse(r.body);
   if (v.isObj()) {
     // Transport details are of no use to the model.
@@ -816,7 +837,13 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
         Result miss = browser_result(r, 1500);
         if (r.error.empty()) {
           const Result now = look(ctx, vm);
-          if (now.ok) miss.text += "\nDie Seite jetzt; nimm ein Element daraus oder versuche einen anderen Weg:\n" + now.text;
+          if (now.ok && now.snapshot.isObj()) {
+            // The action failed, but the replacement observation is real.
+            // Keep its versioned DOM in sync with the controller's new list.
+            // Never automatically retry the old click or mark it successful.
+            miss.snapshot = now.snapshot;
+            miss.text += "\nDie Seite jetzt; die alte Elementliste ist ungültig. Wähle das Ziel anhand dieser neuen Seite, nicht anhand der alten Nummer:\n" + now.text;
+          }
         }
         return miss;
       }
@@ -866,7 +893,19 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
           Val body = Val::object(); body["ms"] = std::clamp(jnum(s, "seconds", 1) * 1000, 100.0, 15000.0);
           r = ctx.guests.browser(vm, "POST", "/wait", mj::dump(body), 30, ctx.cancel);
         } else return fail("browser_flow: nur eine erste Navigation (https-URL oder geprüfter Link), danach scroll/wait.");
-        if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+        if (!r.error.empty() || r.status != 200) {
+          // A flow can also lose a numbered DOM element after rendering.
+          // Observe again without replaying any action from the flow.
+          Result miss = browser_result(r, 1500);
+          if (r.error.empty()) {
+            Result now = look(ctx, vm);
+            if (now.ok && now.snapshot.isObj()) {
+              miss.snapshot = now.snapshot;
+              miss.text += "\nDie Seite jetzt; alte Elementnummern nicht wiederverwenden:\n" + now.text;
+            }
+          }
+          return miss;
+        }
       }
       Result final_page = look(ctx, vm);
       final_page.navigated = navigated;

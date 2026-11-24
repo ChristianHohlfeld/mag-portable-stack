@@ -76,6 +76,8 @@ class FakeBrowser:
         self.password = False
         self.blocked = False
         self.clicks = []
+        self.click_error = ""
+        self.click_error_replacement = None
         self.scroll_texts = []
         self.scroll_i = 0
         self.elements = []
@@ -147,6 +149,13 @@ class FakeBrowser:
                 with fake.lock:
                     if parsed.path == "/click":
                         fake.clicks.append(body.get("n"))
+                        if fake.click_error:
+                            err = fake.click_error
+                            if fake.click_error_replacement is not None:
+                                fake.elements = fake.click_error_replacement
+                                fake.click_error_replacement = None
+                                fake.click_error = ""
+                            return self._send(500, json.dumps({"error": err}), "application/json")
                     elif parsed.path == "/scroll":
                         fake.scroll += int(body.get("dy") or 0)
                         if fake.scroll_i < len(fake.scroll_texts):
@@ -4201,6 +4210,36 @@ class RoomContract(unittest.TestCase):
         parts = [p for m in r.messages() if m.get("from") == "lena"
                  for p in m.get("parts") or [] if p["k"] == "step"]
         self.assertTrue(parts and parts[0].get("shot"))
+
+    def test_browser_script_error_keeps_description_before_metadata_limit(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/items"
+        browser.title = "Katalog"
+        browser.elements = [{"n": 1, "kind": "link", "label": "Artikel", "x": 110, "y": 40}]
+        browser.click_error = "Browser script: " + json.dumps({
+            "exceptionId": 1, "text": "Uncaught", "lineNumber": 0, "columnNumber": 74,
+            "scriptId": "393", "exception": {"type": "object", "subtype": "error",
+                "className": "Error",
+                "description": "Error: Element 1 is not there any more; look at the page again\n" + "stack " * 100}})
+        browser.click_error_replacement = [{"n": 27, "kind": "link", "label": "Artikel (neu gerendert)", "x": 120, "y": 50}]
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port)
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        calls = iter([
+            {"tool_calls": [{"name": "browser_look", "arguments": {}}]},
+            {"tool_calls": [{"name": "browser_click", "arguments": {"n": 1}}]},
+            {"tool_calls": [{"name": "browser_click", "arguments": {"n": 27}}]},
+        ])
+        r.lena.reply = lambda body: next(calls, "Das Element ist nicht mehr vorhanden.")
+        r.say("@Lena Öffne den Artikel im Browser auf https://example.org/items")
+        r.idle()
+        steps = [p for m in r.messages() if m.get("from") == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "browser_click"]
+        self.assertEqual([p["state"] for p in steps], ["error", "ok"])
+        self.assertIn("Error: Element 1 is not there any more", steps[0]["output"])
+        self.assertNotIn("exceptionId", steps[0]["output"])
+        self.assertIn("27", steps[0]["output"])
+        self.assertEqual(browser.clicks, [1, 27], "new DOM index must reach the controller, old index is not replayed")
 
     def test_browser_type_unverified_input_is_error_then_observed_value_and_enter(self):
         """HTTP 200 alone must not turn an unfocused CDP keystroke green.

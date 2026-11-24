@@ -913,10 +913,35 @@ class RoomContract(unittest.TestCase):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
         self.addCleanup(r.close)
         self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": False})[0], 200)
+        r.lena.reply = lambda body: "Ich arbeite auch allein weiter."
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
-        time.sleep(6)
-        self.assertEqual(r.lena.chats(), [])
+        r.wait(lambda: bool(r.texts("lena")), "solo bot speaks with peer paused", 25)
         self.assertEqual(r.noah.chats(), [])
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_peer_can_start_while_other_bot_is_working(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200",
+                 MAG_ROOM_AUTO_PEER_GRACE_S="1")
+        self.addCleanup(r.close)
+        started, release = threading.Event(), threading.Event()
+
+        def slow(body):
+            started.set()
+            release.wait(25)
+            return "Mein eigenes Projekt."
+
+        r.lena.reply = slow
+        r.noah.reply = lambda body: "Ich beginne unabhängig mit meiner Idee."
+        try:
+            self.assertEqual(r.api("PUT", "/api/settings", {
+                "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+            self.assertTrue(started.wait(10))
+            r.wait(lambda: bool(r.texts("noah")), "Noah speaks while Lena is still working", 15)
+            self.assertFalse(release.is_set())
+            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        finally:
+            release.set()
+        r.idle()
 
     def test_named_bot_answers_alone(self):
         r = self.room

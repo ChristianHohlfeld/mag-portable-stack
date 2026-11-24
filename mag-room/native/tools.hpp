@@ -678,7 +678,8 @@ inline Result phone(const std::string &name, const Val &args, Ctx &ctx) {
 
 // Host-authored observation in the assigned guest, never model-authored stdout.
 // Only regular files below the bot's home; return a bounded preview and hash.
-inline Val observe_file(Ctx &ctx, const std::string &path, bool metadata_only) {
+inline Val observe_file(vm::Guests &guests, const std::string &vm, const std::string &path,
+                        bool metadata_only, const Cancel *cancel = nullptr) {
   if (path.empty() || path.size() > 4096 || path.find('\0') != std::string::npos) return Val();
   const std::string code = R"MAGPY(import os,sys,stat,hashlib,json
 home=os.path.realpath(os.path.expanduser('~'))
@@ -695,10 +696,10 @@ with os.fdopen(fd,'rb') as f:
   if sys.argv[2]=='text' and len(preview)<8192: preview+=b[:8192-len(preview)]
  print(json.dumps({'path':p,'bytes':n,'sha256':h.hexdigest(),'preview':preview.decode('utf-8','replace'),'truncated':sys.argv[2]=='text' and n>len(preview)},ensure_ascii=False))
 )MAGPY";
-  const auto r = ctx.guests.exec(jstr(ctx.bot, "vm"), "python3 -I -c " + shell_quote(code) +
-                                  " " + shell_quote(path) + (metadata_only ? " meta" : " text"),
-                                  60, ctx.cancel, {});
-  if (r.code != 0 || r.cancelled || r.timed_out || r.failed_to_start) return Val();
+  const auto r = guests.exec(vm, "/usr/bin/python3 -I -c " + shell_quote(code) +
+                              " " + shell_quote(path) + (metadata_only ? " meta" : " text"),
+                              60, cancel, {});
+  if (r.code != 0 || r.cancelled || r.timed_out || r.failed_to_start || r.log_path.empty()) return Val();
   Val v = jparse(trim(r.out));
   const std::string hash = jstr(v, "sha256");
   if (!v.isObj() || jstr(v, "path").empty() || !v.find("bytes") ||
@@ -725,7 +726,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       return {"Zeitlimit von " + std::to_string(timeout) + " s überschritten; der Befehl wurde beendet.\n" +
                   for_model(r.out, r.log_path, 3000), false};
     Result out{"exit=" + std::to_string(r.code) + "\n" + for_model(r.out, r.log_path), r.code == 0};
-    if (r.code >= 0) {
+    if (r.code >= 0 && !r.log_path.empty()) {
       out.fs_evidence = Val::object();
       out.fs_evidence["kind"] = "command_exited";
       out.fs_evidence["exit"] = r.code;
@@ -761,7 +762,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   }
   if (name == "read_file") {
     if (!need_vm()) return fail("Du hast keine eigene VM.");
-    const Val seen = observe_file(ctx, jstr(args, "path"), jbool(args, "metadata_only"));
+    const Val seen = observe_file(ctx.guests, vm, jstr(args, "path"), jbool(args, "metadata_only"), ctx.cancel);
     if (!seen.isObj()) return fail("Datei nicht beobachtet: fehlt, nicht lesbar oder außerhalb des eigenen Home.");
     Result out{mj::dump(seen), true};
     out.fs_evidence = Val::object();
@@ -779,7 +780,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     const auto r = ctx.guests.write(vm, path, content->str, false, ctx.cancel);
     if (r.cancelled) return {"abgebrochen (Stop)", false};
     if (r.code != 0) return fail("Schreiben fehlgeschlagen: " + clip(trim(r.out), 600));
-    const Val seen = observe_file(ctx, path, true);
+    const Val seen = observe_file(ctx.guests, vm, path, true, ctx.cancel);
     if (!seen.isObj() || jstr(seen, "sha256") != sha256_hex(content->str) ||
         jnum(seen, "bytes") != (double)content->str.size())
       return fail("Schreibversuch beendet, aber Rücklesen/Hash-Abgleich nicht bestätigt. Nicht als gespeichert oder getestet melden.");

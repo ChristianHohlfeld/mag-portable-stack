@@ -28,7 +28,7 @@ for bot in data:
         continue
     for key in ('vm', 'pending_vm', 'unavailable_vm'):
         value = bot.get(key) or ''
-        if isinstance(value, str) and re.fullmatch(r'agent[0-9]+', value):
+        if isinstance(value, str) and re.fullmatch(r'(?:agent[0-9]+|deepseek-numa[01])', value):
             ids.add(value)
 for value in sorted(ids):
     print(value)
@@ -55,25 +55,25 @@ fi
 for name in "${domains[@]+"${domains[@]}"}"; do
   [[ "$name" == magbot-* ]] || continue
   id=${name#magbot-}
-  [[ "$id" =~ ^agent[0-9]+$ ]] || continue
+  [[ "$id" =~ ^(agent[0-9]+|deepseek-numa[01])$ ]] || continue
   seen[$id]=1
 done
 if [[ -n "${MAG_DRIFT_DIRS:-}" ]]; then
   for id in $MAG_DRIFT_DIRS; do
-    [[ "$id" =~ ^agent[0-9]+$ ]] && seen[$id]=1
+    [[ "$id" =~ ^(agent[0-9]+|deepseek-numa[01])$ ]] && seen[$id]=1
   done
 elif [[ -d "$ROOT/bots" ]]; then
   for dir in "$ROOT/bots"/*; do
     [[ -d "$dir" && ! -L "$dir" ]] || continue
     id=$(basename "$dir")
-    [[ "$id" =~ ^agent[0-9]+$ ]] && seen[$id]=1
+    [[ "$id" =~ ^(agent[0-9]+|deepseek-numa[01])$ ]] && seen[$id]=1
   done
 fi
-for unit in "$UNIT_DIR"/magbot-agent*.service; do
+for unit in "$UNIT_DIR"/magbot-*.service; do
   [[ -f "$unit" && ! -L "$unit" ]] || continue
   id=$(basename "$unit" .service)
   id=${id#magbot-}
-  [[ "$id" =~ ^agent[0-9]+$ ]] && seen[$id]=1
+  [[ "$id" =~ ^(agent[0-9]+|deepseek-numa[01])$ ]] && seen[$id]=1
 done
 
 fail=0

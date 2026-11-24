@@ -30,4 +30,23 @@ else
  # Blocks ALL tokens as well as the old password, including archived disks.
  jq -n '{prohibit_login:true,admin:false,restricted:true,allow_create_organization:false}' > "$session/body"
 fi
-api PATCH "/admin/users/$user" "$session/body" >/dev/null
+# A missing account is already revoked, but a failed request is not proof
+# of absence. Only accept PATCH 404 after independently authenticating the
+# temporary admin and confirming absence on the user endpoint.
+if api PATCH "/admin/users/$user" "$session/body" >/dev/null; then
+ exit 0
+fi
+[[ $mode == lock && $api_status == 404 ]] || exit 1
+api GET /user >/dev/null
+jq -e --arg admin "$admin" '.is_admin == true and .login == $admin' "$session/reply" >/dev/null
+if api GET "/users/$user" >/dev/null; then
+ echo "Gitea account $user exists but could not be locked" >&2
+ exit 1
+fi
+[[ $api_status == 404 ]] || exit 1
+# The privileged listing includes Bot and individual accounts. Require an
+# empty result as a further independent check; any ambiguity fails closed.
+api GET "/admin/users?q=$user&limit=1" >/dev/null
+jq -e 'type == "array" and length == 0' "$session/reply" >/dev/null
+echo "Gitea account $user is absent; no credential to revoke" >&2
+exit 0

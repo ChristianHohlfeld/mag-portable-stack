@@ -56,6 +56,7 @@ jobs:
             RoomContract.test_autonomous_chat_can_start_without_human_or_browser \
             RoomContract.test_autonomous_chat_respects_paused_bot \
             RoomContract.test_autonomous_peer_can_start_while_other_bot_is_working \
+            RoomContract.test_due_routines_are_independent_and_wait_for_own_human_task \
             RoomContract.test_autonomous_chat_unlimited_continues_past_both_hidden_caps \
             RoomContract.test_stop_cancels_a_running_answer \
             RoomContract.test_mistral_small4_chat_roles_and_effort_without_touching_gemma \

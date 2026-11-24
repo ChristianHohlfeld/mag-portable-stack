@@ -1062,7 +1062,36 @@ private:
       }
       cv_.notify_all();
       publish_bots();
+      maybe_resume_goal();
       maybe_autonomous_chat();
+    }
+  }
+
+  // Resume only the owner's still-active task, never a historical action.
+  void maybe_resume_goal() {
+    const Val configured = room_.bots();
+    const Val models = models_snapshot();
+    const int64_t now = now_ms();
+    std::lock_guard<std::mutex> lk(mu_);
+    if (stop_ || (last_human_ms_ && now - last_human_ms_ < 15000)) return;
+    for (const auto &b : bots_)
+      if (b->want || !b->running.empty() || b->warming || b->warm_pending ||
+          b->resetting || b->reset_pending || b->wipe_pending || b->cut_off > 0) return;
+    for (auto &b : bots_) {
+      if (!b->goal_on || b->goal_arm || b->end_goal.load() ||
+          exists(goal_mark(*b)) || silenced_.count(b->id)) continue;
+      const Val *model = models.find(b->id);
+      if (!model || jstr(*model, "state") != "ready") continue;
+      bool enabled = false;
+      for (const auto &c : configured.asArr())
+        if (jstr(c, "id") == b->id) enabled = jbool(c, "enabled", true);
+      const double at = jnum(b->goal_public, "retry_at_ms");
+      if (!enabled || at <= 0 || at > now) continue;
+      b->want = true;
+      b->reason = "continue";
+      lead_ = b->id;
+      cv_.notify_all();
+      return;
     }
   }
 
@@ -2742,7 +2771,7 @@ private:
       std::lock_guard<std::mutex> lk(mu_);
       b.goal_on = goal::active(b.goal);
       Val status_goal = Val::object();
-      for (const char *k : {"state", "owner", "id", "version", "progress"})
+      for (const char *k : {"state", "owner", "id", "version", "progress", "retry_at_ms", "retry_count"})
         if (const Val *v = b.goal.find(k)) status_goal[k] = *v;
       status_goal["text"] = clip(jstr(b.goal, "text"), 200);
       status_goal["url"] = jstr(b.goal["page"], "url");
@@ -2791,7 +2820,7 @@ private:
     std::lock_guard<std::mutex> lk(mu_);
     b.goal_on = goal::active(b.goal);
     Val status_goal = Val::object();
-    for (const char *k : {"state", "owner", "id", "version", "progress"})
+    for (const char *k : {"state", "owner", "id", "version", "progress", "retry_at_ms", "retry_count"})
       if (const Val *v = b.goal.find(k)) status_goal[k] = *v;
     status_goal["text"] = clip(jstr(b.goal, "text"), 200);
     status_goal["url"] = jstr(b.goal["page"], "url");
@@ -2889,6 +2918,19 @@ private:
   bool goal_live(const Bot &b) const {
     if (b.end_goal.load() || exists(goal_mark(b))) return false;
     return goal::active(b.goal);
+  }
+  // Backoff is based on completed unproductive cycles, not CPU speed.
+  bool defer_goal(Bot &b, const std::string &why) {
+    if (!goal_live(b) || goal::login_page(b.goal)) return false;
+    const long base = std::clamp(envl("MAG_ROOM_GOAL_RETRY_BASE_S", 30), 1L, 1200L);
+    const long count = std::min(20L, (long)jnum(b.goal, "retry_count") + 1);
+    const long seconds = std::min(std::max(300L, base), base * (1L << std::min(5L, count - 1)));
+    b.goal["retry_count"] = count;
+    b.goal["retry_at_ms"] = (double)(now_ms() + seconds * 1000LL);
+    b.goal["retry_reason"] = clip(why, 600);
+    b.goal["progress"] = "paused";
+    b.goal["reconcile"] = true;
+    return save_goal(b);
   }
   bool other_goal(const Bot &self) {
     std::lock_guard<std::mutex> lk(mu_);
@@ -3546,7 +3588,8 @@ private:
     // while it described an image for the other bot.
     bool from_chris = false;
     const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "", &from_chris);
-    const bool read_before = jbool(b.wire, "fresh") || reason == "autonomous";
+    const bool read_before = jbool(b.wire, "fresh") || reason == "autonomous" ||
+                             (reason == "bot" && autonomous_round);
     b.wire["fresh"] = false;
     const int tries = b.cut_off;
     b.cut_off = 0;
@@ -3577,6 +3620,7 @@ private:
     const int recovery_tolerance = (int)std::clamp(envl("MAG_ROOM_RECOVERY_TOLERANCE", 8), 4L, 32L);
     int rejected_dialogue = 0;
     bool slice_handoff = false;
+    std::string goal_retry_reason;
     bool will_owner_interrupted = from_chris;
     int pseudo_retries = 0;
     bool require_real_call = false;
@@ -3638,6 +3682,12 @@ private:
     for (int step = 0; step <= room_.cfg.max_steps; ++step) {
       if (t.stop_after) break;
       apply_goal_cmd(b);
+      if (step == 0 && goal_live(b) && jnum(b.goal, "retry_at_ms") > 0) {
+        b.goal["retry_at_ms"] = 0;
+        b.goal["progress"] = "running";
+        b.goal["reconcile"] = true;
+        if (!save_goal(b)) throw std::runtime_error("Browser-Fortsetzung nicht speicherbar");
+      }
       // A goal may finish partway through this turn. Preserve its original ID
       // on the entire bot message, including the final goal_finish tool call.
       if (t.goal_id.empty() && goal_live(b)) t.goal_id = jstr(b.goal, "id");
@@ -3715,6 +3765,12 @@ private:
       }
 
       if (driving) {
+        if (jbool(b.goal, "reconcile")) {
+          Val hint = Val::object();
+          hint["role"] = "user";
+          hint["content"] = "(Fortsetzung eines offenen Auftrags: zuerst browser_look. Prüfe den tatsächlichen Browserzustand, auch ob eine frühere Aktion bereits wirksam war. Keine alte Aktion automatisch wiederholen.)";
+          body["messages"].push(hint);
+        }
         const Val *driver = b.goal.find("state_driver");
         if (driver && jstr(*driver, "direction_key") ==
             jstr(b.goal, "id") + ":" + std::to_string((long)jnum(b.goal, "revision"))) {
@@ -3908,6 +3964,7 @@ private:
         if (driving) {
           b.goal["progress"] = "stalled";
           b.goal["error"] = "Modellaufruf gestoppt: " + clip(error, 200) + ". Auftrag bleibt offen.";
+          goal_retry_reason = "Modellentscheidung fehlgeschlagen";
           save_goal(b);
           logf("engine: " + b.id + " browser goal stalled: " + clip(error, 160));
         }
@@ -4232,7 +4289,7 @@ private:
           // Two automatic, explicit corrective decisions before pausing. Do
           // not ever fabricate a click, search query, URL, consent or purchase.
           // Invalid goal_finish proofs separately enable finish_recovery.
-          if (t.missing_tool_calls <= 2) {
+          if (t.missing_tool_calls < recovery_tolerance) {
             Val note = Val::object();
             note["role"] = "user";
             if (t.finish_recovery && witnessed) {
@@ -4259,7 +4316,7 @@ private:
             b.wire["messages"].push(note);
             save_wire(b);
             logf("engine: " + b.id + " missing goal tool call: corrective retry " +
-                 std::to_string(t.missing_tool_calls) + "/2; browser_evidence=" +
+                 std::to_string(t.missing_tool_calls) + "/" + std::to_string(recovery_tolerance) + "; browser_evidence=" +
                  (witnessed ? "yes" : "no"));
             continue;
           }
@@ -4283,12 +4340,10 @@ private:
           t.visible = true;
           emit_text(b, t, goal::provisional_sources(b.goal), name, reason, true);
           b.goal["progress"] = "paused";
-          b.goal["error"] = "Nach zwei automatischen Korrekturversuchen weiterhin kein Werkzeugaufruf. "
-                            "Bisherige Browserbelege bleiben erhalten; keine Aktionen wurden erfunden.";
+          b.goal["error"] = "Noch kein verwendbarer Werkzeugaufruf. Bisherige Browserbelege bleiben erhalten.";
+          goal_retry_reason = "Wiederholte Entscheidungen ohne ausführbaren Schritt";
           save_goal(b);
-          failed = true;
-          error = "Modell hat trotz Werkzeugpflicht dreimal nur Text geliefert; Auftrag pausiert.";
-          logf("engine: " + b.id + " goal paused after 3 consecutive missing tool calls; evidence retained");
+          logf("engine: " + b.id + " goal recovery slice yielded; evidence retained");
           break;
         }
         // No browser goal: a bot that only announces what it will do is sent on
@@ -4908,6 +4963,11 @@ private:
               result.ok, result.text, recovery_tolerance);
           if (feedback.suggest_change)
             will_retry_note = state_driver::cue(driver);
+          if (feedback.novel && result.snapshot.isObj()) b.goal["retry_count"] = 0;
+          if (feedback.yield && !t.blocked && !t.login_wall) {
+            goal_retry_reason = "Wiederkehrender Browserzustand; anderer Ansatz";
+            t.stop_after = true;
+          }
           // A browser goal still needs actual goal_finish proofs or owner
           // action. No observation or controller score can finish it.
         }
@@ -4975,6 +5035,7 @@ private:
           // Deterministic step cap is a pause, not a model/network outage.
           b.goal["progress"] = "paused";
           b.goal["error"] = error;
+          if (!t.blocked && !t.login_wall) goal_retry_reason = "Technische Arbeitsphase beendet";
           save_goal(b);
         }
         break;
@@ -4983,6 +5044,14 @@ private:
 
     // ---- finish ----------------------------------------------------------
     if (cleared(t)) return; // the room was emptied meanwhile: this turn never happened
+    if (!goal_retry_reason.empty() && !cancelled && !cancel->stopped() &&
+        !t.blocked && !t.login_wall && goal_live(b) &&
+        jbool(room_.bot(b.id), "enabled", true)) {
+      if (defer_goal(b, goal_retry_reason)) {
+        failed = false;
+        error.clear();
+      }
+    }
     // Pause was requested while the model/tool was working. Stop the old
     // streaming message, but never flush its withheld tokens, start a new
     // bubble or schedule another bot round after a pause.

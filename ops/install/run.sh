@@ -74,7 +74,7 @@ p_preflight() {
 
 p_packages() {
   local list
-  list=$(grep -v '^#' "$REPO/ops/install/packages.txt" | tr '\n' ' ')
+  list=$(grep -h -v '^#' "$REPO/ops/install/"{packages,room-ocr-packages}.txt | tr '\n' ' ')
   apt-get update
   # shellcheck disable=SC2086
   DEBIAN_FRONTEND=noninteractive apt-get install -y $list

@@ -17,7 +17,13 @@ taskset -c 28-55 ninja -C build
 Build dependencies (Ubuntu 24.04): `ninja-build`, `cmake`, a C++17
 compiler, `libssl-dev`, `libcurl4-openssl-dev`, `libicu-dev`, `jq`; Go for
 `mag-room/webrtc` (built by `ops/deploy.sh`). The test steps also use
-`python3-numpy`, `python3-scipy`, `python3-pil` and `node`.
+`python3-numpy`, `python3-scipy`, `python3-pil` and `node`. For PDF
+extraction and OCR in the room suite, install the same packages as CI
+and the server installer, including the German and English OCR data.
+
+```bash
+sudo bash ops/install/bootstrap-room-ocr.sh
+```
 
 The release targets are listed in `ops/build-targets.sh`. `mag-stt` builds
 without its recognizer unless `MAG_TRANSCRIBE_SRC` and

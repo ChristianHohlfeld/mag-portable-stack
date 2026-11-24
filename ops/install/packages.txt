@@ -5,8 +5,8 @@ libicu-dev libssl-dev libcurl4-openssl-dev libutfcpp-dev libarchive-dev libgomp1
 # Ingress, tools the room and the scripts call
 nginx jq sqlite3 numactl acl rsync lsof dnsutils nftables openssl gpg needrestart
 linux-tools-common linux-tools-generic msr-tools
-# Documents and pictures in the chat (pdftotext, OCR), films (ffmpeg)
-poppler-utils tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng ffmpeg
+# Films (PDF and image text extraction packages are in room-ocr-packages.txt)
+ffmpeg
 # Bot VMs (KVM, libvirt, cloud images)
 qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients virtinst cloud-image-utils genisoimage dnsmasq-base
 libnss3-tools apparmor-utils

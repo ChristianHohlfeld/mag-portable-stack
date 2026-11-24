@@ -105,7 +105,7 @@ records of `MAG_DOMAIN` and `*.MAG_BOTS_ZONE` pointed at the new address.
 | Phase | Does |
 |---|---|
 | `preflight` | Ubuntu 24.04, x86_64, the owner, KVM, NUMA layout, disk, MI50 |
-| `packages` | `ops/install/packages.txt` with apt, `go` as a snap |
+| `packages` | `ops/install/packages.txt` and `ops/install/room-ocr-packages.txt` with apt, `go` as a snap |
 | `users` | user `magbot`, `/var/lib/magbot/room`, `/etc/magbot/config.json`, the owner into `libvirt`/`kvm` |
 | `kernel` | `ops/boot/sysctl-mag.conf` (NUMA, map count) |
 | `secrets` | the table above |

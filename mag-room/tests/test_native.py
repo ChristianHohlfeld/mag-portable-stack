@@ -943,6 +943,49 @@ class RoomContract(unittest.TestCase):
             release.set()
         r.idle()
 
+    def test_due_routines_are_independent_and_wait_for_own_human_task(self):
+        r = Room(connect_events=False, MAG_ROOM_ROUTINE_TICK_S="1")
+        self.addCleanup(r.close)
+        started, release = threading.Event(), threading.Event()
+
+        def lena(body):
+            if "Aktuell fällige Routine" in text_of(body["messages"][-1].get("content", "")):
+                return "Lena Routine erledigt."
+            started.set()
+            release.wait(25)
+            return "Lena Nutzerauftrag erledigt."
+
+        r.lena.reply = lena
+        r.noah.reply = lambda body: "Noah Routine erledigt."
+        try:
+            r.say("@Lena erzähl mir etwas")
+            self.assertTrue(started.wait(10))
+            for bot in ("lena", "noah"):
+                code, routine = r.api("POST", "/api/routines", {
+                    "bot": bot, "name": "Erklärung " + bot,
+                    "instruction": "Berichte kurz.", "when": {"every_minutes": 8}})
+                self.assertEqual(code, 200, routine)
+            path = r.tmp / "state" / "routines.json"
+            routines = json.loads(path.read_text())
+            due = int(time.time()) - 1
+            for routine in routines:
+                routine["next"] = due
+            replacement = path.with_suffix(".test")
+            replacement.write_text(json.dumps(routines))
+            replacement.replace(path)
+            r.wait(lambda: "Noah Routine erledigt." in r.texts("noah"),
+                   "Noah routine runs despite Lena's user task", 15)
+            self.assertTrue(next(b for b in r.state()["bots"] if b["id"] == "lena")["busy"])
+            pending = next(x for x in json.loads(path.read_text()) if x["bot"] == "lena")
+            self.assertEqual(pending["next"], due, "busy bot must retain its due occurrence")
+        finally:
+            release.set()
+        r.wait(lambda: "Lena Routine erledigt." in r.texts("lena"), "overdue Lena routine runs", 15)
+        r.idle()
+        scheduled = [m for m in r.messages() if m.get("routine")]
+        self.assertEqual(len(scheduled), 2, "exactly one coalesced run per bot")
+        self.assertTrue(all(x["next"] > due for x in json.loads(path.read_text())))
+
     def test_named_bot_answers_alone(self):
         r = self.room
         r.say("Lena, wie geht es dir?")

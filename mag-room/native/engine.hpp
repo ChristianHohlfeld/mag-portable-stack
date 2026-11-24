@@ -3804,7 +3804,7 @@ private:
         // Buffer ALL of that until validation, regardless of PASS setting;
         // otherwise an early streaming bubble bypasses the no-tools gate.
         // PASS-off human-triggered bot follow-ups are buffered too.
-        if (!autonomous_round && (pass_enabled || reason != "bot"))
+        if (!autonomous_round && reason != "bot")
           emit_text(b, t, d, name, reason, false);
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
@@ -4122,7 +4122,7 @@ private:
       // Flush only validated conversational content. Keeping it buffered in
       // PASS-off mode prevents invisible termination attempts from briefly
       // appearing in the chat before being withdrawn.
-      if ((autonomous_round || (!pass_enabled && bot_dialogue)) &&
+      if (bot_dialogue &&
           !res.cancelled && !failed && res.calls.empty())
         emit_text(b, t, res.content, name, reason, false);
       // Publish completed reasoning only after the token-cap retry decision.

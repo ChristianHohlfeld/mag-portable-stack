@@ -724,7 +724,13 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     if (r.timed_out)
       return {"Zeitlimit von " + std::to_string(timeout) + " s überschritten; der Befehl wurde beendet.\n" +
                   for_model(r.out, r.log_path, 3000), false};
-    return {"exit=" + std::to_string(r.code) + "\n" + for_model(r.out, r.log_path), r.code == 0};
+    Result out{"exit=" + std::to_string(r.code) + "\n" + for_model(r.out, r.log_path), r.code == 0};
+    if (r.code >= 0) {
+      out.fs_evidence = Val::object();
+      out.fs_evidence["kind"] = "command_exited";
+      out.fs_evidence["exit"] = r.code;
+    }
+    return out;
   }
   if (name == "delete_file") {
     if (!need_vm()) return fail("Du hast keine eigene VM.");
@@ -780,10 +786,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     std::string text = clip(trim(r.out), 400);
     text += "\nDatei zurückgelesen: " + jstr(seen, "path") + ", SHA-256 " + jstr(seen, "sha256");
     // "saved <path> <n> bytes": a file of the bot's site goes online at once.
-    std::istringstream saved(r.out);
-    std::string word, where;
-    saved >> word >> where;
-    const std::string rel = word == "saved" ? site::rel_path(where) : "";
+    const std::string rel = site::rel_path(jstr(seen, "path"));
     if (!rel.empty()) {
       const std::string error = site::publish(ctx.guests, vm, ctx.cancel);
       const std::string low = lower(rel);

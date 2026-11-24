@@ -738,6 +738,8 @@ class RoomContract(unittest.TestCase):
         prompts = json.dumps(r.lena.chats() + r.noah.chats(), ensure_ascii=False)
         self.assertIn("Du musst kein neues Thema erfinden", prompts)
         self.assertIn("Prüfe Annahmen und widersprich sachlich", prompts)
+        self.assertIn("Sprich klar, einfach und auf Augenhöhe", prompts)
+        self.assertIn("Was ist bekannt, warum gilt es, was folgt daraus?", prompts)
         self.assertNotIn("Beginne ein eigenständiges, neues Gesprächsthema", prompts)
         self.assertLessEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
@@ -1127,6 +1129,8 @@ class RoomContract(unittest.TestCase):
         default = r.api("GET", "/api/bot/lena/self")[1]["narrator"]
         self.assertIn("Ich denke kritisch und unabhängig", default)
         self.assertIn("Abschlusskriterium", default)
+        self.assertIn("einfach, direkt und auf Augenhöhe", default)
+        self.assertIn("einfachen Grundprinzipien", default)
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": previous}})[0], 200)
         self.assertEqual(r.api("PUT", "/api/bot/noah", {"self": {"narrator": "Eigener Text"}})[0], 200)
         r.stop()

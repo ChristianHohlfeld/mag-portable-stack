@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include "../native/llm.hpp"
 #include "../native/goal.hpp"
+#include "../native/state_driver.hpp"
 #include <cstdio>
 using namespace mag;
 using namespace mag::llm;
@@ -209,6 +210,46 @@ int main() {
     CHECK(flat.find("Nicht 2 Stueck sondern 2s") != std::string::npos);
     CHECK(flat.find("LASTPAGEZZ") != std::string::npos);
     CHECK(flat.find("OLDDUMPzzzz") == std::string::npos);
+  }
+
+  // Directional controller: observations, cycles, migration and persistence.
+  {
+    Val d = Val::object(), file = Val::object();
+    state_driver::orient(d, "aim", "Improve code", "Tests and real behavior");
+    file["kind"] = "write_verified";
+    file["path"] = "/home/bot/code.cpp";
+    file["sha256"] = "hash-A";
+    file["bytes"] = 10;
+    auto a = state_driver::observe(d, "write_file", "write-A", file, Val(), true, "", 8);
+    CHECK(a.novel && a.changed && !a.yield);
+    file["kind"] = "read_verified";
+    auto b = state_driver::observe(d, "read_file", "read-A", file, Val(), true, "", 8);
+    CHECK(!b.novel && !b.changed && b.stagnant == 1);
+    file["sha256"] = "hash-B";
+    CHECK(state_driver::observe(d, "read_file", "read-A", file, Val(), true, "", 8).novel);
+    file["sha256"] = "hash-A";
+    auto c = state_driver::observe(d, "read_file", "read-A", file, Val(), true, "", 8);
+    CHECK(c.revisit && !c.novel && c.changed);
+    d = jparse(mj::dump(d));
+    CHECK(jnum(d, "revision") == 4);
+    for (int i = 0; i < 6; ++i)
+      CHECK(!state_driver::observe(d, "read_file", "read-A", file, Val(), true, "", 8).yield);
+    CHECK(state_driver::observe(d, "read_file", "read-A", file, Val(), true, "", 8).yield);
+    CHECK(jstr(d, "aim") == "Improve code" && jnum(d, "strategy") == 1);
+    state_driver::orient(d, "revised", "Improve usability", "Fewer defects");
+    CHECK(d["facts"].isObj() && d["facts"].size() == 1 && d["history"].size() == 0);
+  }
+  {
+    Val d = Val::object();
+    state_driver::orient(d, "browser", "Find result", "Evidence");
+    Val page = jparse(R"({"url":"https://example.org","elements":[{"n":1,"label":"Item","kind":"link","x":1}]})");
+    CHECK(state_driver::observe(d, "browser_look", "look", Val(), page, true, "", 8).novel);
+    page["elements"].arr->front()["n"] = 27;
+    page["elements"].arr->front()["x"] = 50;
+    CHECK(!state_driver::observe(d, "browser_look", "look", Val(), page, true, "", 8).novel);
+    page["elements"].arr->front()["label"] = "Another item";
+    CHECK(state_driver::observe(d, "browser_click", "click", Val(), page, false, "stale element", 8).novel);
+    CHECK(!state_driver::observe(d, "browser_click", "click2", Val(), Val(), false, "unconfirmed", 8).novel);
   }
 
   if (fails) return 1;

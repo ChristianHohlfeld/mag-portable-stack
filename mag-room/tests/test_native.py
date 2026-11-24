@@ -3463,6 +3463,48 @@ class RoomContract(unittest.TestCase):
         self.assertTrue(all(not (a["role"] == b["role"] == "user")
                             for a, b in zip(req2["messages"], req2["messages"][1:])))
 
+    def test_mistral_autonomous_tool_results_and_user_cues_alternate(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        status = {"updated": time.time(), "bots": {
+            "lena": {"state": "ready", "file": "gemma-4-26B", "since": 1},
+            "noah": {"state": "ready", "file": "mistral-small-4-119b-2603.gguf", "since": 1},
+        }}
+        pathlib.Path(r.env["MAG_MODELS_STATUS"]).write_text(json.dumps(status))
+        r.lena.reply = lambda body: "Ich würde gerne über etwas Neues sprechen."
+        attempts = []
+
+        def strict_mistral(body):
+            # Match the actual Mistral template: ignore tool calls and results
+            # before checking the remaining user/plain-assistant alternation.
+            roles = [m["role"] for m in body["messages"] if m["role"] == "user" or
+                     (m["role"] == "assistant" and not m.get("tool_calls"))]
+            if roles != ["user" if i % 2 == 0 else "assistant" for i in range(len(roles))]:
+                return {"http_error": "After the optional system message, conversation roles must alternate user and assistant roles except for tool calls and results."}
+            attempts.append(body)
+            if len(attempts) == 1:
+                return {"content": "", "tool_calls": [{"name": "will_set", "arguments": {
+                    "text": "Ein eigenes Thema", "done_when": "Eine neue Idee"}}]}
+            return "Meine Idee ist ein gemeinsames Gedankenexperiment."
+
+        r.noah.reply = strict_mistral
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m.get("from") == "noah" and m.get("state") == "done"
+                           for m in r.messages()), "Mistral completes autonomous native tool follow-up", 35)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        self.assertGreaterEqual(len(attempts), 2)
+        messages = attempts[1]["messages"]
+        call_index = next(i for i, m in enumerate(messages) if m.get("tool_calls"))
+        result_index = next(i for i, m in enumerate(messages) if m["role"] == "tool")
+        self.assertLess(call_index, result_index)
+        self.assertEqual(messages[call_index]["tool_calls"][0]["id"],
+                         messages[result_index]["tool_call_id"])
+        self.assertIn("Technischer Nachrichtenübergang", json.dumps(messages, ensure_ascii=False))
+        wire = (r.tmp / "state" / "wire" / "noah.json").read_text()
+        self.assertNotIn("Technischer Nachrichtenübergang", wire)
+
     def test_state_survives_a_restart(self):
         r = self.room
         r.say("@Noah hallo")

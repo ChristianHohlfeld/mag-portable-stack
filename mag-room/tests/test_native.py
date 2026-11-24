@@ -1041,7 +1041,10 @@ class RoomContract(unittest.TestCase):
         r.lena.delay = r.noah.delay = 0.05
         r.lena.reply = r.noah.reply = lambda body: "Lange Antwort " * 20
         r.say("Redet miteinander")
-        r.wait(lambda: any(m.get("reason") == "bot" for m in r.messages()), "a bot round")
+        # Bot text is withheld until validated. Wait for the actual second
+        # model request (the running follow-up), not a visible chat bubble.
+        r.wait(lambda: any(len(model.chats()) >= 2 for model in (r.lena, r.noah)),
+               "a running bot round")
         r.lena.reply = r.noah.reply = None
         r.lena.delay = r.noah.delay = 0
         second = r.say("@Noah stopp, neue Frage")
@@ -1361,6 +1364,54 @@ class RoomContract(unittest.TestCase):
                          ("self", 1, "shell", True))
         self.assertNotIn("will", json.dumps(r.state()["bots"]))
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_pseudo_vm_calls_require_real_native_action(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        calls = iter([
+            'Ich habe eine Messung erfunden.\nwill_set(text="Test", done_when="Datei")\nshell(command="touch phantom.txt")',
+            {"content": "", "tool_calls": [{"name": "will_set", "arguments": {
+                "text": "Eine echte Datei anlegen", "done_when": "Datei geschrieben"}}]},
+            {"content": "", "tool_calls": [{"name": "write_file", "arguments": {
+                "path": "real.txt", "content": "real"}}]},
+            "Die Datei ist tatsächlich gespeichert.",
+        ])
+        r.lena.reply = lambda body: next(calls, "PASS")
+        r.noah.reply = lambda body: "PASS"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": True, "web": False})[0], 200)
+        r.wait(lambda: r.api("GET", "/api/bot/lena/will")[1]["steps"] == 1,
+               "real VM step after rejected pseudo calls", 35)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        home = r.tmp / "guests" / "agent1"
+        self.assertFalse((home / "phantom.txt").exists())
+        self.assertEqual((home / "real.txt").read_text(), "real")
+        requests = r.lena.chats()
+        self.assertTrue(any(x.get("tool_choice") == "required" and
+                            "Er wurde NICHT ausgeführt" in json.dumps(x["messages"], ensure_ascii=False)
+                            for x in requests))
+        spoken = "\n".join(m.get("text", "") for m in r.messages())
+        self.assertNotIn("phantom.txt", spoken)
+        self.assertNotIn("Messung erfunden", spoken)
+        self.assertNotIn("phantom.txt", (r.tmp / "state" / "wire" / "lena.json").read_text())
+
+    def test_autonomous_repeated_pseudo_calls_do_not_become_observations(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        r.lena.reply = lambda body: 'Ich habe 100 Prozent gemessen.\nshell(command="touch phantom.txt")'
+        r.noah.reply = lambda body: "PASS"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": True, "web": False})[0], 200)
+        r.wait(lambda: any("kein neues Messergebnis" in m.get("text", "")
+                           for m in r.messages()), "honest fallback", 35)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        self.assertFalse((r.tmp / "guests" / "agent1" / "phantom.txt").exists())
+        self.assertEqual(r.api("GET", "/api/bot/lena/will")[1]["steps"], 0)
+        spoken = "\n".join(m.get("text", "") for m in r.messages())
+        self.assertNotIn("100 Prozent", spoken)
+        self.assertNotIn("shell(command", spoken)
 
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room

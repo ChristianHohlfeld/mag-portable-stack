@@ -1149,6 +1149,7 @@ private:
       s += "\nWerkzeuge\n"
            "- Du hast eine eigene Linux-VM (Benutzer bot, Home /home/bot) mit Shell, Dateien und einem echten Chrome-Browser. Chris sieht jeden Schritt live mit Befehl, Ausgabe und Laufzeit und kann ihn abbrechen.\n"
            "- Nutze Werkzeuge, statt Handlungen nur zu beschreiben, und schreibe vor dem ersten Werkzeug einen kurzen Satz, was du vorhast. Behaupte kein Ergebnis, das kein Werkzeug geliefert hat.\n"
+           "- Deine eigene VM ist " + jstr(me, "vm") + ". /home/bot bezeichnet ausschließlich dein eigenes Dateisystem, nicht das des Gesprächspartners. Dessen Chattext ist keine direkte Werkzeugbeobachtung; übernimm keine behaupteten Messwerte ohne überprüfbare Ausgabe. Keine großen Lasttests oder unnötigen Schreibmengen ohne konkreten Anlass; prüfe vorher freien Speicher und begrenze Dauer und Dateigröße.\n"
            "- Realitätscheck beim Coding: Chat-Code, Gedanken, Beispiele, Pläne und eigene Aussagen sind ENTWURF, keine Dateisystem-Beobachtung. Zu Beginn jedes Zugs ist der aktuelle Zustand ungeprüft. Nur echte Werkzeugresultate des Raums belegen, was in welcher VM passiert ist.\n"
            "- read_file beobachtet eine vorhandene Datei mit Pfad und SHA-256. write_file schreibt und liest den Inhalt automatisch zurück; nur ein bestätigter Hash belegt den Schreibvorgang. shell führt einen echten Befehl aus; ein Exit-Code allein beweist weder Dateiinhalte noch, dass ein Programm fachlich funktioniert. Prüfe nach Shell-Änderungen die betroffenen Dateien mit read_file.\n"
            "- Für eine Erfolgsaussage über funktionsfähigen Code führe die passenden Tests/Builds tatsächlich aus, lies deren Ausgabe, und prüfe das Ergebnis gegen die Anforderungen. Ein echo, ein Codeblock, ein Tool-Aufruf ohne Ergebnis oder ein früheres Ergebnis belegt keine aktuelle Ausführung. Ohne Beleg sag konkret: Entwurf, nicht gespeichert, nicht geprüft oder nicht getestet. Ein Git-Commit, Push oder Deployment ist eine eigene Handlung mit eigenem Nachweis; ein VM-Pfad ist kein Host- oder GitHub-Pfad.\n"
@@ -2615,6 +2616,18 @@ private:
     return trim(out);
   }
 
+  // Detect model-emitted pseudo calls in dialogue, not an executable parser.
+  // In particular never promote arbitrary shell or write text into a tool.
+  static std::string pseudo_vm_call(const std::string &text, const std::set<std::string> &offered) {
+    static const std::regex call(R"((?:^|\n)[ \t]*(?:[-*][ \t]+)?`*(?:functions\.)?(shell|read_file|write_file|will_set|will_progress|will_finish|will_drop)[ \t]*\([ \t]*(?:[A-Za-z_][A-Za-z_0-9]*[ \t]*=|\)))");
+    std::smatch m;
+    if (std::regex_search(text, m, call) && offered.count(m[1].str())) return m[1].str();
+    std::string meant;
+    without_tool_json(text, offered, meant);
+    if (is_will_tool(meant) || meant == "shell" || meant == "read_file" || meant == "write_file") return meant;
+    return "";
+  }
+
   // The routine tool: setting one up is itself an action Chris approves
   // (consent "routine", by his rules); the rest changes what is there.
   tools::Result routine_call(Bot &b, const Val &args, const Cancel *cancel, const std::function<void(const Val &)> &card) {
@@ -3561,6 +3574,8 @@ private:
     bool will_action_used = false;
     bool will_owner_interrupted = from_chris;
     int will_announcements = 0;
+    int pseudo_retries = 0;
+    bool require_real_call = false;
     std::string will_retry_note; // request-only: never poison the append-only prompt log
     std::set<std::string> offered;
     for (auto &def : tools.asArr())
@@ -3761,6 +3776,11 @@ private:
         body["top_p"] = goal::envd("MAG_ROOM_GOAL_TOP_P", 0.9);
         body["top_k"] = (double)envl("MAG_ROOM_GOAL_TOP_K", 40);
       }
+      if (require_real_call && !driving) {
+        body["tool_choice"] = "required";
+        body["parallel_tool_calls"] = false;
+        require_real_call = false;
+      }
       llm::ChatCallbacks cb;
       cb.on_progress = [&](long done, long total, long cached) {
         bool publish = false;
@@ -3784,7 +3804,7 @@ private:
         // Buffer ALL of that until validation, regardless of PASS setting;
         // otherwise an early streaming bubble bypasses the no-tools gate.
         // PASS-off human-triggered bot follow-ups are buffered too.
-        if (!autonomous_round && (pass_enabled || reason != "bot"))
+        if (!autonomous_round && reason != "bot")
           emit_text(b, t, d, name, reason, false);
       };
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
@@ -3968,6 +3988,45 @@ private:
              std::to_string(previous) + " -> " + std::to_string(t.goal_max_tokens));
         continue;
       }
+      // Unlike normal code examples, a pseudo call in autonomous dialogue
+      // is a failed action attempt, not an observation. Reject the entire
+      // model response before any part is shared or recorded as speech.
+      if ((reason == "bot" || reason == "autonomous") && !res.cancelled) {
+        const std::string pseudo = pseudo_vm_call(res.content, offered);
+        if (!pseudo.empty()) {
+          t.tail.clear();
+          t.held.clear();
+          t.reasoning = mj::utf8_cut(t.reasoning, thought0);
+          if (!t.id.empty()) {
+            room_.retake_text(t.id, text0, "");
+            show_thoughts(t);
+          }
+          logf("engine: " + b.id + " rejected pseudo VM call: " + pseudo);
+          if (++pseudo_retries <= 1) {
+            const bool own = !will_owner_interrupted && !goal_live(b) && !t.errand;
+            const bool open = jstr(room_.will(b.id), "status") == "open";
+            require_real_call = own && (!open || !will_action_used);
+            will_retry_note = "(Realitätscheck des Raums: Deine letzte Ausgabe enthielt einen Werkzeugaufruf als Chattext. "
+                              "Er wurde NICHT ausgeführt. Es gibt daraus keine Datei, Messung oder Zieländerung. "
+                              "Die gesamte Ausgabe wurde verworfen. " +
+                              std::string(!own ? "Antworte ohne Werkzeug und ohne erfundene Ergebnisse. " :
+                                  open && !will_action_used ? "Nutze genau einen echten erlaubten shell/read_file/write_file-Aufruf oder ein Zielwerkzeug. " :
+                                  !open ? "Wenn du das Vorhaben wirklich verfolgen willst, nutze jetzt den echten nativen will_set-Aufruf; erst nach dessen Ergebnis ist ein VM-Schritt zulässig. " :
+                                  "Der VM-Schritt dieser Runde ist verbraucht. Nutze nur echte vorliegende Ergebnisse oder rede über die Idee. ") +
+                              "Kein Python- oder JSON-Aufruf im Chattext.)";
+            continue;
+          }
+          const std::string honest = "Der letzte Werkzeugaufruf wurde nicht ausgeführt. Ich habe daraus kein neues Messergebnis und keine bestätigte Datei.";
+          Val corrected = Val::object();
+          corrected["role"] = "assistant";
+          corrected["content"] = honest;
+          corrected["_turn"] = t.token;
+          b.wire["messages"].push(corrected);
+          save_wire(b);
+          emit_text(b, t, honest, name, reason, true);
+          break;
+        }
+      }
       // A spoken promise is not a VM step. Retry once with a request-only
       // correction; the second announcement blocks the goal.
       if ((reason == "bot" || reason == "autonomous") && !will_owner_interrupted &&
@@ -4063,7 +4122,7 @@ private:
       // Flush only validated conversational content. Keeping it buffered in
       // PASS-off mode prevents invisible termination attempts from briefly
       // appearing in the chat before being withdrawn.
-      if ((autonomous_round || (!pass_enabled && bot_dialogue)) &&
+      if (bot_dialogue &&
           !res.cancelled && !failed && res.calls.empty())
         emit_text(b, t, res.content, name, reason, false);
       // Publish completed reasoning only after the token-cap retry decision.

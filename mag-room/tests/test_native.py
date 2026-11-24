@@ -209,6 +209,7 @@ class Room:
         self.env = dict(os.environ, MAG_ROOM_STATE=str(self.tmp / "state"), MAG_ROOM_WEB=str(ROOT / "mag-room/web"),
                         MAG_ROOM_PORT=str(self.port), MAG_ROOM_BRIDGE_PORT="0", MAG_ROOM_GATEWAY="direct",
                         MAG_ROOM_BOT_ROUNDS="2",  # bounded legacy-contract fixture; production default 0 stays unlimited
+                        MAG_ROOM_GOAL_RETRY_BASE_S="1200",  # isolate tests; explicit recovery test overrides
                         MAG_LLM_PORT_LENA=str(self.lena.port), MAG_LLM_PORT_NOAH=str(self.noah.port),
                         MAG_MODELS_STATUS=str(self.tmp / "no-status.json"), MAG_MODELS_CONTROL=str(self.tmp / "control"),
                         MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_SCENE_URL="http://127.0.0.1:%d" % self.scene.port,
@@ -648,11 +649,32 @@ class RoomContract(unittest.TestCase):
             "pass_enabled": False, "bot_rounds": 1})[0], 200)
         r.say("Lena, wie geht es dir?")
         r.idle()
-        self.assertEqual(len(r.noah.chats()), 2,
-                         "do not spend unlimited CPU attempts on a non-cooperating model")
-        self.assertTrue(any(m["state"] == "error" and "technisch unterbrochen" in m["text"]
-                            for m in r.messages() if m["from"] == "noah"))
+        self.assertEqual(len(r.noah.chats()), 8,
+                         "tolerate eight completed unusable decisions before yielding")
+        self.assertFalse(any(m["state"] == "error" for m in r.messages() if m["from"] == "noah"))
+        self.assertEqual(r.texts("noah"), [], "no fabricated assistant speech")
         self.assertNotIn("PASS", " ".join(r.texts()))
+
+    def test_autonomous_tolerates_multiple_unusable_decisions_and_short_reply(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        attempts = [0]
+        def respond(body):
+            attempts[0] += 1
+            return "PASS" if attempts[0] <= 4 else "Ja."
+        r.lena.reply = respond
+        r.noah.reply = lambda body: "Verstanden."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False,
+            "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" and m["state"] == "done" for m in r.messages()),
+               "peer after four invalid decisions", 40)
+        r.idle()
+        self.assertEqual(attempts[0], 5)
+        self.assertEqual(r.texts("lena"), ["Ja."])
+        self.assertEqual(r.texts("noah"), ["Verstanden."])
+        self.assertTrue(r.state()["settings"]["auto_chat"])
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_autonomous_round_limit_counts_followups_not_the_opener(self):
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
@@ -687,8 +709,8 @@ class RoomContract(unittest.TestCase):
             attempts[0] += 1
             if attempts[0] == 1:
                 return {"content": "Ich starte jetzt ein Werkzeug.",
-                        "tool_calls": [{"name": "shell",
-                                        "arguments": {"command": "echo should-not-execute"}}]}
+                        "tool_calls": [{"name": "browser_open",
+                                        "arguments": {"url": "https://example.com"}}]}
             return "Ein eigener Gedanke ohne Werkzeuge."
 
         r.lena.reply = lena
@@ -706,7 +728,7 @@ class RoomContract(unittest.TestCase):
         self.assertFalse(any(p.get("k") == "step"
                              for m in r.messages()
                              for p in m.get("parts", [])),
-                         "no unattended tool action can reach room history")
+                         "no unauthorized external action can reach room history")
         self.assertTrue(any("Dieser Werkzeugaufruf ist im Bot-Gespräch" in
                             str(msg.get("content", "")) for req in r.lena.chats()
                             for msg in req["messages"]),
@@ -1218,7 +1240,7 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn(lena_goal, json.dumps(noah_will))
 
     def test_self_talk_steps_and_will_tools_stay_with_their_bot(self):
-        """A self-talk round may run will_* and one VM step only on the caller's id.
+        """A self-talk round may run will_* and VM steps only on the caller's id.
         The other bot's later prompt, including the shared timeline, never receives
         the narrator, the goal, the step or the owner will line."""
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
@@ -1421,6 +1443,105 @@ class RoomContract(unittest.TestCase):
         spoken = "\n".join(m.get("text", "") for m in r.messages())
         self.assertNotIn("100 Prozent", spoken)
         self.assertNotIn("shell(command", spoken)
+
+    def test_autonomous_work_can_repair_verify_and_finish_in_same_turn(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+
+        def call(name, args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+
+        calls = iter([
+            call("will_set", {"text": "Ein lokales Vorhaben", "done_when": "Datei geprueft"}),
+            call("shell", {"command": "exit 7"}),
+            call("write_file", {"path": "repair.txt", "content": "repaired"}),
+            call("read_file", {"path": "repair.txt"}),
+            call("shell", {"command": "test $(cat repair.txt) = repaired"}),
+            call("will_finish", {"progress": "Datei geprueft"}),
+            "Ich habe die Datei geschrieben, gelesen und erfolgreich geprüft.",
+        ])
+        r.lena.reply = lambda body: next(calls, "Ein neuer Gedanke.")
+        r.noah.reply = lambda body: "Was lernen wir daraus für andere Projekte?"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()),
+               "peer follows multi-step work", 40)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        w = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((w["status"], w["steps"], w["last_ok"]), ("done", 4, True))
+        self.assertEqual((r.tmp / "guests" / "agent1" / "repair.txt").read_text(), "repaired")
+        steps = [p for m in r.messages() if m["from"] == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step"]
+        self.assertEqual([p["state"] for p in steps if p["tool"] in ("shell", "write_file", "read_file")],
+                         ["error", "ok", "ok", "ok"])
+
+    def test_autonomous_repeated_failure_blocks_goal_and_hands_over(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+
+        def call(name, args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+
+        failing = call("shell", {"command": "exit 7"})
+        calls = iter([
+            call("will_set", {"text": "Lokale Untersuchung", "done_when": "Befehl erfolgreich"}),
+            failing, failing, failing, failing,
+        ])
+        r.lena.reply = lambda body: next(calls, failing)
+        r.noah.reply = lambda body: "Dann sprechen wir lieber über einen neuen Entwurf."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()),
+               "peer follows failed work", 40)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        w = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((w["status"], w["steps"], w["last_ok"]), ("open", 9, False))
+        steps = [p for m in r.messages() if m["from"] == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
+        self.assertEqual(len(steps), 9, "initial observation plus eight unchanged outcomes")
+        self.assertFalse(any("MAG-Arbeitsstand" in m.get("text", "") for m in r.messages()))
+        self.assertTrue(r.state()["settings"]["auto_chat"] is False)
+
+    def test_autonomous_work_without_goal_has_no_special_step_cap(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+
+        def call(name, args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+
+        calls = iter([call("shell", {"command": "touch slice%d.txt" % i}) for i in range(1, 7)] +
+                     [call("write_file", {"path": "no-goal.txt", "content": "real"}),
+                      call("read_file", {"path": "no-goal.txt"})])
+        r.lena.reply = lambda body: next(calls, "Ich gebe das Gespräch weiter.")
+        r.noah.reply = lambda body: "Meine eigene Idee ist etwas anderes."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()), "work slice handed off", 40)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        w = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((w["status"], w["steps"]), ("none", 0))
+        home = r.tmp / "guests" / "agent1"
+        self.assertTrue(all((home / ("slice%d.txt" % i)).exists() for i in range(1, 7)))
+        self.assertEqual((home / "no-goal.txt").read_text(), "real")
+        steps = [p for m in r.messages() if m["from"] == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
+        self.assertEqual([p["state"] for p in steps], ["ok"] * 6)
+        wire_path = r.tmp / "state" / "wire" / "lena.json"
+        driver = json.loads(wire_path.read_text())["state_driver"]
+        self.assertEqual(driver["direction_key"], "exploration")
+        self.assertEqual(driver["revision"], 8)
+        # A read after a verified write of the same path/hash is not a
+        # different file state. A new command name is not evidence either.
+        self.assertFalse(driver["new_observation"])
+        self.assertEqual(driver["last_evidence"]["kind"], "read_verified")
+        self.assertEqual(len(driver["history"]), 8)
+        self.assertEqual(len(driver["facts"]), 7)  # six experiments and one observed file
+        r.stop()
+        r.start()
+        self.assertEqual(json.loads(wire_path.read_text())["state_driver"], driver)
 
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room
@@ -3708,7 +3829,6 @@ class RoomContract(unittest.TestCase):
                 return "Step 1: Scroll down to the results.\nStep 2: Identify the transparent tube."
             if i == 8:
                 return "Step 1: Scroll down to the results.\nStep 2: Identify the transparent tube."
-            seen.append("extra")
             return "Das darf nicht das Ergebnis sein."
 
         r.lena.reply = reply
@@ -3735,7 +3855,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(seen[0]["messages"], seen[1]["messages"][:len(seen[0]["messages"])])  # KV prefix stable
         r.idle()
         self.assertEqual(browser.clicks, [28])
-        self.assertLess(len(seen), 12)  # the repeated plan stalled instead of looping
+        self.assertEqual(len(seen), 15)  # seven earlier decisions plus eight unusable decisions; yield, not an unbounded loop
         said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
         self.assertIn("Abschluss noch nicht verifiziert", said)
         self.assertEqual(r.noah.chats(), [])
@@ -3759,19 +3879,22 @@ class RoomContract(unittest.TestCase):
         def finish(body):
             fin["n"] += 1
             fin["last"] = body
+            # Recovery must reconcile the current browser before any goal action.
             if fin["n"] == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if fin["n"] == 2:
                 return {"content": "", "tool_calls": [{"name": "goal_requirements", "arguments": {
                     "requirements": [{"id": "result", "need": "Zwei verschiedene Artikel belegen"}]}}]}
-            if fin["n"] == 2:
+            if fin["n"] == 3:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei Stück.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch", "url": "https://www.amazon.de/dp/B00SEEN"}]}}]}
-            if fin["n"] == 3:
+            if fin["n"] == 4:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei transparente Schrumpfschläuche.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
                               {"name": "Fake", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
-            if fin["n"] == 4:
+            if fin["n"] == 5:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei transparente Schrumpfschläuche.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
@@ -3781,6 +3904,8 @@ class RoomContract(unittest.TestCase):
         r.lena.reply = finish
         r.say("Done?")
         r.idle()
+        self.assertEqual(fin["n"], 5)  # reconcile, criteria, two rejected finishes, verified finish
+        self.assertEqual(browser.clicks, [28])  # no replay across recovery/restart
         self.assertEqual(fin["last"].get("tool_choice"), "required")  # no redundant closing LLM call
         self.assertIn("required", [body.get("tool_choice") for body in r.lena.chats()[-4:-1]])
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step" and p["tool"] == "goal_finish"]
@@ -4374,6 +4499,45 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("Automatischer Abschluss ohne gültigen Werkzeugaufruf",
                          " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena"))
 
+    def test_goal_recovery_resumes_without_replaying_click(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/recovery"
+        browser.text = "Status bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_GOAL_RETRY_BASE_S="1")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        goal_path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
+        requests = []
+        def call(name, args):
+            return {"tool_calls": [{"name": name, "arguments": args}]}
+        def reply(body):
+            requests.append(body)
+            n = len(requests)
+            if n == 1:
+                return call("browser_look", {})
+            if n == 2:
+                return call("browser_click", {"n": 1})
+            if n <= 10:
+                return "Ich prüfe weiter."
+            if n == 11:
+                return call("browser_click", {"n": 1})  # stale action must be rejected
+            if n == 12:
+                return call("browser_look", {})
+            if n == 13:
+                return call("goal_requirements", {"requirements": [{"id": "status", "need": "Status belegen"}]})
+            return call("goal_finish", {"summary": "Status ist belegt.", "proofs": [
+                {"id": "status", "url": browser.url, "quote": "Status bestätigt."}]})
+        browser.elements = [{"n": 1, "kind": "link", "label": "Status", "x": 100, "y": 40}]
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/recovery und prüfe den Status")
+        r.wait(lambda: goal_path.exists() and json.loads(goal_path.read_text()).get("state") == "done",
+               "automatic recovery to verified goal", 60)
+        r.idle()
+        self.assertEqual(browser.clicks, [1], "no automatic replay of the click")
+        self.assertGreaterEqual(len(requests), 14)
+        self.assertIn("zuerst browser_look", json.dumps(requests[10]["messages"], ensure_ascii=False))
+
     def test_goal_no_browser_evidence_eventually_pauses_without_fabricated_url(self):
         r = Room()
         self.addCleanup(r.close)
@@ -4391,9 +4555,10 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")
         self.assertEqual(goal["progress"], "paused")
-        self.assertEqual(len(requests), 4)  # tool + three missing calls, not an infinite loop
+        self.assertEqual(len(requests), 9)  # tool plus eight completed unusable decisions
         self.assertFalse(goal.get("evidence_pages"))
-        self.assertIn("zwei automatischen Korrekturversuchen", goal["error"])
+        self.assertIn("Noch kein verwendbarer Werkzeugaufruf", goal["error"])
+        self.assertGreater(goal["retry_at_ms"], time.time() * 1000)
         self.assertTrue(all(x["tools"] == requests[0]["tools"] for x in requests))
         self.assertNotIn("results", goal)
 
@@ -4548,7 +4713,7 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")
         self.assertEqual(goal["progress"], "paused")
-        self.assertEqual(i["n"], 5)  # two corrective retries before the bounded pause
+        self.assertEqual(i["n"], 10)  # two tools plus eight unusable decisions
         said = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
         self.assertIn("Abschluss noch nicht verifiziert", said)
         self.assertIn("https://example.org/item/3", said)
@@ -4590,7 +4755,7 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
         self.assertEqual(goal["progress"], "done")
-        self.assertEqual(len(requests), 5)  # full palette, look, 2 retries, grounded completion
+        self.assertEqual(len(requests), 10)  # requirements, look, eight unusable decisions, grounded completion
         self.assertEqual(goal["results"][0]["url"], "https://example.org/item/best")
         self.assertEqual(goal["results"][0]["price"], "7,49 EUR")
         seen_urls = [link["url"] for page in goal["evidence_pages"] for link in page["links"]]
@@ -4863,12 +5028,13 @@ class RoomContract(unittest.TestCase):
         goal_file = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
         goal = json.loads(goal_file.read_text())
         self.assertEqual(goal["state"], "active")
-        self.assertEqual(goal["progress"], "stalled")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertGreater(goal["retry_at_ms"], time.time() * 1000)
         self.assertIn("simulated inference failure", goal["error"])
         self.assertEqual(r.lena.chats()[-1].get("tool_choice"), "required")
         self.assertEqual(r.lena.chats()[-1].get("max_tokens"), 512)
         out = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
-        self.assertIn("Browser-Auftrag pausiert", out)
+        self.assertNotIn("erfolgreich abgeschlossen", out)
 
     def test_generic_browser_flow_is_one_roundtrip_and_rejects_buttons(self):
         browser = FakeBrowser()

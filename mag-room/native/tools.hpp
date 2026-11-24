@@ -751,6 +751,7 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       out.fs_evidence = Val::object();
       out.fs_evidence["kind"] = "command_exited";
       out.fs_evidence["exit"] = r.code;
+      out.fs_evidence["output_sha256"] = sha256_hex(r.out); // observed output, not proof of task completion
     }
     return out;
   }

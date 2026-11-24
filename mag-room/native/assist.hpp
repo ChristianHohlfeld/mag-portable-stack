@@ -94,6 +94,7 @@ public:
   std::function<Val(const std::string &bot)> vm_files;
   // Set by main: is the bot in a turn right now?
   std::function<bool(const std::string &bot)> busy;
+  std::function<bool(const std::string &bot)> time_busy;
 
   explicit Assist(Room &room) : room_(room) {
     std::error_code ec;
@@ -579,7 +580,7 @@ private:
     for (auto &m : room_.all())
       if (const Val *m3 = m.find("model3d"); m3 && jstr(*m3, "state") == "done") done_.insert(jstr(m, "id"));
     for (;;) {
-      std::this_thread::sleep_for(std::chrono::seconds(30));
+      std::this_thread::sleep_for(std::chrono::seconds(std::max(1L, envl("MAG_ROOM_ROUTINE_TICK_S", 30))));
       try {
         due_by_time();
         due_by_event();
@@ -632,12 +633,12 @@ private:
       for (auto &r : *all.arr) {
         const int64_t next = (int64_t)jnum(r, "next");
         if (jbool(r, "paused") || next <= 0 || next > now) continue;
-        // A missed tick is coalesced, never piled up behind a running
-        // turn or an instruction already sitting in the room queue.
+        // Keep one overdue occurrence until its bot can accept it.
         const std::string bot = jstr(r, "bot");
         const bool occupied = bots_scheduled.count(bot) ||
-                              (busy && busy(bot)) || routine_unanswered(messages, bot, now * 1000);
-        if (!occupied && now - next <= 12 * 3600) {
+                              (time_busy ? time_busy(bot) : (busy && busy(bot))) || routine_unanswered(messages, bot, now * 1000);
+        if (occupied) continue;
+        if (now - next <= 12 * 3600) {
           due.push_back(r);
           bots_scheduled.insert(bot);
           r["last"] = (double)now;

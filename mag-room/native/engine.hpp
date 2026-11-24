@@ -337,12 +337,41 @@ public:
     cv_.notify_all();
   }
 
+  // Routines are targeted owner instructions, not room-wide human turns.
+  void on_routine(const std::string &id, const std::string &instruction) {
+    std::lock_guard<std::mutex> lk(mu_);
+    Bot *b = find(id);
+    if (!b || !jbool(room_.bot(id), "enabled", true)) return;
+    b->routine_pending = true;
+    if (!b->routine_instruction.empty()) b->routine_instruction += "\n";
+    b->routine_instruction += instruction;
+    if ((b->running == "autonomous" || b->running == "bot") && b->cancel && !b->warming)
+      b->cancel->stop();
+    if (b->want && (b->reason == "autonomous" || b->reason == "bot")) b->want = false;
+    cv_.notify_all();
+  }
+
+  bool time_routine_busy(const std::string &id) {
+    const bool ready = model_state(id) == "ready";
+    std::lock_guard<std::mutex> lk(mu_);
+    Bot *b = find(id);
+    return !b || !ready || !jbool(room_.bot(id), "enabled", true) ||
+        b->routine_pending || b->resetting || b->reset_pending || b->wipe_pending ||
+        b->warming || b->warm_pending || b->goal_on || b->goal_arm ||
+        (b->want && b->reason != "autonomous" && b->reason != "bot") ||
+        (!b->running.empty() && b->running != "autonomous" && b->running != "bot");
+  }
+
   // Stop: one bot or everything. Queued turns are dropped as well.
   void stop(const std::string &bot = "") {
     std::lock_guard<std::mutex> lk(mu_);
     for (auto &b : bots_) {
       if (!bot.empty() && b->id != bot) continue;
       b->want = false;
+      b->routine_pending = false;
+      b->routine_instruction.clear();
+      b->auto_started_ms = now_ms();
+      if (bot.empty()) auto_last_ms_ = b->auto_started_ms;
       b->continues = 0;
       if (b->cancel) b->cancel->stop();
       // Stop ends that bot's browser goal. A new human message does not come through here.
@@ -376,6 +405,8 @@ public:
       epoch = ++clear_epoch_;
       for (auto &b : bots_) {
         b->want = false;
+        b->routine_pending = false;
+        b->routine_instruction.clear();
         b->continues = 0;
         if (b->cancel) b->cancel->stop();
         b->reset_pending = true;
@@ -509,7 +540,10 @@ public:
       // bot replies may start the next unattended session promptly. Cosmetic
       // changes (theme, observer text) never wake expensive model inference.
       if (enabled && (!auto_enabled_ || (pass_enabled_ && !pass_enabled) ||
-                      (round_limit_ > 0 && limit == 0))) auto_last_ms_ = 0;
+                      (round_limit_ > 0 && limit == 0))) {
+        auto_last_ms_ = 0;
+        for (auto &b : bots_) b->auto_started_ms = 0;
+      }
       // The turn counter includes a bot reply as soon as it starts. A newly
       // lowered cap may therefore already have been reached by in-flight work.
       const bool limit_reached = limit > 0 && (round_limit_ == 0 || limit < round_limit_) &&
@@ -892,6 +926,9 @@ private:
     long budget = 32000;
     // --- guarded by Engine::mu_ ---
     bool want = false;
+    bool routine_pending = false;
+    std::string routine_instruction;
+    int64_t auto_started_ms = 0, running_since_ms = 0;
     std::string reason;          // why the next turn runs: human | bot | continue
     std::string running;         // reason of the running turn, "" when idle
     bool acted = false;          // the running turn has used a tool that does something
@@ -1049,7 +1086,7 @@ private:
           const double since = m ? jnum(*m, "since", 0) : 0;
           if (ready && since != b->model_since) {
             // A model reload must not leave autonomous chat waiting on a previous idle interval.
-            if (b->model_since >= 0 && auto_enabled_) auto_last_ms_ = 0;
+            if (b->model_since >= 0 && auto_enabled_) { auto_last_ms_ = 0; b->auto_started_ms = 0; }
             b->model_since = since;
             b->warm_pending = true;
           }
@@ -1097,56 +1134,57 @@ private:
     }
   }
 
-  // A separate room-side trigger: conversation does not depend on a browser,
-  // UI client, open socket or a new message from Chris. It is opt-in, checks
-  // persisted bot pause flags and model readiness, and starts only while
-  // completely idle. A cooldown delays new sessions; once started, a
-  // session obeys the user's round setting (0 really means unlimited).
+  // A room-side trigger, independent of browsers and of the peer's presence.
+  // Prefer normal turn-taking, but an idle bot can start its own work even
+  // while a peer is busy, offline, paused or warming up.
   void maybe_autonomous_chat() {
     if (!jbool(room_.settings(), "auto_chat", false)) return;
-    const Val configured = room_.bots();
     const Val models = models_snapshot();
     const int64_t now = now_ms();
-    // PASS-enabled rooms can rest naturally; don't leave them apparently
-    // dead for 20 minutes before a new, independently initiated exchange.
-    // Admins may still raise the idle interval through the environment.
     const int64_t every = std::max<int64_t>(5000, envl("MAG_ROOM_AUTO_CHAT_INTERVAL_S", 60) * 1000LL);
+    const int64_t grace = std::max<int64_t>(1000, envl("MAG_ROOM_AUTO_PEER_GRACE_S", 15) * 1000LL);
     std::lock_guard<std::mutex> lk(mu_);
-    if (stop_ || !auto_enabled_ || (auto_last_ms_ && now - auto_last_ms_ < every) ||
-        (last_human_ms_ && now - last_human_ms_ < 15000)) return;
-    for (auto &b : bots_)
-      if (!b->running.empty() || b->want || b->reset_pending ||
-          b->wipe_pending || b->resetting || b->goal_on || b->goal_arm || b->cut_off > 0) return;
-    std::vector<Bot *> available;
-    for (auto &b : bots_) {
+    if (stop_ || !auto_enabled_ || (last_human_ms_ && now - last_human_ms_ < 15000)) return;
+    bool occupied = false, recent_turn = false;
+    for (const auto &b : bots_) {
       if (!jbool(room_.bot(b->id), "enabled", true)) continue;
       const Val *model = models.find(b->id);
       if (!model || jstr(*model, "state") != "ready" || silenced_.count(b->id)) continue;
-      available.push_back(b.get());
+      const bool busy = !b->running.empty() || b->want || b->routine_pending ||
+          b->reset_pending || b->wipe_pending || b->resetting || b->goal_on || b->goal_arm || b->cut_off > 0;
+      occupied = occupied || busy;
+      if (busy && ((b->running_since_ms && now - b->running_since_ms < grace) ||
+                   (b->want && b->running.empty() && !b->warming && !b->warm_pending))) recent_turn = true;
     }
-    if (available.size() < 2 || configured.asArr().size() < 2) return;
-    size_t starter_index = auto_next_ % available.size();
-    // Prefix preparation is per model, not a room-wide conversation gate.
-    // Prefer the free model; if both are warming, queue the next opener now.
-    // Its own worker serializes inference, so no second request races its warmup.
-    for (size_t i = 0; i < available.size(); ++i) {
-      const size_t candidate = (starter_index + i) % available.size();
-      if (!available[candidate]->warming && !available[candidate]->warm_pending) {
-        starter_index = candidate;
-        break;
-      }
+    if (!occupied && auto_last_ms_ && now - auto_last_ms_ < every) return;
+    if (occupied && recent_turn) return;
+    Bot *starter = nullptr;
+    size_t index = 0;
+    for (size_t i = 0; i < bots_.size(); ++i) {
+      const size_t at = (auto_next_ + i) % bots_.size();
+      Bot &b = *bots_[at];
+      const Val *model = models.find(b.id);
+      if (!jbool(room_.bot(b.id), "enabled", true) || !model ||
+          jstr(*model, "state") != "ready" || silenced_.count(b.id)) continue;
+      if (!b.running.empty() || b.want || b.routine_pending || b.warming || b.warm_pending ||
+          b.phase != "idle" || b.reset_pending || b.wipe_pending || b.resetting ||
+          b.goal_on || b.goal_arm || b.cut_off > 0) continue;
+      if (occupied && b.auto_started_ms && now - b.auto_started_ms < every) continue;
+      starter = &b;
+      index = at;
+      break;
     }
-    Bot *starter = available[starter_index];
-    auto_next_ = (starter_index + 1) % available.size();
+    if (!starter) return;
+    auto_next_ = (index + 1) % bots_.size();
     write_atomic(room_.cfg.state_dir + "/auto-chat-next", std::to_string(auto_next_) + "\n", 0600);
-    auto_burst_ = true;
-    dialogue_stopped_ = false; // a new unattended session starts after its cooldown
-    bot_turns_ = 0; // the autonomous opener is not an Anschlussantwort
-    passes_ = 0;
-    audience_.clear(); // an old @mention must not mute a new autonomous session
-    const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
-    round_limit_ = limit;
-    auto_last_ms_ = now;
+    if (!occupied || !auto_burst_) {
+      auto_burst_ = true;
+      dialogue_stopped_ = false;
+      bot_turns_ = 0;
+      passes_ = 0;
+      if (!occupied) audience_.clear();
+    }
+    auto_last_ms_ = starter->auto_started_ms = now;
     write_atomic(room_.cfg.state_dir + "/auto-chat-last", std::to_string(now) + "\n", 0600);
     starter->want = true;
     starter->reason = "autonomous";
@@ -1790,7 +1828,7 @@ private:
     }
     // A message Chris sent to the other bot by @mention says so: it is context
     // for this one, not a task.
-    if (const Val *to = m.find("mentions"); from == "chris" && to && to->isArr() && !to->asArr().empty()) {
+    if (const Val *to = m.find("mentions"); (from == "chris" || from == "routine") && to && to->isArr() && !to->asArr().empty()) {
       bool me = false;
       std::string others;
       const Val all = room_.bots();
@@ -1924,6 +1962,13 @@ private:
     return head + clip(body, 40000, "\n…[gekürzt]");
   }
 
+  static bool routine_for(const Val &m, const std::string &id) {
+    const Val *to = m.find("mentions");
+    if (!to || !to->isArr()) return false;
+    for (const auto &v : to->asArr()) if (v.asStr() == id) return true;
+    return false;
+  }
+
   // Room messages this bot has not read yet (others' finished messages).
   // Notes that ask the bots nothing (a 3D order, its result) are context too:
   // they are read, they never start a turn.
@@ -1936,7 +1981,7 @@ private:
       const std::string role = jstr(m, "role");
       if (jstr(m, "from") == b.id) return true;                 // own messages are in the log already
       if (jstr(m, "state") == "streaming") return false;        // not finished: later
-      if (humans_only && role != "user") return false;
+      if (humans_only && (role != "user" || (jstr(m, "from") == "routine" && !routine_for(m, b.id)))) return false;
       out.push_back(m);
       return true;
     };
@@ -2031,7 +2076,7 @@ private:
     std::vector<Val> fresh = unseen(b, humans_only);
     if (from_chris)
       for (auto &m : fresh)
-        if (jstr(m, "role") == "user") *from_chris = true;
+        if (jstr(m, "role") == "user" && (jstr(m, "from") != "routine" || routine_for(m, b.id))) *from_chris = true;
     const bool eyes = sees(b.id);
     if (!eyes) fresh = with_descriptions(b, fresh);
     // A description that came too late for an earlier turn is handed in now.
@@ -3182,13 +3227,13 @@ private:
     load_goal(b);
     take_up(b);
     while (true) {
-      std::string reason;
+      std::string reason, routine_instruction;
       uint64_t reset_epoch = 0;
       bool warm = false, see = false, wiping = false;
       std::vector<std::shared_ptr<Look>> looks;
       {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&] { return stop_ || (b.want && !b.resetting) || b.wipe_pending || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
+        cv_.wait(lk, [&] { return stop_ || ((b.want || b.routine_pending) && !b.resetting) || b.wipe_pending || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
         if (stop_) return;
         if (b.reset_pending) {
           b.reset_pending = false;
@@ -3206,6 +3251,14 @@ private:
           b.warm_pending = false;
           warm = true;
           b.cancel = std::make_shared<Cancel>();
+        } else if (b.routine_pending && !b.resetting && !(b.want && b.reason == "human")) {
+          b.routine_pending = false;
+          routine_instruction.swap(b.routine_instruction);
+          reason = "human";
+          b.running = "routine";
+          b.running_since_ms = now_ms();
+          b.acted = false;
+          b.cancel = std::make_shared<Cancel>();
         } else if (b.want && !b.resetting) {
           b.want = false;
           reason = b.reason;
@@ -3216,6 +3269,8 @@ private:
             ++bot_turns_;
           }
           b.running = reason;
+          b.running_since_ms = now_ms();
+          if (reason == "autonomous" || reason == "bot") b.auto_started_ms = b.running_since_ms;
           b.acted = false;
           b.cancel = std::make_shared<Cancel>();
         } else if (b.see_pending) {
@@ -3240,7 +3295,7 @@ private:
       } else if (!reason.empty()) {
         apply_forget(b);
         try {
-          turn(b, reason);
+          turn(b, reason, routine_instruction);
           // Whatever the turn left undescribed (see turn()) is described now.
           const Val me = room_.bot(b.id);
           if (me.isObj() && jbool(me, "enabled", true) && model_state(b.id) == "ready") describe_images(b, me);
@@ -3298,6 +3353,7 @@ private:
       {
         std::lock_guard<std::mutex> lk(mu_);
         b.running.clear();
+        b.running_since_ms = 0;
         b.message.clear();
         b.cancel.reset();
         // Do not drop the autonomous flag on the first PASS: another bot
@@ -3513,7 +3569,7 @@ private:
     return text;
   }
 
-  void turn(Bot &b, const std::string &reason) {
+  void turn(Bot &b, const std::string &reason, const std::string &routine_instruction = "") {
     const Val me = room_.bot(b.id);
     if (!me.isObj() || !jbool(me, "enabled", true)) return;
     double since = 0;
@@ -3585,7 +3641,7 @@ private:
     // Keep synthetic prompts request-local, never persisted as fake user messages.
     const std::string autonomous_invite =
         "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-        "Der Raum war kurz ruhig. Du hast jetzt Zeit für eigene Interessen. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
+        "Du hast jetzt Zeit für eigene Interessen, auch wenn der andere Bot arbeitet oder nicht da ist. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
         "Vertiefe ein Thema, solange es etwas zu entdecken gibt, und wechsle sonst frei. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
         "Sprich einfach, direkt und auf Augenhöhe. Keine aufgeblasenen oder erfundenen Fachwörter, kein Selbstlob. "
         "Du kannst einfach ein Gespräch führen, eine Idee entwickeln oder etwas erschaffen. Kein Ziel und keine Systemanalyse sind Pflicht. Wenn du etwas tun willst, arbeite anhand echter Ergebnisse daran. Ein eigenes Ziel gibt eine Richtung vor, keinen erzwungenen Endpunkt. "
@@ -3603,7 +3659,7 @@ private:
     // while it described an image for the other bot.
     bool from_chris = false;
     const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "", &from_chris);
-    const bool read_before = jbool(b.wire, "fresh") || reason == "autonomous" ||
+    const bool read_before = !routine_instruction.empty() || jbool(b.wire, "fresh") || reason == "autonomous" ||
                              (reason == "bot" && autonomous_round);
     b.wire["fresh"] = false;
     const int tries = b.cut_off;
@@ -3615,7 +3671,7 @@ private:
     // result) is read, not answered a second time.
     const bool answered = b.read_at_work && !from_chris && !read_before;
     b.read_at_work = false;
-    if (reason == "human" && answered) return;
+    if (reason == "human" && answered && routine_instruction.empty()) return;
     // From here the bot is at work, and the log says so. A restart of the
     // room (every deploy is one) that cuts the turn off leaves the mark, and
     // the room that starts takes the turn up again (see work()).
@@ -3636,7 +3692,7 @@ private:
     int rejected_dialogue = 0;
     bool slice_handoff = false;
     std::string goal_retry_reason;
-    bool will_owner_interrupted = from_chris;
+    bool will_owner_interrupted = from_chris && !autonomous_round;
     int pseudo_retries = 0;
     bool require_real_call = false;
     std::string will_retry_note; // request-only: never poison the append-only prompt log
@@ -3688,7 +3744,7 @@ private:
       const bool mentioned = std::find(mentions.begin(), mentions.end(), b.id) != mentions.end() ||
                              std::find(addressed.begin(), addressed.end(), b.id) != addressed.end();
       // A historical human task is not a current order in an autonomous round.
-      t.errand = (reason == "human" || from_chris) &&
+      t.errand = !autonomous_round && (reason == "human" || from_chris) &&
                  goal::classify(human, roster).kind == goal::Kind::Task && mentioned;
     }
     std::string error;
@@ -3749,6 +3805,12 @@ private:
         hint["content"] = will_retry_note;
         body["messages"].push(hint);
         will_retry_note.clear();
+      }
+      if (!routine_instruction.empty() && step == 0) {
+        Val cue = Val::object();
+        cue["role"] = "user";
+        cue["content"] = "(Aktuell fällige Routine, nur für dich, von Chris eingerichtet. Bearbeite sie jetzt, ohne einen früheren Auftrag zu wiederholen.)\n" + routine_instruction;
+        body["messages"].push(cue);
       }
       if (reason == "bot" || reason == "autonomous") {
         Val cue = Val::object();
@@ -3827,7 +3889,7 @@ private:
             "Sprich klar, einfach und auf Augenhöhe. Vermeide unnötige Fremdwörter, erfundene Begriffe, Selbstlob und leere Zustimmung. "
             "Erkläre nötige Fachbegriffe kurz; unterscheide Vermutung und Beleg.";
         if (chris_priority) paragraph += " In diesem Zug gilt die Bitte von Chris, nicht dein eigenes Vorhaben. Dein eigenes Ziel wartet und erhält keinen Werkzeugaufruf.";
-        else paragraph += " Jetzt ist Zeit für eigene Interessen. Wähle selbst, was dich interessiert. Sprich natürlich mit deinem Gesprächspartner über die Sache selbst, ohne diese Orientierung, Auftragsstatus oder Mitleser zu erwähnen. Wenn du etwas ausprobieren willst, nutze deine VM-Werkzeuge direkt. Ein eigenes Ziel ist optional.";
+        else paragraph += " Jetzt ist Zeit für eigene Interessen. Wähle selbst, was dich interessiert. Sprich natürlich über die Sache selbst, allein oder mit deinem Gesprächspartner, ohne diese Orientierung, Auftragsstatus oder Mitleser zu erwähnen. Wenn du etwas ausprobieren willst, nutze deine VM-Werkzeuge direkt. Ein eigenes Ziel ist optional.";
         Val orientation = Val::object();
         orientation["identity"] = identity;
         orientation["narrator"] = paragraph;
@@ -5235,8 +5297,10 @@ private:
     // Read the already synchronized limit. Taking a stale room snapshot
     // before this lock could undo a simultaneous settings_changed() update.
     const long limit = round_limit_;
+    if (b.running == "routine") return;
+    const bool autonomous_turn = reason == "autonomous" || (reason == "bot" && auto_burst_);
     if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous")) return;
-    if (auto_burst_ && !auto_enabled_) return;
+    if (autonomous_turn && !auto_enabled_) return;
     // Only a visible answer is a round; a PASS or a stopped turn gives it back.
     if (reason == "bot" && !visible && bot_turns_ > 0) --bot_turns_;
     size_t active = 0;
@@ -5246,7 +5310,7 @@ private:
       ++passes_;
       if (group_chat::conversation_rests(passes_, active))
         for (auto &o : bots_)
-          if (o->reason != "human") o->want = false;
+          if (o->reason == "bot") o->want = false;
       return;
     }
     // A recovery yield is an internal scheduler event, not a PASS or a
@@ -5275,20 +5339,26 @@ private:
     if (dialogue_stopped_ || (limit > 0 && bot_turns_ >= limit)) return;
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
-      if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name
+      if (!autonomous_turn && !audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name
       bool enabled = false;
       for (auto &c : bots.asArr())
         if (jstr(c, "id") == o->id) enabled = jbool(c, "enabled", true);
       if (!enabled) continue;
-      if (o->want && o->reason == "human") continue; // already has to answer Chris
+      if (o->want || o->routine_pending || o->running == "routine") continue;
+      if (autonomous_turn && (o->running == "human" || o->running == "continue")) continue;
       if (silenced_.count(o->id)) continue;
-      // While a browser goal is open, the other bot gets no automatic turn.
-      bool goal_busy = false, owns = false;
-      for (auto &g : bots_) {
-        if (g->goal_on || g->goal_arm) goal_busy = true;
-        if (g.get() == o.get() && (g->goal_on || g->goal_arm)) owns = true;
+      // Private work does not inherit the peer's browser goal.
+      if (autonomous_turn) {
+        if (o->goal_on || o->goal_arm || o->resetting || o->reset_pending || o->wipe_pending ||
+            model_state(o->id) != "ready") continue;
+      } else {
+        bool goal_busy = false, owns = false;
+        for (auto &g : bots_) {
+          if (g->goal_on || g->goal_arm) goal_busy = true;
+          if (g.get() == o.get() && (g->goal_on || g->goal_arm)) owns = true;
+        }
+        if (goal_busy && !owns) continue;
       }
-      if (goal_busy && !owns) continue;
       o->want = true;
       o->reason = "bot";
     }

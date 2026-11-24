@@ -913,10 +913,78 @@ class RoomContract(unittest.TestCase):
         r = Room(MAG_ROOM_AUTO_CHAT_INTERVAL_S="5")
         self.addCleanup(r.close)
         self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": False})[0], 200)
+        r.lena.reply = lambda body: "Ich arbeite auch allein weiter."
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": True})[0], 200)
-        time.sleep(6)
-        self.assertEqual(r.lena.chats(), [])
+        r.wait(lambda: bool(r.texts("lena")), "solo bot speaks with peer paused", 25)
         self.assertEqual(r.noah.chats(), [])
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+
+    def test_autonomous_peer_can_start_while_other_bot_is_working(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200",
+                 MAG_ROOM_AUTO_PEER_GRACE_S="1")
+        self.addCleanup(r.close)
+        started, release = threading.Event(), threading.Event()
+
+        def slow(body):
+            started.set()
+            release.wait(25)
+            return "Mein eigenes Projekt."
+
+        r.lena.reply = slow
+        r.noah.reply = lambda body: "Ich beginne unabhängig mit meiner Idee."
+        try:
+            self.assertEqual(r.api("PUT", "/api/settings", {
+                "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+            self.assertTrue(started.wait(10))
+            r.wait(lambda: bool(r.texts("noah")), "Noah speaks while Lena is still working", 15)
+            self.assertFalse(release.is_set())
+            self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        finally:
+            release.set()
+        r.idle()
+
+    def test_due_routines_are_independent_and_wait_for_own_human_task(self):
+        r = Room(connect_events=False, MAG_ROOM_ROUTINE_TICK_S="1")
+        self.addCleanup(r.close)
+        started, release = threading.Event(), threading.Event()
+
+        def lena(body):
+            if "Aktuell fällige Routine" in text_of(body["messages"][-1].get("content", "")):
+                return "Lena Routine erledigt."
+            started.set()
+            release.wait(25)
+            return "Lena Nutzerauftrag erledigt."
+
+        r.lena.reply = lena
+        r.noah.reply = lambda body: "Noah Routine erledigt."
+        try:
+            r.say("@Lena erzähl mir etwas")
+            self.assertTrue(started.wait(10))
+            for bot in ("lena", "noah"):
+                code, routine = r.api("POST", "/api/routines", {
+                    "bot": bot, "name": "Erklärung " + bot,
+                    "instruction": "Berichte kurz.", "when": {"every_minutes": 8}})
+                self.assertEqual(code, 200, routine)
+            path = r.tmp / "state" / "routines.json"
+            routines = json.loads(path.read_text())
+            due = int(time.time()) - 1
+            for routine in routines:
+                routine["next"] = due
+            replacement = path.with_suffix(".test")
+            replacement.write_text(json.dumps(routines))
+            replacement.replace(path)
+            r.wait(lambda: "Noah Routine erledigt." in r.texts("noah"),
+                   "Noah routine runs despite Lena's user task", 15)
+            self.assertTrue(next(b for b in r.state()["bots"] if b["id"] == "lena")["busy"])
+            pending = next(x for x in json.loads(path.read_text()) if x["bot"] == "lena")
+            self.assertEqual(pending["next"], due, "busy bot must retain its due occurrence")
+        finally:
+            release.set()
+        r.wait(lambda: "Lena Routine erledigt." in r.texts("lena"), "overdue Lena routine runs", 15)
+        r.idle()
+        scheduled = [m for m in r.messages() if m.get("routine")]
+        self.assertEqual(len(scheduled), 2, "exactly one coalesced run per bot")
+        self.assertTrue(all(x["next"] > due for x in json.loads(path.read_text())))
 
     def test_named_bot_answers_alone(self):
         r = self.room

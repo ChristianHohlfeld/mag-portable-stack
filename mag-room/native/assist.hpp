@@ -580,7 +580,7 @@ private:
     for (auto &m : room_.all())
       if (const Val *m3 = m.find("model3d"); m3 && jstr(*m3, "state") == "done") done_.insert(jstr(m, "id"));
     for (;;) {
-      std::this_thread::sleep_for(std::chrono::seconds(30));
+      std::this_thread::sleep_for(std::chrono::seconds(std::max(1L, envl("MAG_ROOM_ROUTINE_TICK_S", 30))));
       try {
         due_by_time();
         due_by_event();

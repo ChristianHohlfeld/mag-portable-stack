@@ -736,7 +736,11 @@ class RoomContract(unittest.TestCase):
                "both bots speak without a browser", 30)
         self.assertEqual([m for m in r.messages() if m.get("from") == "chris"], [])
         prompts = json.dumps(r.lena.chats() + r.noah.chats(), ensure_ascii=False)
-        self.assertIn("Du musst kein neues Thema erfinden", prompts)
+        self.assertIn("Warte nicht auf einen Auftrag", prompts)
+        self.assertIn("Jetzt ist Zeit für eigene Interessen", prompts)
+        self.assertNotIn("Dein eigenes Ziel wartet", prompts)
+        self.assertNotIn("In diesem Zug gilt die Bitte von Chris", prompts)
+        self.assertNotIn("Chris kann sie jederzeit selbst erneut ansprechen", prompts)
         self.assertIn("Prüfe Annahmen und widersprich sachlich", prompts)
         self.assertIn("Sprich klar, einfach und auf Augenhöhe", prompts)
         self.assertIn("Was ist bekannt, warum gilt es, was folgt daraus?", prompts)
@@ -1102,6 +1106,8 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(cue), 1)
         self.assertIn("Ich spreche für mich selbst.", cue[0]["content"])
         self.assertIn("Du bist Lena.", cue[0]["content"])
+        self.assertIn("Dein eigenes Ziel wartet", cue[0]["content"])
+        self.assertNotIn("Jetzt ist Zeit für eigene Interessen", cue[0]["content"])
         # The request-only narrator precedes the append-only conversation.
         # The last actual instruction/tool result must remain the last prompt item.
         self.assertLess(messages.index(cue[0]), len(messages) - 1)

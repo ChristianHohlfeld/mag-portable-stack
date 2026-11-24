@@ -265,6 +265,12 @@
         if (m.mmproj && !b.vision) add('Bilder sehen', m.mmproj.ok ? 'bereit, aktiv nach Neustart' : m.mmproj.total ? 'wird geladen ' + Math.floor(((m.mmproj.bytes || 0) / m.mmproj.total) * 100) + ' %' : 'nicht vorhanden');
         else add('Bilder', b.vision ? 'sieht sie selbst' : 'liest ihre Beschreibung');
         if (m.state === 'ready') {
+          const [activity, phase] = chipState(b);
+          if (activity === 'busy') {
+            const progress = b.total > 0 ? `${b.processed} / ${b.total} Kontext-Token`
+              : b.generated_tokens > 0 ? `${b.generated_tokens} erzeugte Token` : '';
+            add('Aktivität', progress ? phase + ' · ' + progress : phase);
+          }
           add('Kontext', b.ctx_tokens ? b.ctx_tokens.toLocaleString('de-DE') + ' von ' + b.ctx_budget.toLocaleString('de-DE') + ' Tokens' : 'leer');
           if (b.tps) add('Tempo', b.tps.toFixed(1).replace('.', ',') + ' Tokens/s');
           if (b.cache_tokens > 0) add('KV-Cache', b.cache_tokens.toLocaleString('de-DE') + ' wiederverwendete Tokens');

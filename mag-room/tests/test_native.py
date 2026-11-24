@@ -1443,7 +1443,41 @@ class RoomContract(unittest.TestCase):
         r.idle()
         last = [m for m in r.messages() if m["from"] == "lena"][-1]
         self.assertEqual((last["parts"][0]["state"], last["parts"][0]["exit"]), ("error", 3))
-        self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "tool"][-1], "exit=3\nhallo\n")
+        result = [x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "tool"][-1]
+        self.assertTrue(result.startswith("exit=3\nhallo\n"))
+        self.assertIn('"kind":"command_exited"', result)
+        self.assertIn("keine automatische Funktionsprüfung", result)
+
+    def test_filesystem_grounding_requires_actual_readback(self):
+        import hashlib
+        r = Room(FAKE_GUEST_DROP_WRITE="phantom.py")
+        self.addCleanup(r.close)
+        payload = "print('real')\n"
+        def call(name, **args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+        script = iter([
+            call("write_file", path="real.py", content=payload),
+            call("read_file", path="real.py"),
+            call("write_file", path="phantom.py", content="not saved"),
+            "Die erste Datei wurde geschrieben und gelesen. Die zweite ist ungeprüft."
+        ])
+        r.lena.reply = lambda body: next(script, "Die zweite Datei wurde nicht bestätigt.")
+        r.say("@Lena erstelle und prüfe zwei Dateien")
+        r.idle()
+        last = [m for m in r.messages() if m["from"] == "lena"][-1]
+        receipts = [p["fs_evidence"] for p in last["parts"] if "fs_evidence" in p]
+        self.assertEqual([e["kind"] for e in receipts],
+                         ["write_verified", "read_verified", "unverified"])
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        self.assertEqual([e["sha256"] for e in receipts[:2]], [digest, digest])
+        self.assertTrue(all(e["vm"] == "agent1" for e in receipts))
+        self.assertFalse((r.tmp / "guests" / "agent1" / "phantom.py").exists())
+        self.assertEqual((r.tmp / "guests" / "agent1" / "real.py").read_text(), payload)
+        messages = r.lena.chats()[-1]["messages"]
+        results = [m["content"] for m in messages if m["role"] == "tool"]
+        self.assertIn("Rücklesen/Hash-Abgleich nicht bestätigt", results[-1])
+        self.assertIn("Dieser Zugriff ist NICHT bestätigt", results[-1])
+        self.assertIn("kein automatischer Funktionstest", results[0])
 
     def test_generic_prompt_does_not_resurrect_earlier_projects(self):
         r = self.room

@@ -4898,7 +4898,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("POST", "/api/room/clear", {})[0], 200)
         r.idle()
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
-        self.assertNotEqual(goal["state"], "active")
+        self.assertEqual(goal, {}, "room clear removes the complete old goal")
 
     def test_whois_and_csrf_guard(self):
         r = self.room

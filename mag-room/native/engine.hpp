@@ -2907,12 +2907,15 @@ private:
     }
     if (changed && !save_goal(b))
       throw std::runtime_error("Browser-Auftrag konnte nicht gespeichert werden; LLM-Aufruf abgebrochen");
-    if (pending.isObj()) {
+    {
       std::lock_guard<std::mutex> lk(mu_);
       // A new correction may have arrived while the worker saved the goal:
       // never unlink a journal whose contents have changed meanwhile.
-      if (mj::dump(read_json(goal_pending_file(b))) == mj::dump(pending))
+      if (pending.isObj() && mj::dump(read_json(goal_pending_file(b))) == mj::dump(pending))
         unlink(goal_pending_file(b).c_str());
+      // The pending flag describes the journal, not the active task. Leaving
+      // it armed after committing the journal prevents deferred recovery.
+      b.goal_arm = read_json(goal_pending_file(b)).isObj() && !exists(goal_mark(b));
     }
   }
   bool goal_live(const Bot &b) const {

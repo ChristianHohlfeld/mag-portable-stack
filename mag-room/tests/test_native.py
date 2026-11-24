@@ -3778,7 +3778,6 @@ class RoomContract(unittest.TestCase):
                 return "Step 1: Scroll down to the results.\nStep 2: Identify the transparent tube."
             if i == 8:
                 return "Step 1: Scroll down to the results.\nStep 2: Identify the transparent tube."
-            seen.append("extra")
             return "Das darf nicht das Ergebnis sein."
 
         r.lena.reply = reply
@@ -3805,7 +3804,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(seen[0]["messages"], seen[1]["messages"][:len(seen[0]["messages"])])  # KV prefix stable
         r.idle()
         self.assertEqual(browser.clicks, [28])
-        self.assertLess(len(seen), 12)  # the repeated plan stalled instead of looping
+        self.assertEqual(len(seen), 15)  # seven earlier decisions plus eight unusable decisions; yield, not an unbounded loop
         said = " ".join(m.get("text", "") for m in r.messages() if m["from"] == "lena")
         self.assertIn("Abschluss noch nicht verifiziert", said)
         self.assertEqual(r.noah.chats(), [])
@@ -4670,7 +4669,7 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "done")
         self.assertEqual(goal["progress"], "done")
-        self.assertEqual(len(requests), 5)  # full palette, look, 2 retries, grounded completion
+        self.assertEqual(len(requests), 10)  # requirements, look, eight unusable decisions, grounded completion
         self.assertEqual(goal["results"][0]["url"], "https://example.org/item/best")
         self.assertEqual(goal["results"][0]["price"], "7,49 EUR")
         seen_urls = [link["url"] for page in goal["evidence_pages"] for link in page["links"]]

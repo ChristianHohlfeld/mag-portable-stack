@@ -488,9 +488,13 @@ static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
   struct statvfs st {};
   if (statvfs(root.c_str(), &st))
     throw std::runtime_error("Disk check failed");
-  if ((uint64_t)st.f_bavail * st.f_frsize <
-      (disks + num(c, "min_host_free_disk_gib")) * G)
-    throw std::runtime_error("Host disk reserve");
+  const uint64_t free_bytes = (uint64_t)st.f_bavail * st.f_frsize;
+  const long reserve = num(c, "min_host_free_disk_gib");
+  if (free_bytes < (disks + reserve) * G)
+    throw std::runtime_error("Host disk reserve: " + std::to_string(free_bytes / G) +
+        " GiB frei, " + std::to_string(disks + reserve) + " GiB benötigt (" +
+        std::to_string(disks) + " GiB VM-Budget + " + std::to_string(reserve) +
+        " GiB Host-Reserve). Speicher freigeben oder /etc/magbot/config.json prüfen.");
   double load;
   getloadavg(&load, 1);
   if (load >

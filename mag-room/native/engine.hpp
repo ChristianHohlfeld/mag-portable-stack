@@ -95,7 +95,7 @@ public:
     // Keep the last spontaneous conversation through a room-only deploy:
     // restarting the web UI/server must not trigger another expensive CPU chat.
     const std::string last = trim(slurp(room_.cfg.state_dir + "/auto-chat-last"));
-    try { auto_last_ms_ = std::stoll(last); } catch (...) { auto_last_ms_ = now_ms(); }
+    try { auto_last_ms_ = std::stoll(last); } catch (...) { auto_last_ms_ = 0; }
     // Keep the next starter across room restarts; otherwise every deploy
     // silently puts the first roster entry (usually Lena) in the lead.
     const std::string next = trim(slurp(room_.cfg.state_dir + "/auto-chat-next"));
@@ -1048,6 +1048,8 @@ private:
           const bool ready = m && jstr(*m, "state") == "ready";
           const double since = m ? jnum(*m, "since", 0) : 0;
           if (ready && since != b->model_since) {
+            // A model reload must not leave autonomous chat waiting on a previous idle interval.
+            if (b->model_since >= 0 && auto_enabled_) auto_last_ms_ = 0;
             b->model_since = since;
             b->warm_pending = true;
           }
@@ -1113,7 +1115,7 @@ private:
     if (stop_ || !auto_enabled_ || (auto_last_ms_ && now - auto_last_ms_ < every) ||
         (last_human_ms_ && now - last_human_ms_ < 15000)) return;
     for (auto &b : bots_)
-      if (!b->running.empty() || b->want || b->warming || b->warm_pending || b->reset_pending ||
+      if (!b->running.empty() || b->want || b->reset_pending ||
           b->wipe_pending || b->resetting || b->goal_on || b->goal_arm || b->cut_off > 0) return;
     std::vector<Bot *> available;
     for (auto &b : bots_) {
@@ -1123,7 +1125,17 @@ private:
       available.push_back(b.get());
     }
     if (available.size() < 2 || configured.asArr().size() < 2) return;
-    const size_t starter_index = auto_next_ % available.size();
+    size_t starter_index = auto_next_ % available.size();
+    // Prefix preparation is per model, not a room-wide conversation gate.
+    // Prefer the free model; if both are warming, queue the next opener now.
+    // Its own worker serializes inference, so no second request races its warmup.
+    for (size_t i = 0; i < available.size(); ++i) {
+      const size_t candidate = (starter_index + i) % available.size();
+      if (!available[candidate]->warming && !available[candidate]->warm_pending) {
+        starter_index = candidate;
+        break;
+      }
+    }
     Bot *starter = available[starter_index];
     auto_next_ = (starter_index + 1) % available.size();
     write_atomic(room_.cfg.state_dir + "/auto-chat-next", std::to_string(auto_next_) + "\n", 0600);

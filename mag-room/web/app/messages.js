@@ -3,7 +3,7 @@
 'use strict';
 (function () {
   const { MAG } = window, { el, $, state: S } = MAG;
-  let list, scroller, jump, activity, empty, olderBtn;
+  let list, scroller, jump, empty, olderBtn;
   let pinned = true, unread = 0;
   // This is a local presentation preference, never a server-side filter:
   // every message and tool event continues to arrive and remains in S.messages.
@@ -1672,30 +1672,8 @@
     }, Math.max(60, Math.min(700, cost * 4)));
   }
 
-  // Show live model work even before the first visible answer or step.
-  function paintActivity() {
-    if (!activity) return;
-    const labels = {
-      warming: 'wärmt den Systemprompt auf', reading: 'verarbeitet den Kontext',
-      thinking: 'denkt nach', writing: 'schreibt', preparing_tool: 'bereitet ein Werkzeug vor',
-      tool: 'arbeitet mit einem Werkzeug'
-    };
-    const rows = [];
-    for (const b of S.bots || []) {
-      const phase = b.model?.state === 'unloading' ? 'entlädt das Modell' : labels[b.phase];
-      if (!phase) continue;
-      const elapsed = b.phase_since ? MAG.stopwatch(Math.max(0, Date.now() - b.phase_since)) : '';
-      const progress = b.total > 0 ? `${b.processed} / ${b.total} Kontext-Token`
-        : b.generated_tokens > 0 ? `${b.generated_tokens} erzeugte Token` : '';
-      rows.push([b.name + ' ' + phase, progress, elapsed].filter(Boolean).join(' · '));
-    }
-    activity.hidden = !rows.length;
-    if (activity.textContent !== rows.join('\n')) activity.textContent = rows.join('\n');
-  }
-
   setInterval(() => {
     if (!list) return;
-    paintActivity();
     list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
       const m = S.messages.get(node.dataset.message || node.closest('.msg')?.dataset.id);
@@ -1710,7 +1688,7 @@
 
   // ---- wiring -------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
-    scroller = $('#scroll'); list = $('#list'); jump = $('#jump'); activity = $('#activity');
+    scroller = $('#scroll'); list = $('#list'); jump = $('#jump');
     empty = $('#empty'); olderBtn = $('#older');
     if (empty) empty.dataset.originalHtml = empty.innerHTML;
     const button = $('#media-filter');
@@ -1838,7 +1816,6 @@
   });
   const lastBotNames = new Map();
   MAG.on('bots', () => {
-    paintActivity();
     const renamed = new Map();
     for (const b of S.bots || []) {
       const prev = lastBotNames.get(b.id);

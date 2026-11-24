@@ -17,16 +17,19 @@ const fixture = read('index.html')
     const on = MAG.on;
     MAG.on = (type, listener) => {
       on(type, listener);
-      if (type === 'bots') document.addEventListener('DOMContentLoaded', listener);
+      if (type === 'bots') {
+        document.addEventListener('DOMContentLoaded', listener);
+        document.addEventListener('fixture-bots', listener);
+      }
     };
     MAG.connect = () => {};
     MAG.state.you = { role: 'owner', name: 'Chris' };
     MAG.state.bots = ${JSON.stringify(bots)}.map((name, index) => ({
       id: ['lena', 'noah', 'qwen'][index], name, enabled: true,
-      busy: true, phase: 'writing', model: { state: 'ready' }
+      busy: true, phase: ['preparing_tool', 'reading', 'writing'][index], model: { state: 'ready' }
     }));
     if (location.search) MAG.state.bots[2].name = 'Qwen'.repeat(20);
-  </script><script>` + read('app/panels.js') + '</script></body>');
+  </script><script>` + read('app/panels.js') + '</script><script>' + read('app/messages.js') + '</script></body>');
 
 function checkLayout({ width, longName, bots }) {
   const doc = document;
@@ -61,6 +64,15 @@ function checkLayout({ width, longName, bots }) {
     check(box(actions[index - 1]).right <= box(actions[index]).left, 'actions do not overlap');
   }
   if (width <= 520) {
+    const chat = doc.getElementById('scroll');
+    const dock = doc.getElementById('dock');
+    const chatHeight = box(chat).height;
+    const dockHeight = box(dock).height;
+    check(!chat.querySelector('#activity') && !dock.querySelector('#activity'), 'no progress block in the chat or dock');
+    check(chips.every(chip => getComputedStyle(chip.querySelector('.dot')).animationName === 'pulse'),
+      'each working bot has a visible activity signal');
+    check(chips[0].querySelector('.open').getAttribute('aria-label') === 'Blake: bereitet Werkzeug vor',
+      'the chip exposes the current phase to assistive technology');
     check(box(row).bottom <= box(actions[0]).top, 'actions have a separate row');
     if (longName) {
       check(row.scrollWidth > row.clientWidth, 'long bot names can scroll');
@@ -70,6 +82,14 @@ function checkLayout({ width, longName, bots }) {
     } else {
       check(row.scrollWidth === row.clientWidth, 'all three busy chips fit without scrolling');
     }
+    for (const bot of MAG.state.bots) {
+      bot.phase = 'idle';
+      bot.busy = false;
+    }
+    doc.dispatchEvent(new Event('fixture-bots'));
+    check(row.querySelectorAll('.chip.ready').length === 3, 'working chips return to ready');
+    check(box(chat).height === chatHeight && box(dock).height === dockHeight,
+      'active bots take no space from the conversation');
   } else {
     check(box(chips[0]).right <= box(actions[0]).left &&
       box(chips[0]).top < box(actions[0]).bottom && box(chips[0]).bottom > box(actions[0]).top,

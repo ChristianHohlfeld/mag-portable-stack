@@ -4,6 +4,7 @@ stage keeps running and is followed again), a reboot (the lost stage starts
 again, a finished one is not repeated) and an earlier worker's "Unterbrochen".
 The stages are scripted stand-ins; this proves the worker's bookkeeping, not
 the GPU pipeline."""
+import fcntl
 import json
 import os
 import pathlib
@@ -47,10 +48,21 @@ elif script == "imagegen.py":
     import json
     folder = pathlib.Path(args[0])
     asked = json.loads((folder / "prompt.json").read_text())
+    if os.environ.get("FAKE_MODEL_PID"):
+        pid = pathlib.Path(os.environ["FAKE_MODEL_PID"]).read_text().strip()
+        assert not pathlib.Path("/proc", pid).exists(), "Qwen alive at image startup"
     for i in range(1, 5):
         time.sleep(delay)
         print("MAG-IMAGE %d/4" % i, flush=True)
     (folder / "image.png").write_bytes(b"\x89PNG " + asked["prompt"].encode())
+elif script == "h3gen.py":
+    folder = pathlib.Path(args[0])
+    pid = pathlib.Path(os.environ["FAKE_MODEL_PID"]).read_text().strip()
+    assert not pathlib.Path("/proc", pid).exists(), "Qwen alive at video startup"
+    for i in range(1, 5):
+        time.sleep(delay)
+        print("MAG-VIDEO %d/4" % i, flush=True)
+    (folder / "video.mp4").write_bytes(b"video")
 else:
     folder = pathlib.Path(args[1])
     if (folder.parent.parent / "mesh-fails").exists():
@@ -99,6 +111,13 @@ def main():
                MAG_GPU_HOLD_MAX_S="8", MAG_GPU_THROTTLE_RESTORE_S="2",
                MAG_GPU_HOLD_BUSY_S="2", MAG_GPU_HOLD_REARM_S="5",
                MAG_H3D_URL="http://127.0.0.1:9")                     # not the host's own h3d
+    model = None
+    gpu, priority, pid_file = (tmp / name for name in ("gpu.lock", "gpu.lock.idol", "qwen.pid"))
+    (tmp / "rocm-6.3.4/current").mkdir(parents=True)
+    for path in (gpu, priority, tmp / ".complete"):
+        path.touch()
+    env.update(MAG_GPU_LOCK=str(gpu), MAG_H3_CLI=str(stage), MAG_IDOL_BASE=str(tmp),
+               MAG_H3_WEIGHTS=str(tmp))
     worker, wlog = [None], [None]
 
     def call(method, path, body=None):
@@ -174,6 +193,16 @@ def main():
         assert code == 202, job
         return job["id"]
 
+    def wait_model(old=0):
+        end = time.monotonic() + 6
+        while time.monotonic() < end:
+            if pid_file.exists():
+                raw = pid_file.read_text()
+                if raw.isdigit() and int(raw) != old and alive(int(raw)):
+                    return int(raw)
+            time.sleep(0.05)
+        raise AssertionError("Qwen did not start")
+
     try:
         helper = WORKER.parent / "gpu-clock.sh"
         def run_clock(mode):
@@ -189,10 +218,38 @@ def main():
         (card / "pp_dpm_sclk").write_text("0\n")
         start()
         assert clocks()[0] == "auto" and cap.read_text() == "78000000\n" and cap.stat().st_mtime_ns == cap_mtime
+        # While the device is independently busy Qwen must stay down. Once
+        # it runs, the real worker's queued demand stops it before either
+        # kind of GPU stage starts, and it stays stopped across the queue.
+        env["FAKE_MODEL_PID"] = str(pid_file)
+        stop()
+        start()
+        guard = WORKER.parents[1] / "models/gpu-guard.py"
+        command = "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)"
+        with gpu.open("rb") as busy:
+            fcntl.flock(busy, fcntl.LOCK_EX)
+            model = subprocess.Popen([sys.executable, "-I", str(guard), str(tmp), sys.executable, "-c", command, str(pid_file)],
+                                     env=dict(env, MAG_H3D_PORT="9"))
+            time.sleep(0.5)
+            assert not pid_file.exists()
+        before = wait_model()
+        generation = (tmp / ".gpu").read_text()
         # A picture from words is a job of the same queue, with its own result.
         code, image = call("POST", "/api/idol/images", json.dumps({"prompt": "ein Fuchs im Schnee", "width": 768, "height": 512}).encode())
         assert code == 202 and image["kind"] == "image", image
+        code, video = call("POST", "/api/idol/videos?prompt=Schnee", b"")
+        assert code == 202 and video["kind"] == "video", video
         s = wait(image["id"], lambda s: s["state"] == "done", "picture made")
+        wait(video["id"], lambda s: s["state"] == "done", "video made")
+        assert not alive(before)
+        after = wait_model(before)
+        assert (tmp / ".gpu").read_text() != generation
+        model.terminate()
+        assert model.wait(timeout=10) == 0 and not alive(after)
+        if "--gpu-priority" in sys.argv:
+            print("ok")
+            return
+        assert call("DELETE", "/api/idol/jobs/" + video["id"])[0] == 200
         assert (s["files"], s["phases"]) == (["image.png"], 2), s
         with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/api/idol/jobs/%s/image.png" % (port, image["id"]), headers={"X-Mag-Idol-UI": "1"}), timeout=5) as res:
             assert res.headers["Content-Type"] == "image/png" and res.read() == b"\x89PNG " + "ein Fuchs im Schnee".encode()
@@ -463,6 +520,9 @@ def main():
             sys.stderr.write((tmp / "worker.out").read_text(errors="replace")[-6000:])
         raise
     finally:
+        if model is not None and model.poll() is None:
+            model.terminate()
+            model.wait(timeout=10)
         if worker[0] and worker[0].poll() is None:
             worker[0].kill()
         subprocess.run(["pkill", "-f", str(stage)], check=False)

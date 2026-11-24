@@ -196,9 +196,9 @@ class FakeBrowser:
 
 
 class Room:
-    """One magroom process with two scripted model servers."""
+    """One magroom process with scripted model servers."""
 
-    def __init__(self, connect_events=True, **env):
+    def __init__(self, connect_events=True, third_bot=False, **env):
         self.connect_events = connect_events
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="magroom-"))
         self.lena, self.noah, self.idol, self.scene = FakeLlama("Lena"), FakeLlama("Noah"), FakeIdol(), FakeScene()
@@ -225,6 +225,21 @@ class Room:
         # Lena has a (fake) VM, Noah is chat-only.
         bot = lambda id, name, vm: {"id": id, "name": name, "vm": vm, "enabled": True, "thinking": False, "persona": "", "memory": []}
         (self.tmp / "state" / "bots.json").write_text(json.dumps([bot("lena", "Lena", "agent1"), bot("noah", "Noah", "")]))
+        self.qwen = FakeLlama("Qwen") if third_bot else None
+        self.gateway = None
+        if self.qwen:
+            config = self.tmp / "models.json"
+            config.write_text(json.dumps({"bots": {"qwen": {"room_name": "Qwen", "port": self.qwen.port}}}))
+            port = free_port()
+            self.gateway_url = f"http://127.0.0.1:{port}"
+            self.env.update(MAG_ROOM_GATEWAY=self.gateway_url, MAG_ROOM_MODELS_CONFIG=str(config))
+            audit_bin = pathlib.Path(os.environ.get("MAG_AUDIT_BIN", ROOT / "build/mag-audit-gateway"))
+            self.gateway = subprocess.Popen([str(audit_bin)], env=dict(os.environ,
+                MAG_AUDIT_LISTEN_PORT=str(port), MAG_AUDIT_LOG_DIR=str(self.tmp / "audit"),
+                MAG_AUDIT_SECRETS_FILE=str(self.tmp / "no-secrets"), MAG_MODELS_STATUS_FILE=str(self.tmp / "no-status.json"),
+                MAG_ROOM_BOTS_FILE=str(self.tmp / "state/bots.json"), MAG_ROOM_MODEL_ID="lena",
+                MAG_ROOM_MODEL_PORTS=f"{self.lena.port}:0,{self.noah.port}:1,{self.qwen.port}:2",
+                MAG_ROOM_MODEL_ID_0="lena", MAG_ROOM_MODEL_ID_1="noah", MAG_ROOM_MODEL_ID_2="qwen"))
         self.proc = None
         self.start()
         # The supervisor marks a model ready before its asynchronous slot
@@ -353,6 +368,11 @@ class Room:
         self.stop()
         self.lena.close()
         self.noah.close()
+        if self.gateway:
+            self.gateway.terminate()
+            self.gateway.wait(timeout=5)
+        if self.qwen:
+            self.qwen.close()
         self.idol.close()
         self.scene.close()
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -362,6 +382,40 @@ class RoomContract(unittest.TestCase):
     def setUp(self):
         self.room = Room()
         self.addCleanup(self.room.close)
+
+    def test_third_bot_from_existing_roster_routes_by_id_through_audit(self):
+        r = Room(third_bot=True)
+        self.addCleanup(r.close)
+        bots = r.state()["bots"]
+        self.assertEqual([(b["id"], b["name"], b["vm"]) for b in bots],
+                         [("lena", "Lena", "agent1"), ("noah", "Noah", ""), ("qwen", "Qwen", "")])
+        with urllib.request.urlopen(r.gateway_url + "/v1/models", timeout=5) as response:
+            self.assertEqual([b["id"] for b in json.load(response)["data"]], ["lena", "noah", "qwen"])
+        self.assertEqual(r.say("@Qwen bist du da?")["mentions"], ["qwen"])
+        r.idle()
+        self.assertEqual(r.texts("qwen"), ["Hallo von Qwen."])
+        self.assertFalse(r.lena.chats() or r.noah.chats())
+
+        for headers, expected in [({"X-Mag-Slot": "2"}, 200),
+                                  ({"X-Mag-Slot": "3"}, 400),
+                                  ({"X-Mag-Slot": "1", "X-Mag-Model": "qwen"}, 400)]:
+            req = urllib.request.Request(r.gateway_url + "/props", headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    self.assertEqual(response.status, expected)
+                    self.assertEqual(json.load(response)["model_alias"], "Qwen")
+            except urllib.error.HTTPError as error:
+                self.assertEqual(error.code, expected)
+
+        self.assertEqual(r.api("PUT", "/api/bot/qwen", {"name": "Quinn"})[0], 200)
+        r.stop()
+        r.start()
+        self.assertEqual([b["name"] for b in r.state()["bots"]], ["Lena", "Noah", "Quinn"])
+        r.idle()
+        self.assertEqual(r.say("@Quinn weiter?")["mentions"], ["qwen"])
+        r.idle()
+        self.assertEqual(len(r.qwen.chats()), 2)
+        self.assertTrue(any(action == "save" for action, _ in r.qwen.slot_actions))
 
     def test_thinking_capability_survives_room_only_deploy_without_modeld_restart(self):
         """The current release has explicit model capabilities, while the

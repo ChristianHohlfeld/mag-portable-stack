@@ -28,6 +28,6 @@ for test in "$OUT"/*; do
   [ -x "$test" ] && [ -f "$test" ] || continue
   case $(basename "$test") in cpu-*) continue;; esac
   echo "== $(basename "$test")"
-  sudo -n flock /var/lib/mag-idol/gpu.lock systemd-run --quiet --wait --pipe -p User="$(id -un)" -p Group="$(id -gn)" \
+  sudo -n flock -s /var/lib/mag-idol/gpu.lock.idol flock /var/lib/mag-idol/gpu.lock systemd-run --quiet --wait --pipe -p User="$(id -un)" -p Group="$(id -gn)" \
     -p SupplementaryGroups="render video" -p AllowedCPUs=28-55 -p MemoryMax=8G -p RuntimeMaxSec=120 "$test"
 done

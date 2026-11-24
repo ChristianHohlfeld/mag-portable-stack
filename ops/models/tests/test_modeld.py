@@ -153,6 +153,44 @@ esac
         while status("lena").get("since") == since and time.time() < end:
             time.sleep(0.2)
         assert wait("lena", "ready")["since"] not in (since, None), status("lena")
+        # Offline weights are discovered by quantization and never downloaded.
+        local = models / "qwen"
+        local.mkdir()
+        path = local / "Qwen3.8-27B-Q6_K.gguf"
+        path.write_bytes(good)
+        file = tmp / "models.json"
+        conf["bots"]["qwen"] = {"gpu": "mi50", "port": free_port(), "ctx": 16384,
+                                  "model": {"local_dir": str(local)}}
+        file.write_text(json.dumps(conf))
+        command = [str(BIN), "--config", str(file)]
+        assert subprocess.check_output(command + ["model-path", "qwen"], text=True).strip() == str(path)
+        second = local / "another-Q6_K.gguf"
+        second.write_bytes(good)
+        assert subprocess.run(command + ["model-path", "qwen"]).returncode == 78
+        second.unlink()
+        proc.terminate()
+        proc.communicate(timeout=10)
+        qwen_http = http.server.HTTPServer(("127.0.0.1", conf["bots"]["qwen"]["port"]), Health)
+        threading.Thread(target=qwen_http.serve_forever, daemon=True).start()
+        qwen_slots = state / "slots/qwen"
+        qwen_slots.mkdir()
+        gpu_state = qwen_slots / ".gpu"
+        gpu_state.write_text("waiting\n")
+        proc = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)
+        assert wait("qwen", "waiting_runtime")["gpu"] == "MI50"
+        runtime = tmp / ("0" * 40) / "hip-gfx906/bin/llama-server"
+        runtime.parent.mkdir(parents=True)
+        runtime.touch()
+        runtime.chmod(0o755)
+        assert wait("qwen", "waiting_gpu")["gpu"] == "MI50"
+        assert "mag-model-fetch@qwen" not in calls()
+        gpu_state.write_text("running 1234\n")
+        assert wait("qwen", "ready")["since"] == 1234
+        gpu_state.write_text("waiting\n")
+        assert "since" not in wait("qwen", "waiting_gpu")
+        gpu_state.write_text("running 5678\n")
+        assert wait("qwen", "ready")["since"] == 5678
+        assert path.read_bytes() == good
         print("ok")
     finally:
         proc.terminate()

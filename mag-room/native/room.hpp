@@ -7,6 +7,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <regex>
 #include <set>
 
 namespace mag {
@@ -495,6 +496,12 @@ public:
   }
 
   // ---- bots and settings --------------------------------------------------
+  Val model_config() const {
+    const std::string configured = env("MAG_ROOM_MODELS_CONFIG");
+    const Val conf = read_json(configured.empty() ? "/usr/local/lib/mag-models/models.json" : configured);
+    if (const Val *bots = conf.find("bots"); bots && bots->isObj()) return *bots;
+    return Val::object();
+  }
   Val bots() {
     std::lock_guard<std::mutex> lk(mu_);
     return bots_;
@@ -729,7 +736,7 @@ private:
     b["enabled"] = true;
     b["thinking"] = false;
     b["persona"] = "";
-    ensure_self(b);
+    b["self"]["narrator"] = default_narrator();
     b["memory"] = Val::array();
     return b;
   }
@@ -796,17 +803,27 @@ private:
     if (!settings_.find("web")) settings_["web"] = true;
 
     bots_ = read_json(cfg.state_dir + "/bots.json");
+    bool changed = false;
     if (!bots_.isArr() || bots_.asArr().empty()) {
       bots_ = Val::array();
-      Val lena = default_bot("lena", "Lena"), noah = default_bot("noah", "Noah");
-      bots_.push(lena);
-      bots_.push(noah);
-      save_bots_locked();
-    } else {
-      bool fill = false;
-      for (auto &b : *bots_.arr) fill = ensure_self(b) || fill;
-      if (fill) save_bots_locked();
+      bots_.push(default_bot("lena", "Lena"));
+      bots_.push(default_bot("noah", "Noah"));
+      changed = true;
     }
+    std::set<std::string> ids;
+    for (auto &b : *bots_.arr) {
+      ids.insert(jstr(b, "id"));
+      changed = ensure_self(b) || changed;
+    }
+    const Val models = model_config();
+    for (const auto &[id, spec] : *models.obj) {
+      const std::string name = jstr(spec, "room_name");
+      if (name.empty() || !std::regex_match(id, std::regex("[a-z][a-z0-9]{1,15}")) ||
+          !ids.insert(id).second) continue;
+      bots_.push(default_bot(id.c_str(), name.c_str()));
+      changed = true;
+    }
+    if (changed) save_bots_locked();
   }
 };
 

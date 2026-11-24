@@ -1,5 +1,5 @@
 // Native MAG audit gateway. One public loopback listener :8080.
-// Requests name a model; MAG_ROOM_MODEL_ID/PORTS select the two single-slot
+// Requests name a model; MAG_ROOM_MODEL_ID/PORTS select the single-slot
 // NUMA servers (Lena :8191, Noah :8192). Without that configuration it does
 // not start. Neither server is started, stopped, or restarted here.
 #include "json.hpp"
@@ -285,7 +285,7 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
   selected="configured"; port=0; if(id_slot)*id_slot=-1;
   std::string asked;
   auto header=r.headers.find("x-mag-model");
-  if(header!=r.headers.end()) asked=header->second;
+  if(header!=r.headers.end()) { asked=header->second; if(asked.empty())return false; }
   if(asked.empty()&&!r.body.empty()){
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
@@ -294,17 +294,18 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
     size_t slot=0; auto h=r.headers.find("x-mag-slot"); const bool has=h!=r.headers.end();
     if(has){
       const std::string &v=h->second;
-      if(v!="0"&&v!="1")return false;
-      slot=(size_t)std::stoi(v);
+      if(v.empty()||v.size()>10||v.find_first_not_of("0123456789")!=std::string::npos)return false;
+      slot=(size_t)std::stoull(v);
+      if(slot>=cfg.room.backends.size())return false;
     }
     if (!has && !asked.empty()) {
       for (size_t i=0;i<cfg.room.backends.size();++i)
         if (cfg.room.backends[i].id==asked) { slot=i; break; }
     }
     if (!asked.empty() && asked!=cfg.room.backends[slot].id) return false;
-    if(r.path.rfind("/slots/",0)==0&&!has)return false;
+    if(r.path.rfind("/slots/",0)==0&&!has&&header==r.headers.end())return false;
     selected="configured"; port=cfg.room.backends[slot].port;
-    if(id_slot&&r.path.rfind("/slots/",0)==0)*id_slot=0; // both nodes use /slots/0
+    if(id_slot&&r.path.rfind("/slots/",0)==0)*id_slot=0; // every backend uses /slots/0
     return true;
   }
 }

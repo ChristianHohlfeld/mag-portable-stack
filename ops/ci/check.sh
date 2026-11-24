@@ -10,22 +10,23 @@ scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/pr
   ops/agent-drift.sh ops/gitea-ci/bot-auth.sh ops/gitea-ci/admin-session.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
 python3 ops/gitea-ci/tests/test_cleanup.py
-python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py ops/scene/face.py ops/scene/phonemes.py
+python3 -m py_compile ops/models/gpu-guard.py ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py ops/scene/face.py ops/scene/phonemes.py
 # A restart of the Idol worker must leave a running stage alone, and one of
 # the scene worker a film that is being rendered.
 grep -qx 'KillMode=process' ops/idol/mag-idol.service
 grep -qx 'KillMode=process' ops/scene/mag-scene.service
-# Scenes are rendered on the CPU and cannot reach a GPU: the MI50 belongs to photo-to-3D.
+# Scenes render on the CPU, with device access disabled.
 grep -Fq 'scene.cycles.device = "CPU"' ops/scene/scene.py
 grep -qx 'PrivateDevices=true' ops/scene/mag-scene.service
 grep -qx 'AllowedCPUs=28-55' ops/scene/mag-scene.service
-jq -e '.bots | to_entries | all(.value.port and .value.model.path and (.value.numa == 0 or .value.numa == 1))' \
+jq -e '.bots | to_entries | all(.value.port and (.value | if .gpu == "mi50" then .model.local_dir and .room_name else (.gpu == null and .model.path and (.numa == 0 or .numa == 1)) end))' \
   ops/models/models.json >/dev/null
-# CPU only: no bot may be launched with a GPU offload flag.
+# Device placement is fixed by the dedicated launchers.
 if jq -r '.bots[] | (.args + (.draft.args // []))[]' ops/models/models.json | grep -Eq '^(--device|-ngl|--n-gpu-layers|--gpu-layers)'; then
-  echo 'models.json: GPU flags are not allowed (CPU-only bots)' >&2; exit 1
+  echo 'models.json: GPU placement flags belong in the launchers' >&2; exit 1
 fi
 grep -Fq -- '--device none --n-gpu-layers 0' ops/models/run.sh
+grep -Fq -- '--device ROCm0 --n-gpu-layers all --fit off' ops/models/run-mi50.sh
 # The bots' sites stay inside the tailnet and are read-only.
 grep -Fq 'deny all;' ops/bots/mag-bots.nginx.in
 grep -Fq 'limit_except GET { deny all; }' ops/bots/mag-bots.nginx.in

@@ -17,6 +17,7 @@ whose result is missing: sampling that is done is not done again.
 """
 import atexit
 import base64
+import fcntl
 import json
 import os
 import sys
@@ -106,7 +107,7 @@ GPU_STAGES = ("sample", "shape", "paint", "image", "video")
 GPU_WAIT = "MAG-WAIT"
 jobs = {}
 lock = threading.Lock()
-# Passive MI50 cooling at a fixed 78 W: clock masks are the primary
+# Passive MI50 cooling at a fixed 72 W: clock masks are the primary
 # actuator. GPU kernels ALREADY submitted can keep executing at 100% after
 # SIGSTOP of the submitting process, so a process hold is not a GPU pause.
 # Use a latched, hysteretic clock state with a timed cool-down (never switch
@@ -160,6 +161,7 @@ class Line:
 
     def __init__(self):
         self.ids, self.cv = [], threading.Condition()
+        self.priority = None
 
     def qsize(self):
         with self.cv:
@@ -167,6 +169,19 @@ class Line:
 
     def put_nowait(self, job_id):
         with self.cv:
+            if GPU_LOCK and self.priority is None:
+                # Register demand before waking the worker. Keep it through
+                # consecutive jobs, even if the stage has not started yet.
+                try:
+                    priority = open(GPU_LOCK + ".idol", "ab")
+                    try:
+                        fcntl.flock(priority, fcntl.LOCK_SH)
+                    except OSError:
+                        priority.close()
+                        raise
+                    self.priority = priority
+                except OSError as exc:
+                    print(f"GPU priority lock unavailable: {exc}", flush=True)
             if job_id not in self.ids:
                 self.ids.append(job_id)
             self.cv.notify()
@@ -180,7 +195,10 @@ class Line:
             return first
 
     def task_done(self):
-        pass
+        with self.cv:
+            if not self.ids and self.priority is not None:
+                self.priority.close()
+                self.priority = None
 
 
 def card_temp():
@@ -800,15 +818,15 @@ def launch(job_id, key, command):
     if CPUS:
         command = ["taskset", "-c", CPUS] + command
     if key in GPU_STAGES and GPU_LOCK:
-        # A lock file that cannot be opened never costs a job: the stage runs
-        # without it (this queue still runs one job at a time) and says so.
-        # A stage that is not a video, once the card is its own, has h3d let go
-        # of H3 (its buffers on the card); the next video loads it again.
+        # The stage owns both locks independently of the worker so either
+        # survives a worker restart. Shared demand always comes before the
+        # exclusive device lock. Waiting messages keep the stall timer alive.
         release = "" if key == "video" else (
             'curl -s -m 120 -X POST ' + H3D_URL + '/sdcpp/v1/models/unload >/dev/null 2>&1 || :; ')
-        command = ["/bin/sh", "-c", 'if (: >>"$0") 2>/dev/null; then exec 9>>"$0"; w=; '
-                   'until flock -n 9; do w=1; echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 20; done; '
-                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; else echo "MAG-NOTE no GPU lock: $0 cannot be opened"; fi; '
+        command = ["/bin/sh", "-c", 'exec 8>>"$0.idol" 9>>"$0" || exit 1; flock -s 8 || exit 1; w=; '
+                   'until flock -n -E 75 9; do [ "$?" = 75 ] || exit 1; w=1; '
+                   'echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 0.5; done; '
+                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; '
                    + release + 'exec "$@"',
                    GPU_LOCK] + command
     # The stage writes its own pid next to where its exit code will be: a
@@ -1088,8 +1106,6 @@ def execute():
                 begun = bool(item and item.get("started"))
             if state not in ("queued", "running"):
                 continue
-            # The MI50 belongs to Idol alone (both bots run CPU-only), so a
-            # job never pauses or restarts a model.
             image = bool(item) and item.get("kind") in ("image", "video")
             fields = dict(state="running", phases=2 if image else len(PHASES))
             if not begun and image:

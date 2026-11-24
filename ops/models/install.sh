@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the model layer (run as root, from deploy.sh or by hand):
 #   mag-modeld            supervisor: download watch, verify, start
-#   mag-model@<bot>       CPU-only llama.cpp server (lena :8191, noah :8192)
+#   mag-model@<bot>       Dedicated llama.cpp server per bot
 #   mag-model-fetch@<bot> resumable download
 # Never waits for a model, never restarts a running one and never deletes a
 # model file. Retired model units are stopped and their unit files moved to
@@ -29,7 +29,7 @@ if getent group magbot >/dev/null; then
 else
   install -d -m 0700 "$STATE/control"
 fi
-for f in run.sh fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
+for f in run.sh run-mi50.sh gpu-guard.py fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
 # Paths and the unit's user follow this host's owner (ops/host.env).
 # A software deploy must not silently change local model selection.
 # Replace the retired uncensored default once, or on explicit operator request.
@@ -38,15 +38,26 @@ if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e
   chmod 0644 "$LIB/models.json.next"
   mv -f "$LIB/models.json.next" "$LIB/models.json"
 fi
+# Add the new registered bot without replacing either installed CPU spec.
+if ! jq -e '.bots | has("qwen")' "$LIB/models.json" >/dev/null; then
+  mag_render "$SOURCE/ops/models/models.json" |
+    jq --slurpfile installed "$LIB/models.json" '.bots.qwen as $qwen | $installed[0] | .bots.qwen = $qwen' > "$LIB/models.json.next"
+  chmod 0644 "$LIB/models.json.next"
+  mv -f "$LIB/models.json.next" "$LIB/models.json"
+fi
 install -m 0755 "$BIN" "$LIB/mag-modeld.next"
 mv -f "$LIB/mag-modeld.next" "$LIB/mag-modeld"
-for unit in mag-modeld.service mag-model@.service mag-model-fetch@.service; do
+for unit in mag-modeld.service mag-model@.service mag-model-fetch@.service mag-model-hip-build.service; do
   mag_render "$SOURCE/ops/models/$unit" > "/etc/systemd/system/$unit.next"
   chmod 0644 "/etc/systemd/system/$unit.next"
   mv -f "/etc/systemd/system/$unit.next" "/etc/systemd/system/$unit"
 done
+install -D -m 0644 "$SOURCE/ops/models/mag-model-qwen.conf" /etc/systemd/system/mag-model@qwen.service.d/20-mi50.conf
 systemctl daemon-reload
 systemctl enable mag-modeld.service >/dev/null
 # The supervisor is stateless: restarting it never touches a running model.
 systemctl restart mag-modeld.service
-echo 'Model layer installed: mag-modeld supervises lena (:8191) and noah (:8192)'
+if [[ -x $MAG_IDOL_BASE/rocm-6.3.4/current/lib/llvm/bin/clang++ ]]; then
+  systemctl start --no-block mag-model-hip-build.service
+fi
+echo 'Model layer installed: mag-modeld supervises Blake (:8191), Noah (:8192) and Qwen (:8193)'

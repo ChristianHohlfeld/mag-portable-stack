@@ -88,6 +88,21 @@
         "--repeat-penalty",
         "1.0"
       ]
+    },
+    "qwen": {
+      "room_name": "Qwen",
+      "label": "Qwen 3.8 27B · Q6 (MI50)",
+      "gpu": "mi50",
+      "cpus": "28-55",
+      "threads": 8,
+      "port": 8193,
+      "ctx": 16384,
+      "room_ctx": 12000,
+      "thinking_control": "toggle",
+      "model": {
+        "local_dir": "/home/chris/models/qwen3.8-27b"
+      },
+      "args": []
     }
   },
   "auto_download": false

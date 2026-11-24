@@ -10,7 +10,7 @@ User=chris
 Group=chris
 SupplementaryGroups=render video
 WorkingDirectory=/home/chris/idol-mi50
-# Root, lower-only: keeps the MI50 at or below its 78 W cap (never raises it).
+# Root, lower-only: keeps the MI50 at or below its 72 W cap (never raises it).
 ExecStartPre=+/usr/local/lib/mag-idol/power-cap.sh
 # Root: clocks back to auto, and the two clock files become the service user's.
 # The worker throttles from there. It has NoNewPrivileges, so it cannot sudo,

@@ -56,19 +56,21 @@ public:
   void start() {
     int index = 0;
     const Val configured = room_.bots();
+    const Val models = room_.model_config();
     for (auto &b : configured.asArr()) {
       auto rt = std::make_unique<Bot>();
       rt->id = jstr(b, "id");
       rt->backend.bot = rt->id;
-      rt->backend.index = index;
-      rt->backend.port = (int)envl(("MAG_LLM_PORT_" + upper(rt->id)).c_str(), 8191 + index);
+      const Val *spec = models.find(rt->id);
+      const int port = spec ? jnum(*spec, "port", 8191 + index) : 8191 + index;
+      rt->backend.port = (int)envl(("MAG_LLM_PORT_" + upper(rt->id)).c_str(), port);
       rt->backend.gateway = room_.cfg.gateway;
       // How much conversation a bot keeps. Reuse makes a turn cheap, but
       // after a model restart the whole log is evaluated once (CPU: roughly
       // a minute per 4000 tokens), so the budget stays moderate.
-      // Both bots get the same default context independent of roster order.
-      // Explicit MAG_ROOM_CTX_<BOT> overrides remain possible for smaller models.
-      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", 16000));
+      // Smaller servers can leave room for the reply and tool schemas.
+      const long model_budget = spec ? jnum(*spec, "room_ctx", 16000) : 16000;
+      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", model_budget));
       bots_.push_back(std::move(rt));
       ++index;
     }
@@ -817,31 +819,11 @@ public:
     return ok;
   }
 
-  // A room deploy updates its own release files but intentionally does not
-  // restart mag-modeld or a running llama.cpp model. The supervisor's status
-  // can therefore predate the new optional thinking_control metadata. Read
-  // model capabilities from this *release's explicit model configuration*
-  // (never infer them from names/weights); valid supervisor metadata wins.
-  Val release_model_capabilities() const {
-    std::string file = env("MAG_ROOM_MODELS_CONFIG");
-    if (file.empty()) {
-      std::filesystem::path dir = std::filesystem::path(room_.cfg.web_dir).parent_path();
-      for (int depth = 0; depth < 2; ++depth, dir = dir.parent_path()) {
-        const std::filesystem::path candidate = dir / "ops/models/models.json";
-        if (exists(candidate.string())) { file = candidate.string(); break; }
-      }
-    }
-    if (file.empty()) return Val::object();
-    const Val conf = read_json(file);
-    if (const Val *bots = conf.find("bots"); bots && bots->isObj()) return *bots;
-    return Val::object();
-  }
-
   // Bot states for the snapshot and the `bots` event.
   Val status() {
     const Val cfg = room_.bots();
     const Val models = models_snapshot();
-    const Val capabilities = release_model_capabilities();
+    const Val capabilities = room_.model_config();
     std::lock_guard<std::mutex> lk(mu_);
     Val out = Val::array();
     for (auto &b : bots_) {
@@ -1207,21 +1189,27 @@ private:
 
   std::string system_prompt(const Val &me) {
     const std::string name = jstr(me, "name"), id = jstr(me, "id");
-    std::string other = "der andere Bot";
     const Val all = room_.bots();
-    for (auto &b : all.asArr())
-      if (jstr(b, "id") != id) other = jstr(b, "name"); // also while it is paused: a pause changes no prompt
+    std::vector<std::string> peers;
+    for (const auto &b : all.asArr())
+      if (jstr(b, "id") != id) peers.push_back(jstr(b, "name"));
+    const std::string example = peers.empty() ? "Bot" : peers.front();
+    std::string others;
+    for (size_t i = 0; i < peers.size(); ++i) {
+      if (i) others += i == peers.size() - 1 ? " und " : ", ";
+      others += peers[i];
+    }
     const bool has_vm = vm::valid_name(jstr(me, "vm"));
     std::string s =
-        "Du bist " + name + ", einer von zwei KI-Assistenten im privaten Chatraum MAG von Chris. Der andere heißt " + other +
-        ". Ihr lauft lokal auf Chris' Heimserver.\n\n"
-        "Gespräch\n"
-        "- Fremde Nachrichten beginnen mit dem Namen des Absenders und einem Doppelpunkt, zum Beispiel \"Chris: …\" oder \"" + other +
+        "Du bist " + name + ", ein KI-Assistent im privaten Chatraum MAG von Chris.";
+    if (!others.empty()) s += " Deine Gesprächspartner sind Chris und " + others + ".";
+    s += "\n\nGespräch\n"
+        "- Fremde Nachrichten beginnen mit dem Namen des Absenders und einem Doppelpunkt, zum Beispiel \"Chris: …\" oder \"" + example +
         ": …\". Das zeigt nur, wer spricht. Schreibe selbst ohne Namenspräfix und nur für dich; Chris sprichst du einfach mit Chris an.\n"
-        "- Mit @" + name + " spricht Chris dich allein an. Steht vor einer Nachricht \"Chris an " + other + ": …\", hat er nur " + other +
-        " gefragt: Das liest du als Hintergrund, es ist keine Aufgabe für dich und du antwortest nicht darauf.\n"
+        "- Mit @" + name + " spricht Chris dich allein an. Steht vor einer Nachricht \"Chris an " + example +
+        ": …\", ist sie an " + example + " gerichtet. Du liest sie als Hintergrund.\n"
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt. Jeden Satz schreibst du nur einmal und nur auf Deutsch, auch zwischen Werkzeugschritten; nie eine englische Fassung daneben und nie einen Werkzeugaufruf als JSON in den Text.\n"
-        "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
+        "- Die anderen Bots können mitlesen und antworten. Ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
         "- Antworte auf Nachrichten, die an dich gerichtet sind. Ob du eine freiwillige Bot-Folgerunde auslassen darfst, legt die jeweilige Raumnotiz zur Runde fest.\n"
         "- Erfinde nichts. Was du nicht weißt oder nicht prüfen konntest, sagst du offen.\n"
         "- Ältere Teile des Gesprächs können aus deinem Kontext entfernt worden sein.\n";
@@ -1233,7 +1221,7 @@ private:
            "- Realitätscheck beim Coding: Chat-Code, Gedanken, Beispiele, Pläne und eigene Aussagen sind ENTWURF, keine Dateisystem-Beobachtung. Zu Beginn jedes Zugs ist der aktuelle Zustand ungeprüft. Nur echte Werkzeugresultate des Raums belegen, was in welcher VM passiert ist.\n"
            "- read_file beobachtet eine vorhandene Datei mit Pfad und SHA-256. write_file schreibt und liest den Inhalt automatisch zurück; nur ein bestätigter Hash belegt den Schreibvorgang. shell führt einen echten Befehl aus; ein Exit-Code allein beweist weder Dateiinhalte noch, dass ein Programm fachlich funktioniert. Prüfe nach Shell-Änderungen die betroffenen Dateien mit read_file.\n"
            "- Für eine Erfolgsaussage über funktionsfähigen Code führe die passenden Tests/Builds tatsächlich aus, lies deren Ausgabe, und prüfe das Ergebnis gegen die Anforderungen. Ein echo, ein Codeblock, ein Tool-Aufruf ohne Ergebnis oder ein früheres Ergebnis belegt keine aktuelle Ausführung. Ohne Beleg sag konkret: Entwurf, nicht gespeichert, nicht geprüft oder nicht getestet. Ein Git-Commit, Push oder Deployment ist eine eigene Handlung mit eigenem Nachweis; ein VM-Pfad ist kein Host- oder GitHub-Pfad.\n"
-           "- Trägt Chris dir etwas auf, verfolgst du das Ziel selbst bis zum Ende: Schritt für Schritt, nach einem Fehler neu hinsehen und einen anderen Weg nehmen, nie mitten drin aufhören. Nur eine echte Sperre (Anmeldung, Freigabe, Bezahlung) gibst du über ihre Karte an Chris. Am Ende ein, zwei Sätze auf Deutsch mit dem Ergebnis. Führt schon der andere Bot die Aufgabe aus, machst du sie nicht noch einmal.\n"
+           "- Trägt Chris dir etwas auf, verfolgst du das Ziel selbst bis zum Ende: Schritt für Schritt, nach einem Fehler neu hinsehen und einen anderen Weg nehmen, nie mitten drin aufhören. Nur eine echte Sperre (Anmeldung, Freigabe, Bezahlung) gibst du über ihre Karte an Chris. Am Ende ein, zwei Sätze auf Deutsch mit dem Ergebnis. Führt schon ein anderer Bot die Aufgabe aus, machst du sie nicht noch einmal.\n"
            "- Kartendaten tippst du nie: an der Kasse rufst du browser_pay auf.\n"
            "- Nach zweimal demselben Fehler prüfst du die Ursache, statt blind zu wiederholen. Eine Zugriffssperre einer Website ist kein Cookie-Problem, solange nichts darauf hinweist. Login, CAPTCHA und 2FA umgehst du nicht: dafür rufst du browser_login auf (keine Freigabe nötig), Chris erledigt es auf der Karte.\n"
            "- Vor folgenreichen Aktionen (Geld, Veröffentlichen, Nachrichten an Dritte, fremde Daten löschen, eine Routine einrichten) rufst du direkt davor selbst das Werkzeug consent auf und tust nur, was es freigibt. Bitte nie im Text um Erlaubnis: Chris entscheidet auf der Karte, die consent ihm zeigt; ein Ja im Chat ist keine Freigabe. Kartennummern und Passwörter gibst du nie in ein Werkzeug oder den Chat; bezahlen tut Chris selbst in deinem Browser, wenn kein anderer Weg freigegeben ist.\n"
@@ -3641,7 +3629,7 @@ private:
     // Keep synthetic prompts request-local, never persisted as fake user messages.
     const std::string autonomous_invite =
         "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
-        "Du hast jetzt Zeit für eigene Interessen, auch wenn der andere Bot arbeitet oder nicht da ist. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
+        "Du hast jetzt Zeit für eigene Interessen, auch wenn andere Bots arbeiten oder nicht da sind. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
         "Vertiefe ein Thema, solange es etwas zu entdecken gibt, und wechsle sonst frei. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
         "Sprich einfach, direkt und auf Augenhöhe. Keine aufgeblasenen oder erfundenen Fachwörter, kein Selbstlob. "
         "Du kannst einfach ein Gespräch führen, eine Idee entwickeln oder etwas erschaffen. Kein Ziel und keine Systemanalyse sind Pflicht. Wenn du etwas tun willst, arbeite anhand echter Ergebnisse daran. Ein eigenes Ziel gibt eine Richtung vor, keinen erzwungenen Endpunkt. "

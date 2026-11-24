@@ -541,9 +541,30 @@ inline Result look(Ctx &ctx, const std::string &vm) {
   return out;
 }
 
+// Old guest controllers serialize CDP exceptionDetails as JSON inside the
+// HTTP error string. Extract the useful message before applying any limit.
+// This also works with existing guests; no VM rebuild is needed.
+inline std::string browser_error_detail(const std::string &raw) {
+  const std::string prefix = "Browser script: ";
+  if (!starts_with(raw, prefix)) return raw;
+  const Val details = jparse(raw.substr(prefix.size()));
+  if (!details.isObj()) return raw;
+  const Val *exception = details.find("exception");
+  std::string message;
+  if (exception) {
+    message = jstr(*exception, "description", jstr(*exception, "value"));
+    // The description may include a long stack trace. The first line is
+    // the actual exception, including the stale/missing element number.
+    const size_t end = message.find_first_of("\r\n");
+    if (end != std::string::npos) message.resize(end);
+  }
+  if (trim(message).empty()) message = jstr(details, "text", "Unbekannter JavaScript-Fehler");
+  return prefix + message;
+}
+
 inline Result browser_result(const http::ClientResult &r, size_t budget) {
   if (!r.error.empty()) return fail("Browser nicht erreichbar: " + r.error);
-  if (r.status != 200) return fail("Browser HTTP " + std::to_string(r.status) + ": " + clip(jstr(jparse(r.body), "error", r.body), 300));
+  if (r.status != 200) return fail("Browser HTTP " + std::to_string(r.status) + ": " + clip(browser_error_detail(jstr(jparse(r.body), "error", r.body)), 300));
   Val v = jparse(r.body);
   if (v.isObj()) {
     // Transport details are of no use to the model.

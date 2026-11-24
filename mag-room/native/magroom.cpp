@@ -60,8 +60,8 @@ int main() {
     m["routine"] = jstr(routine, "id");
     to.push(bot);
     m["mentions"] = to;
-    const Val stored = room.add(m);
-    engine.on_human(stored, {bot}, true);
+    room.add(m);
+    engine.on_routine(bot);
   };
   // For a file routine: the files below /home/bot of the bot's VM, read only.
   // Dot files and folders, node_modules and unfinished downloads are left
@@ -132,6 +132,7 @@ print(json.dumps({'files': out, 'cut': cut}))
       if (jstr(b, "id") == bot) return jbool(b, "busy");
     return false;
   };
+  assist.time_busy = [&engine](const std::string &bot) { return engine.time_routine_busy(bot); };
   Vault vault(room);
   engine.vault = &vault;
   Api api(room, engine, guests, idol, scenes, plugins, gate, push, assist, vault);

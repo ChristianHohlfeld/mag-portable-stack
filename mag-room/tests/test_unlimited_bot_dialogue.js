@@ -12,7 +12,10 @@ assert(src.includes('round_limit_ = (long)jnum(startup_settings, "bot_rounds", r
 assert(src.includes('body["messages"].push(cue);'), 'directive must be request-only');
 assert(!src.includes('invite["_auto_chat"] = true;'), 'no synthetic user turn persisted');
 assert(!src.includes('last["_note"] = notes;'), 'PASS cannot contaminate saved wire');
-assert(src.includes('if (!visible) return;'),
-  'an invisible or rejected reply must not start another bot round, even when unlimited');
+assert(src.includes('if (!recovery_handoff || !auto_burst_ || !auto_enabled_ || pass_enabled_) return;'),
+  'invisible replies cannot hand off except an explicit recovery yield in active unattended PASS-off chat');
+assert(src.includes('if (++passes_ >= (int)std::max<size_t>(1, active)) {') &&
+       src.includes('auto_last_ms_ = now_ms();'),
+  'recovery yields must stop after all active bots fail and enter the normal cooldown');
 assert(src.includes('if (dialogue_stopped_ || (limit > 0 && bot_turns_ >= limit)) return;'));
 console.log('unlimited PASS policy: one predicate for settings, prompt and handoff');

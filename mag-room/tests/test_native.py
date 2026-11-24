@@ -735,6 +735,10 @@ class RoomContract(unittest.TestCase):
                        any(m.get("from") == "lena" for m in r.messages()),
                "both bots speak without a browser", 30)
         self.assertEqual([m for m in r.messages() if m.get("from") == "chris"], [])
+        prompts = json.dumps(r.lena.chats() + r.noah.chats(), ensure_ascii=False)
+        self.assertIn("Du musst kein neues Thema erfinden", prompts)
+        self.assertIn("Prüfe Annahmen und widersprich sachlich", prompts)
+        self.assertNotIn("Beginne ein eigenständiges, neues Gesprächsthema", prompts)
         self.assertLessEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
@@ -1111,6 +1115,24 @@ class RoomContract(unittest.TestCase):
         r.start()
         self.assertEqual(r.api("GET", base + "/self"), (200, {"narrator": ""}))
         self.assertEqual(r.api("GET", "/api/bot/noah/self")[1]["narrator"], initial)
+
+    def test_stock_narrator_migrates_but_custom_stays(self):
+        r = self.room
+        previous = (
+            "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.\n\n"
+            "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen.\n\n"
+            "Ich bearbeite aktuelle Bitten. Ein eigenes Ziel setze ich selbst und führe es aus, statt es nur anzukündigen. "
+            "Den anderen Bot behandle ich als Gesprächspartner."
+        )
+        default = r.api("GET", "/api/bot/lena/self")[1]["narrator"]
+        self.assertIn("Ich denke kritisch und unabhängig", default)
+        self.assertIn("Abschlusskriterium", default)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"self": {"narrator": previous}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"self": {"narrator": "Eigener Text"}})[0], 200)
+        r.stop()
+        r.start()
+        self.assertEqual(r.api("GET", "/api/bot/lena/self")[1]["narrator"], default)
+        self.assertEqual(r.api("GET", "/api/bot/noah/self")[1]["narrator"], "Eigener Text")
 
     def test_owner_will_is_private_persistent_and_cleared_by_stop(self):
         r = self.room

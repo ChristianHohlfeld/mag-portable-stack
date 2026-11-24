@@ -200,6 +200,7 @@ class Room:
         self.env = dict(os.environ, MAG_ROOM_STATE=str(self.tmp / "state"), MAG_ROOM_WEB=str(ROOT / "mag-room/web"),
                         MAG_ROOM_PORT=str(self.port), MAG_ROOM_BRIDGE_PORT="0", MAG_ROOM_GATEWAY="direct",
                         MAG_ROOM_BOT_ROUNDS="2",  # bounded legacy-contract fixture; production default 0 stays unlimited
+                        MAG_ROOM_GOAL_RETRY_BASE_S="1200",  # isolate tests; explicit recovery test overrides
                         MAG_LLM_PORT_LENA=str(self.lena.port), MAG_LLM_PORT_NOAH=str(self.noah.port),
                         MAG_MODELS_STATUS=str(self.tmp / "no-status.json"), MAG_MODELS_CONTROL=str(self.tmp / "control"),
                         MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_SCENE_URL="http://127.0.0.1:%d" % self.scene.port,
@@ -1527,7 +1528,8 @@ class RoomContract(unittest.TestCase):
         # different file state. A new command name is not evidence either.
         self.assertFalse(driver["new_observation"])
         self.assertEqual(driver["last_evidence"]["kind"], "read_verified")
-        self.assertEqual(len(driver["history"]), 2)
+        self.assertEqual(len(driver["history"]), 8)
+        self.assertEqual(len(driver["facts"]), 7)  # six experiments and one observed file
         r.stop()
         r.start()
         self.assertEqual(json.loads(wire_path.read_text())["state_driver"], driver)
@@ -4412,6 +4414,45 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("Automatischer Abschluss ohne gültigen Werkzeugaufruf",
                          " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena"))
 
+    def test_goal_recovery_resumes_without_replaying_click(self):
+        browser = FakeBrowser()
+        browser.url = "https://example.org/recovery"
+        browser.text = "Status bestätigt."
+        r = Room(MAG_ROOM_BROWSER_ADDR="127.0.0.1:%d" % browser.port,
+                 MAG_ROOM_GOAL_RETRY_BASE_S="1")
+        self.addCleanup(r.close)
+        self.addCleanup(browser.close)
+        goal_path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
+        requests = []
+        def call(name, args):
+            return {"tool_calls": [{"name": name, "arguments": args}]}
+        def reply(body):
+            requests.append(body)
+            n = len(requests)
+            if n == 1:
+                return call("browser_look", {})
+            if n == 2:
+                return call("browser_click", {"n": 1})
+            if n <= 10:
+                return "Ich prüfe weiter."
+            if n == 11:
+                return call("browser_click", {"n": 1})  # stale action must be rejected
+            if n == 12:
+                return call("browser_look", {})
+            if n == 13:
+                return call("goal_requirements", {"requirements": [{"id": "status", "need": "Status belegen"}]})
+            return call("goal_finish", {"summary": "Status ist belegt.", "proofs": [
+                {"id": "status", "url": browser.url, "quote": "Status bestätigt."}]})
+        browser.elements = [{"n": 1, "kind": "link", "label": "Status", "x": 100, "y": 40}]
+        r.lena.reply = reply
+        r.say("@Lena Öffne https://example.org/recovery und prüfe den Status")
+        r.wait(lambda: goal_path.exists() and json.loads(goal_path.read_text()).get("state") == "done",
+               "automatic recovery to verified goal", 60)
+        r.idle()
+        self.assertEqual(browser.clicks, [1], "no automatic replay of the click")
+        self.assertGreaterEqual(len(requests), 14)
+        self.assertIn("zuerst browser_look", json.dumps(requests[10]["messages"], ensure_ascii=False))
+
     def test_goal_no_browser_evidence_eventually_pauses_without_fabricated_url(self):
         r = Room()
         self.addCleanup(r.close)
@@ -4429,9 +4470,10 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")
         self.assertEqual(goal["progress"], "paused")
-        self.assertEqual(len(requests), 4)  # tool + three missing calls, not an infinite loop
+        self.assertEqual(len(requests), 9)  # tool plus eight completed unusable decisions
         self.assertFalse(goal.get("evidence_pages"))
-        self.assertIn("zwei automatischen Korrekturversuchen", goal["error"])
+        self.assertIn("Noch kein verwendbarer Werkzeugaufruf", goal["error"])
+        self.assertGreater(goal["retry_at_ms"], time.time() * 1000)
         self.assertTrue(all(x["tools"] == requests[0]["tools"] for x in requests))
         self.assertNotIn("results", goal)
 
@@ -4586,7 +4628,7 @@ class RoomContract(unittest.TestCase):
         goal = json.loads((pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json").read_text())
         self.assertEqual(goal["state"], "active")
         self.assertEqual(goal["progress"], "paused")
-        self.assertEqual(i["n"], 5)  # two corrective retries before the bounded pause
+        self.assertEqual(i["n"], 10)  # two tools plus eight unusable decisions
         said = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
         self.assertIn("Abschluss noch nicht verifiziert", said)
         self.assertIn("https://example.org/item/3", said)
@@ -4901,12 +4943,13 @@ class RoomContract(unittest.TestCase):
         goal_file = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "goals" / "lena.json"
         goal = json.loads(goal_file.read_text())
         self.assertEqual(goal["state"], "active")
-        self.assertEqual(goal["progress"], "stalled")
+        self.assertEqual(goal["progress"], "paused")
+        self.assertGreater(goal["retry_at_ms"], time.time() * 1000)
         self.assertIn("simulated inference failure", goal["error"])
         self.assertEqual(r.lena.chats()[-1].get("tool_choice"), "required")
         self.assertEqual(r.lena.chats()[-1].get("max_tokens"), 512)
         out = " ".join(m.get("text", "") for m in r.messages() if m.get("from") == "lena")
-        self.assertIn("Browser-Auftrag pausiert", out)
+        self.assertNotIn("erfolgreich abgeschlossen", out)
 
     def test_generic_browser_flow_is_one_roundtrip_and_rejects_buttons(self):
         browser = FakeBrowser()

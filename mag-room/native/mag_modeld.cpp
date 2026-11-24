@@ -376,7 +376,6 @@ static bool stamp_matches(const std::string &path, const Artifact &a) {
 // ---------------------------------------------------------------------- bots
 struct Unit {
   std::string active, sub, result, freezer;
-  long restarts = 0;
   long long since_us = 0;
 };
 
@@ -384,7 +383,7 @@ static Unit unit_state(const std::string &unit) {
   Unit u;
   std::string out;
   run({g_systemctl, "show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Result",
-       "-p", "NRestarts", "-p", "FreezerState", "-p", "ActiveEnterTimestampMonotonic"}, &out, 10);
+       "-p", "FreezerState", "-p", "ActiveEnterTimestampMonotonic"}, &out, 10);
   std::istringstream in(out);
   std::string line;
   while (std::getline(in, line)) {
@@ -395,7 +394,6 @@ static Unit unit_state(const std::string &unit) {
     else if (k == "SubState") u.sub = v;
     else if (k == "Result") u.result = v;
     else if (k == "FreezerState") u.freezer = v;
-    else if (k == "NRestarts") u.restarts = atol(v.c_str());
     else if (k == "ActiveEnterTimestampMonotonic") u.since_us = atoll(v.c_str());
   }
   return u;
@@ -436,7 +434,7 @@ struct Bot {
 
   std::string state = "unknown", detail;
   bool ever_ready = false;       // since the current unit start
-  long seen_restarts = -1;
+  bool observed_start = false;
   Clock::time_point model_verified_at{};
   bool model_verified_seen = false;
   Clock::time_point last_start{};
@@ -650,16 +648,21 @@ static void step(Bot &b) {
     b.mmproj_active = spec.find("mmproj=0") == std::string::npos && spec.find("mmproj=") != std::string::npos;
     b.restart_pending = !spec.empty() && spec.compare(0, b.spec_hash.size(), b.spec_hash) != 0;
     if (spec.size() > 64 && spec[64] == ' ') b.active_spec_hash = spec.substr(0,64);
-    if (b.seen_restarts >= 0 && u.restarts > b.seen_restarts && !b.ever_ready && (b.draft_active || b.mmproj_active)) {
-      // The server died before it ever answered /health while an optional
-      // part was attached: run without it rather than loop. The projector
-      // goes first, then the drafter.
-      const char *part = b.mmproj_active ? "mmproj" : "draft";
-      logf(b.id + ": start with " + part + " failed; disabled (" + g_state_dir + "/" + b.id + "." + part + ".off)");
-      set_flag(b.id, b.mmproj_active ? "mmproj.off" : "draft.off", true);
-      systemctl("restart", b.unit);
+    if (u.sub == "auto-restart") {
+      // Change the next launch only while systemd is waiting after an actual
+      // failure. A restart counter on a running unit describes past failures.
+      if (b.observed_start && !b.ever_ready && u.result != "success" &&
+          (b.draft_active || b.mmproj_active)) {
+        const char *part = b.mmproj_active ? "mmproj.off" : "draft.off";
+        if (!flag(b.id, part)) {
+          logf(b.id + ": startup failed; disabling " + part + " for the next launch");
+          set_flag(b.id, part, true);
+        }
+      }
+      b.state = "loading";
+      return;
     }
-    b.seen_restarts = u.restarts;
+    b.observed_start = u.active == "active";
     if (u.freezer == "frozen") {
       b.state = "paused";
     } else {
@@ -683,7 +686,7 @@ static void step(Bot &b) {
     return;
   }
   b.ever_ready = false;
-  b.seen_restarts = u.restarts;
+  b.observed_start = false;
 
   if (m.verify == Artifact::BAD) { b.state = "corrupt"; b.detail = m.verify_detail; return; }
   if (m.exists && m.expected() && m.size > m.expected()) {
@@ -822,7 +825,7 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     }
     // `since` tells the room which server process a slot belongs to: the
     // moment its unit became active. It stays the same while that process
-    // lives, also across a restart of this supervisor (every deploy is one)
+    // lives, also across a restart of this supervisor
     // and a freeze, and it differs for every new process. The room brings a
     // slot back to its prefix when `since` changes; a value that changed
     // with every start of the supervisor made each bot read its whole

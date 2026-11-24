@@ -97,6 +97,14 @@ sudo /usr/local/lib/mag-models/mag-modeld ctl lena restart  # start | stop | res
 - To change a model or its arguments, edit `ops/models/models.json` in a
   pull request, deploy, then `mag-modeld ctl <bot> restart`.
 
+A deploy installs the model units and reloads the systemd manager while the
+instances stay up. The runtime builders publish new binaries atomically for
+the next model start. Check their build journals with
+`journalctl -u mag-model-cpu-build -u mag-model-hip-build`. A process already
+running when the shutdown fix is installed picks it up at its next start.
+The updated server cancels the active slot on SIGTERM and exits. Systemd
+allows five minutes for cleanup before forced termination.
+
 Never start, stop or enable `mag-model@<bot>.service` by hand or from a
 script, and never delete a model file, including retired ones.
 

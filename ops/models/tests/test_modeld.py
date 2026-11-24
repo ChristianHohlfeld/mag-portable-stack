@@ -16,13 +16,35 @@ def free_port():
 
 class Health(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
+        self.send_response(getattr(self.server, "health", 200))
         self.send_header("Content-Length", "2")
         self.end_headers()
         self.wfile.write(b"ok")
 
     def log_message(self, *a):
         pass
+
+
+def test_unit_refresh():
+    """Install over the old 20s template with only a manager reload."""
+    with tempfile.TemporaryDirectory(prefix="model-units-") as work:
+        root = pathlib.Path(work)
+        units = root / "units"
+        units.mkdir()
+        template = units / "mag-model@.service"
+        template.write_text("[Service]\nTimeoutStopSec=20s\n")
+        systemctl = root / "systemctl"
+        systemctl.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_CALLS"\n')
+        systemctl.chmod(0o755)
+        calls = root / "calls"
+        env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", TEST_CALLS=str(calls),
+                   MAG_OWNER=subprocess.check_output(["id", "-un"], text=True).strip(), MAG_HOST_ENV=str(root / "no-host-env"))
+        command = ["bash", str(ROOT / "ops/models/install-units.sh"), str(units)]
+        subprocess.check_call(command, env=env)
+        assert "TimeoutStopSec=5min" in template.read_text()
+        assert f"User={env['MAG_OWNER']}" in template.read_text()
+        assert "KillMode=mixed" in (units / "mag-model@qwen.service.d/20-mi50.conf").read_text()
+        assert calls.read_text() == "daemon-reload\n"
 
 
 def test_hip_build():
@@ -64,7 +86,7 @@ fi
         command = ["bash", str(ROOT / "ops/models/build-runtime.sh"), "hip"]
         assert "rebuilt" in subprocess.check_output(command, env=env, text=True)
         log = (home / "cmake.log").read_text().splitlines()
-        assert len(log) == 2 and str(stale) + "-hip-pic-" + rev in log[0], log
+        assert len(log) == 2 and str(stale) + "-hip-pic-shutdown-" + rev in log[0], log
         assert "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" in log[0], log
         assert "-DCMAKE_HIP_FLAGS=-fPIC" in log[0], log
         assert "already built" in subprocess.check_output(command, env=env, text=True)
@@ -180,7 +202,9 @@ def main():
 echo "$@" >> {tmp}/calls
 case "$1" in
   show) if [ -e {tmp}/active.$2 ]; then echo ActiveState=active; echo ActiveEnterTimestampMonotonic=$(cat {tmp}/active.$2); else echo ActiveState=inactive; fi
-        echo SubState=x; echo Result=success; echo NRestarts=0
+        echo SubState=running
+        echo Result=success
+        if [ -e {tmp}/restarts.$2 ]; then echo NRestarts=1; else echo NRestarts=0; fi
         if [ -e {tmp}/frozen.$2 ]; then echo FreezerState=frozen; else echo FreezerState=running; fi ;;
   thaw) [ "$2" != "--no-block" ] || exit 99
         [ -e {tmp}/frozen.$2 ] && rm {tmp}/frozen.$2 ;;
@@ -267,19 +291,26 @@ esac
         subprocess.check_call([str(BIN), "--config", str(tmp / "models.json"), "ctl", "lena", "start"], env=env)
         wait("lena", "ready")
         assert status("noah")["state"] == "corrupt"
-        # 5. `since` names the server process, not this supervisor: it is the
-        #    moment the unit became active. A restart of the supervisor (every
-        #    deploy is one) leaves it as it is, so the room keeps the bot's
-        #    slot; a new server process has a new one.
+        # Re-adopt a live, busy process after restarting the supervisor.
+        # The old restart-count fallback would restart the process after a
+        # counter increase before checking health, even though it was alive.
         unit = tmp / "active.mag-model@lena.service"
         since = status("lena")["since"]
         assert since == int(unit.read_text()), (since, unit.read_text())
         proc.terminate()
         proc.communicate(timeout=10)
         (run / "status.json").unlink()
-        time.sleep(1.1)
+        slot = state / "slots/lena"
+        slot.mkdir()
+        (slot / ".spec").write_text(f"{'0' * 64} draft=0 mmproj=2\n")
+        httpd.health = 503
         proc = subprocess.Popen([str(BIN), "--config", str(tmp / "models.json")], env=env, stderr=subprocess.PIPE, text=True)
-        assert wait("lena", "ready")["since"] == since, (status("lena"), since)
+        assert wait("lena", "loading")["restart_pending"]
+        (tmp / "restarts.mag-model@lena.service").touch()
+        time.sleep(1)
+        assert int(unit.read_text()) == since and not (state / "lena.mmproj.off").exists()
+        httpd.health = 200
+        assert wait("lena", "ready")["since"] == since, status("lena")
         lease = state / "control" / "lena.background"
         lease.touch()
         weight = "set-property --runtime mag-model@lena.service CPUWeight="
@@ -373,6 +404,7 @@ esac
 
 
 if __name__ == "__main__":
+    test_unit_refresh()
     test_hip_build()
     test_mi50_mtp()
     main()

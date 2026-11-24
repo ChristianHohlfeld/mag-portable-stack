@@ -225,7 +225,8 @@ done
 # The backup Chris asks for (settings or chat) runs where the backup is installed.
 [[ ! -e $UNITS/mag-backup-daily.service ]] || install -m 0644 "$SOURCE/ops/backup/units/mag-backup-chat.service" \
   "$SOURCE/ops/backup/units/mag-backup-system.service" "$SOURCE/ops/backup/units/mag-backup-system.timer" $UNITS/
-systemctl daemon-reload
+# Load model unit updates even if an independent layer later fails or times out.
+bash "$RELEASE/ops/models/install-units.sh"
 systemctl enable mag-120.service mag-browser-webrtc.service >/dev/null 2>&1 || :
 # VM isolation rules come from the release (ops/firewall.sh, mag-agents.nft).
 systemctl enable mag-agents-network.service >/dev/null 2>&1 || :
@@ -261,9 +262,9 @@ if [[ -x $MAG_IDOL_BASE/venv/bin/python && -d $MAG_IDOL_BASE/weights/idol ]]; th
 fi
 # The audit firewall: the model ports for the gateway only (ops/audit/apply-nft.sh).
 [[ ! -e $UNITS/mag-audit-nft.service ]] || soft bash "$SOURCE/ops/audit/apply-nft.sh"
-# Model layer: installs/refreshes the supervisor only. It never restarts a
-# running model; a changed launch spec is reported as "restart pending".
-soft bash "$SOURCE/ops/models/install.sh"
+# Refresh supervisor inputs after the release is verified. Running models
+# keep their current runtime and slot until an explicit lifecycle change.
+soft env MAG_MODELD_BIN="$RELEASE/bin/mag-modeld" bash "$RELEASE/ops/models/install.sh" --units-installed
 # The bots' sites (<name>.bot.stardenburg.de): vhost and publisher.
 soft bash "$SOURCE/ops/bots/install.sh"
 soft systemctl enable --now mag-stack-check.timer

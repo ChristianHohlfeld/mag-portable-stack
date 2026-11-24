@@ -227,7 +227,18 @@ def main():
         stop()
         start()
         guard = WORKER.parents[1] / "models/gpu-guard.py"
-        command = "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)"
+        stopped = tmp / "model-stopped"
+        command = """
+import os, pathlib, signal, sys, time
+pid = str(os.getpid())
+def stop(*_):
+    with open(sys.argv[2], "a") as log:
+        print(pid, file=log)
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+pathlib.Path(sys.argv[1]).write_text(pid)
+time.sleep(60)
+"""
         unload_post = threading.Event()
         route_missing = threading.Event()
 
@@ -245,7 +256,7 @@ def main():
         threading.Thread(target=h3d.serve_forever, daemon=True).start()
         with gpu.open("rb") as busy:
             fcntl.flock(busy, fcntl.LOCK_EX)
-            model = subprocess.Popen([sys.executable, "-I", str(guard), str(tmp), sys.executable, "-c", command, str(pid_file)],
+            model = subprocess.Popen([sys.executable, "-I", str(guard), str(tmp), sys.executable, "-c", command, str(pid_file), str(stopped)],
                                      env=dict(env, MAG_H3D_PORT=str(h3d.server_port)))
             time.sleep(0.5)
             assert not pid_file.exists()
@@ -263,10 +274,12 @@ def main():
         s = wait(image["id"], lambda s: s["state"] == "done", "picture made")
         wait(video["id"], lambda s: s["state"] == "done", "video made")
         assert not alive(before)
+        assert str(before) in stopped.read_text().splitlines()
         after = wait_model(before)
         assert (tmp / ".gpu").read_text() != generation
         model.terminate()
         assert model.wait(timeout=10) == 0 and not alive(after)
+        assert str(after) in stopped.read_text().splitlines()
         if "--gpu-priority" in sys.argv:
             print("ok")
             return

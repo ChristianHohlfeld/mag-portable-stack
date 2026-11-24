@@ -64,8 +64,8 @@ def run(slots, command):
         finally:
             if child.poll() is None:
                 try:
-                    os.killpg(child.pid, signal.SIGTERM if stopped else signal.SIGKILL)
-                    child.wait(timeout=5)
+                    os.killpg(child.pid, signal.SIGTERM)
+                    child.wait(timeout=None if stopped else 30)
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:

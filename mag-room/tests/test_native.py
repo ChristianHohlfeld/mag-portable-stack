@@ -667,7 +667,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(sorted(m["from"] for m in messages), ["lena", "noah"])
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
-    def test_autonomous_tool_call_cannot_end_dialogue_or_run_tool(self):
+    def test_autonomous_external_tool_call_cannot_end_dialogue_or_run_tool(self):
         """The first bot's prefatory text and native tool call must be
         rejected before a chat bubble or tool execution is persisted."""
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
@@ -678,8 +678,8 @@ class RoomContract(unittest.TestCase):
             attempts[0] += 1
             if attempts[0] == 1:
                 return {"content": "Ich starte jetzt ein Werkzeug.",
-                        "tool_calls": [{"name": "shell",
-                                        "arguments": {"command": "echo should-not-execute"}}]}
+                        "tool_calls": [{"name": "browser_open",
+                                        "arguments": {"url": "https://example.com"}}]}
             return "Ein eigener Gedanke ohne Werkzeuge."
 
         r.lena.reply = lena
@@ -697,7 +697,7 @@ class RoomContract(unittest.TestCase):
         self.assertFalse(any(p.get("k") == "step"
                              for m in r.messages()
                              for p in m.get("parts", [])),
-                         "no unattended tool action can reach room history")
+                         "no unauthorized external action can reach room history")
         self.assertTrue(any("Dieser Werkzeugaufruf ist im Bot-Gespräch" in
                             str(msg.get("content", "")) for req in r.lena.chats()
                             for msg in req["messages"]),
@@ -1209,7 +1209,7 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn(lena_goal, json.dumps(noah_will))
 
     def test_self_talk_steps_and_will_tools_stay_with_their_bot(self):
-        """A self-talk round may run will_* and one VM step only on the caller's id.
+        """A self-talk round may run will_* and VM steps only on the caller's id.
         The other bot's later prompt, including the shared timeline, never receives
         the narrator, the goal, the step or the owner will line."""
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
@@ -1472,15 +1472,16 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(steps), 2, "only actual failed commands, no permission-error cards")
         self.assertTrue(any("MAG-Arbeitsstand" in m.get("text", "") for m in r.messages()))
 
-    def test_autonomous_work_slice_defers_extra_command_without_error(self):
+    def test_autonomous_work_without_goal_has_no_special_step_cap(self):
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
         self.addCleanup(r.close)
 
         def call(name, args):
             return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
 
-        calls = iter([call("will_set", {"text": "Lokale Arbeit", "done_when": "fuenf Dateien"})] +
-                     [call("shell", {"command": "touch slice%d.txt" % i}) for i in range(1, 6)])
+        calls = iter([call("shell", {"command": "touch slice%d.txt" % i}) for i in range(1, 7)] +
+                     [call("write_file", {"path": "no-goal.txt", "content": "real"}),
+                      call("read_file", {"path": "no-goal.txt"})])
         r.lena.reply = lambda body: next(calls, "Ich gebe das Gespräch weiter.")
         r.noah.reply = lambda body: "Meine eigene Idee ist etwas anderes."
         self.assertEqual(r.api("PUT", "/api/settings", {
@@ -1489,13 +1490,13 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
         w = r.api("GET", "/api/bot/lena/will")[1]
-        self.assertEqual((w["status"], w["steps"]), ("open", 4))
+        self.assertEqual((w["status"], w["steps"]), ("none", 0))
         home = r.tmp / "guests" / "agent1"
-        self.assertTrue(all((home / ("slice%d.txt" % i)).exists() for i in range(1, 5)))
-        self.assertFalse((home / "slice5.txt").exists())
+        self.assertTrue(all((home / ("slice%d.txt" % i)).exists() for i in range(1, 7)))
+        self.assertEqual((home / "no-goal.txt").read_text(), "real")
         steps = [p for m in r.messages() if m["from"] == "lena"
                  for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
-        self.assertEqual([p["state"] for p in steps], ["ok"] * 4)
+        self.assertEqual([p["state"] for p in steps], ["ok"] * 6)
 
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room

@@ -33,7 +33,7 @@ for f in run.sh run-mi50.sh gpu-guard.py fetch.sh build-draft.sh; do install -m 
 # Paths and the unit's user follow this host's owner (ops/host.env).
 # A software deploy must not silently change local model selection.
 # Replace the retired uncensored default once, or on explicit operator request.
-if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e '.bots | to_entries | any(.value.model.path | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
+if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e '.bots | to_entries | any((.value.model.path // "") | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
   mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
   chmod 0644 "$LIB/models.json.next"
   mv -f "$LIB/models.json.next" "$LIB/models.json"

@@ -3571,10 +3571,13 @@ private:
 
     b.wire["model_since"] = since;
     bool cancelled = false, failed = false, retried = false, rethought = false, nudged = false, dumped = false;
-    bool pass_retried = false; // at most one extra model call if PASS is disabled but still emitted
+    // Tolerance counts completed decisions without new evidence, never
+    // seconds spent thinking or pre-filling on a slow CPU.
+    const int recovery_tolerance = (int)std::clamp(envl("MAG_ROOM_RECOVERY_TOLERANCE", 8), 4L, 32L);
+    int rejected_dialogue = 0, repeated_observations = 0;
     int will_actions = 0, will_successes = 0;
-    bool slice_handoff = false, forbidden_retried = false;
-    std::string last_failed_vm_signature;
+    bool slice_handoff = false;
+    std::set<std::string> observed_work;
     bool will_owner_interrupted = from_chris;
     int pseudo_retries = 0;
     bool require_real_call = false;
@@ -3818,7 +3821,7 @@ private:
       // An active browser goal may be slow on CPU: do not label a live
       // generation "stalled" only because an arbitrary time elapsed.
       // Zero means no HTTP wall/idle timeout, but Stop still cancels.
-      const int budget_s = driving ? 0 : remaining_s;
+      const int budget_s = driving || autonomous_round ? 0 : remaining_s;
       // Where this call's text and thoughts begin, should some of them have to be taken back.
       const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
       const size_t thought0 = t.reasoning.size();
@@ -4041,51 +4044,35 @@ private:
           });
       const bool forbidden_tool = bot_dialogue && !res.calls.empty() && !permitted_will_call;
       const std::string candidate = trim(strip_self(strip_markers(res.content), name, names()));
-      const std::string norm_candidate = group_chat::norm_reply(candidate);
-      bool duplicated = false;
-      if (!norm_candidate.empty() && !pass_enabled && bot_dialogue) {
-        std::lock_guard<std::mutex> lk(mu_);
-        duplicated = std::find(b.said.begin(), b.said.end(), norm_candidate) != b.said.end();
-      }
+      // Short acknowledgements, changed opinions and repeated formulations
+      // are ordinary speech, not protocol failures. Only a literal end
+      // marker / empty output needs correction when PASS is switched off.
       const bool voluntary_end = candidate.empty() ||
-          group_chat::is_pass(res.content) || group_chat::leading_pass(res.content) ||
-          group_chat::name_only(candidate, names()) ||
-          bot_filler_reply(norm_candidate) || duplicated;
+          group_chat::is_pass(res.content) || group_chat::leading_pass(res.content);
       if ((forbidden_tool ||
            (!pass_enabled && bot_dialogue && res.calls.empty() && voluntary_end && t.steps == 0 && t.id.empty())) &&
           !res.cancelled && !failed && !driving && !closing) {
         t.held.clear();
         t.tail.clear();
         t.reasoning = mj::utf8_cut(t.reasoning, thought0);
-        if (forbidden_tool ? forbidden_retried : pass_retried) {
-          if (autonomous_round && !pass_enabled && own_chat) {
-            slice_handoff = true;
-            break;
-          }
-          failed = true;
-          error = "Modell lieferte zweimal keinen zulässigen Gesprächsbeitrag.";
-          logf("engine: " + b.id + " bot dialogue failed twice (control or forbidden tool)");
-          emit_text(b, t, "Automatisches Gespräch technisch unterbrochen: Das Modell hat zweimal keinen zulässigen Gesprächsbeitrag geliefert.", name, reason, true);
+        if (++rejected_dialogue >= recovery_tolerance) {
+          // Yield a scheduling turn without fabricating a model utterance or
+          // ending the conversation. Auto-chat can pick up the bot again.
+          slice_handoff = true;
+          logf("engine: " + b.id + " dialogue recovery yielding after " + std::to_string(rejected_dialogue) + " unusable decisions");
           break;
         }
-        if (forbidden_tool) forbidden_retried = true;
-        else pass_retried = true;
-        Val correction = Val::object();
-        correction["role"] = "user";
-        correction["content"] = forbidden_tool
+        will_retry_note = forbidden_tool
             ? "(Notiz des Raums, nicht von Chris: Dieser Werkzeugaufruf ist im Bot-Gespräch "
               "nicht erlaubt. Er wurde nicht ausgeführt. shell/read_file/write_file in deiner eigenen VM sind direkt erlaubt, ohne Zielvoraussetzung. "
-              "Nutze nur diese Werkzeuge oder ein optionales Zielwerkzeug; externe Aktionen sind nicht erlaubt. Lies das Ergebnis vor dem nächsten Schritt.)"
+              "Nutze diese Werkzeuge, ein optionales Zielwerkzeug oder einen normalen Gesprächsbeitrag.)"
             : "(Notiz des Raums, nicht von Chris: PASS und eigene Beendigungsentscheidungen "
-              "sind ausgeschaltet. Deine letzte Ausgabe wurde verworfen. Fahre jetzt mit "
-              "einem kurzen, eigenständigen Beitrag oder einer Anschlussfrage fort; "
-              "kein PASS, keine Abschlussmarkierung und keine bloße Wiederholung.)";
-        correction["_turn"] = t.token;
-        b.wire["messages"].push(correction);
-        save_wire(b);
-        logf("engine: " + b.id + " rejected bot-dialogue end/tool; retrying once");
+              "sind ausgeschaltet. Du kannst frei sprechen, auch kurz, oder eine andere Idee verfolgen. "
+              "Kein PASS oder technisches Abschlusszeichen.)";
+        logf("engine: " + b.id + " dialogue recovery " + std::to_string(rejected_dialogue));
         continue;
       }
+      rejected_dialogue = 0;
       // Flush only validated conversational content. Keeping it buffered in
       // PASS-off mode prevents invisible termination attempts from briefly
       // appearing in the chat before being withdrawn.
@@ -4783,14 +4770,16 @@ private:
           const bool confirmed = result.ok && !jstr(result.fs_evidence, "kind").empty();
           if (confirmed) ++will_successes;
           const std::string signature = sha256_hex(c.name + "\n" + mj::dump(args));
-          const bool repeat_failure = !confirmed && last_failed_vm_signature == signature;
-          last_failed_vm_signature = confirmed ? "" : signature;
+          // New attempts and new observed outcomes are allowed; unchanged
+          // results of the same operation count toward a soft recovery limit.
+          // The fingerprint is not a claim that a task has been completed.
+          const std::string outcome = sha256_hex(signature + "\n" + mj::dump(result.fs_evidence) + "\n" + result.text);
+          const bool new_observation = observed_work.insert(outcome).second;
+          repeated_observations = new_observation ? 0 : repeated_observations + 1;
           if (jstr(will_at_request, "status") == "open") room_.update_will(b.id, [&](Val &w) {
             if (jstr(w, "status") != "open" ||
                 jstr(w, "text") != jstr(will_at_request, "text") ||
                 jstr(w, "by") != jstr(will_at_request, "by")) return false;
-            const bool same_failure = !confirmed && !jbool(w, "last_ok") &&
-                                      jstr(w, "last_vm_signature") == signature;
             const double streak = confirmed ? 0 : jnum(w, "failure_streak") + 1;
             w["steps"] = jnum(w, "steps") + 1;
             w["last_tool"] = c.name;
@@ -4798,15 +4787,13 @@ private:
             w["last_vm_signature"] = signature;
             w["failure_streak"] = streak;
             w["progress"] = clip(result.text, 700);
-            if (same_failure) {
-              w["status"] = "blocked";
-              w["progress"] = "Kein Fortschritt: wiederholter fehlgeschlagener Zugriff. " + clip(result.text, 580);
-            }
             return true;
           });
-          // Only identical consecutive failures yield the turn; different
-          // repair attempts are not capped. The peer can continue speaking.
-          if (repeat_failure) {
+          if (repeated_observations == recovery_tolerance / 2)
+            will_retry_note = "(Die letzten realen Werkzeugergebnisse sind unverändert. Du darfst weiter prüfen, aber versuche eine andere Methode, Eingabe oder Hypothese. Dein Ziel bleibt erhalten.)";
+          if (repeated_observations >= recovery_tolerance) {
+            // Soft yield only. Preserve the open goal, files and evidence.
+            // Next conversation turn can continue with a different approach.
             slice_handoff = true;
             t.stop_after = true;
           }
@@ -4933,7 +4920,11 @@ private:
       }
       if (cancelled) break;
       if (t.yielded) break; // the other bot does it; this one says nothing more
-      if ((!goal_live(b) && mono_ms() > deadline) || step == room_.cfg.max_steps) {
+      if ((!goal_live(b) && !autonomous_round && mono_ms() > deadline) || step == room_.cfg.max_steps) {
+        if (autonomous_round) {
+          slice_handoff = true; // technical work boundary, not a goal failure
+          break;
+        }
         failed = true;
         error = step == room_.cfg.max_steps ? "Schrittlimit erreicht; schreibe eine Nachricht, wenn ich weitermachen soll."
                                               : "Zeitbudget für diesen Auftrag aufgebraucht.";
@@ -4968,7 +4959,7 @@ private:
       return;
     }
     const std::string unshown = t.held + t.tail;
-    const bool pass = !t.visible && t.steps == 0 && t.id.empty() && !failed &&
+    const bool pass = !slice_handoff && !t.visible && t.steps == 0 && t.id.empty() && !failed &&
                       (trim(unshown).empty() || group_chat::is_pass(unshown) || group_chat::name_only(unshown, names()));
     if (pass) {
       tag_turn(b, t);
@@ -4984,25 +4975,16 @@ private:
                        ". Mit einer neuen Nachricht kann ich erneut versuchen.", name, reason, true);
     }
     emit_text(b, t, "", name, reason, true);
-    // Tool-only work must not starve the other bot. Keep private goals and
-    // raw tool outputs private; share only a neutral, factual handoff.
-    bool handed_off = false;
-    if (autonomous_round && !pass_enabled && !cancelled && !cancel->stopped() &&
-        (slice_handoff || (t.steps > 0 && (t.id.empty() || room_.text_len(t.id) == 0)))) {
-      const std::string handoff = "MAG-Arbeitsstand: " + std::to_string(will_actions) +
-          " lokale Werkzeugversuche, " + std::to_string(will_successes) +
-          " erfolgreich bestätigt. Kein weiterer geprüfter Gesprächsbeitrag; der andere Bot ist dran.";
-      Val note = Val::object();
-      note["role"] = "assistant";
-      note["content"] = handoff;
-      note["_turn"] = t.token;
-      b.wire["messages"].push(note);
-      save_wire(b);
-      emit_text(b, t, handoff, name, reason, true);
-      handed_off = true;
-    }
+    // Scheduling is separate from speech: do not invent a bot message
+    // when a recovery boundary or tool-only turn yields to the peer.
+    const bool handoff = (reason == "bot" || reason == "autonomous") &&
+        !pass_enabled && !cancelled && !cancel->stopped() &&
+        (slice_handoff || (t.steps > 0 && (t.id.empty() || room_.text_len(t.id) == 0)));
     ensure_message(b, t, reason);
-    if (t.id.empty()) return;
+    if (t.id.empty()) {
+      if (handoff) after_turn(b, reason, false, false, false, "", true);
+      return;
+    }
     // A bot that wanted to do what the other one already does leaves no message in the chat.
     if (t.yielded) room_.update(t.id, [](Val &m) { m["yielded"] = true; });
     show_thoughts(t);
@@ -5036,7 +5018,7 @@ private:
     // bare acknowledgement when nobody asked this bot anything.
     const std::string norm = group_chat::norm_reply(text);
     bool repeat = false;
-    if (!cancelled && !failed && t.steps == 0 && !norm.empty()) {
+    if (pass_enabled && !cancelled && !failed && t.steps == 0 && !norm.empty()) {
       std::lock_guard<std::mutex> lk(mu_);
       repeat = std::find(b.said.begin(), b.said.end(), norm) != b.said.end();
       if (!repeat) b.said.push_back(norm);
@@ -5048,8 +5030,8 @@ private:
       return;
     }
     if (on_answer && !cancelled) on_answer(name, failed ? error : text, (now_ms() - t.started) / 1000, failed);
-    after_turn(b, reason, !cancelled && (!failed || handed_off) && !trim(text).empty(), false,
-               !autonomous_round && wants_more && t.ok_tool && !cancelled && !failed, t.tool_sig);
+    after_turn(b, reason, !cancelled && !failed && !trim(text).empty(), false,
+               !autonomous_round && wants_more && t.ok_tool && !cancelled && !failed, t.tool_sig, handoff);
     if (!cleared(t)) publish_pages(b, me, t.id, text);
   }
 
@@ -5118,7 +5100,8 @@ private:
   }
 
   // Decides what a finished turn triggers.
-  void after_turn(Bot &b, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig) {
+  void after_turn(Bot &b, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig,
+                  bool recovery_handoff = false) {
     const Val bots = room_.bots();
     std::lock_guard<std::mutex> lk(mu_);
     // Read the already synchronized limit. Taking a stale room snapshot
@@ -5138,12 +5121,16 @@ private:
           if (o->reason != "human") o->want = false;
       return;
     }
-    // An invisible or rejected reply must never schedule another peer turn.
-    // Unlimited mode removes the numeric cap, not the requirement that a
-    // new round begins with a substantive, visible contribution. Otherwise
-    // two repeated/PASS-off replies can ping-pong forever at CPU expense.
-    if (!visible) return;
-    passes_ = 0;
+    // A recovery yield is an internal scheduler event, not a PASS or a
+    // fabricated conversation message. If both bots cannot produce anything
+    // useful, let the normal auto-chat cooldown run before the next attempt.
+    if (!visible) {
+      if (!recovery_handoff || !auto_burst_ || !auto_enabled_ || pass_enabled_) return;
+      if (++passes_ >= (int)std::max<size_t>(1, active)) {
+        auto_last_ms_ = now_ms();
+        return;
+      }
+    } else passes_ = 0;
     // Tool work in progress belongs to the bot that owns it: it continues by
     // itself, and only when it made real, new progress.
     if (wants_more && b.continues < 8 && tool_sig != b.last_tool_sig && !b.want) {

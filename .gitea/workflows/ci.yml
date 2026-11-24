@@ -12,6 +12,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Check room OCR dependencies
+        run: |
+          command -v pdftotext
+          command -v pdftoppm
+          languages=$(tesseract --list-langs)
+          if ! grep -qx deu <<< "$languages" || ! grep -qx eng <<< "$languages"; then
+            echo "Room OCR requires deu and eng. On the runner host, run sudo bash ops/install/bootstrap-room-ocr.sh." >&2
+            exit 1
+          fi
       - name: Build release targets
         run: |
           source ops/build-targets.sh

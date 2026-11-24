@@ -49,6 +49,7 @@ struct Result {
   std::string image;       // JPEG of the page, for the model after a navigation or a click
   bool navigated = false;  // open, click, back, Enter: the picture may go to the model
   Val snapshot;            // the full /elements document; the model sees a short form
+  Val fs_evidence;         // server-generated, never accepted from model arguments
 };
 // A result whose text tells the bot what to do next; Chris reads in the step what happened.
 inline Result told(std::string bot, std::string chat, bool ok = true, bool blocker = false) {
@@ -89,6 +90,10 @@ inline Val schemas(bool has_vm, bool phone = false) {
                  "Create or replace a text file in your VM (relative paths are below /home/bot). Prefer this over heredocs. "
                  "A file below /home/bot/www is published on your website at once; an .html file there is shown to Chris as a live page in the chat.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})"));
+    list.push(fn("read_file",
+                 "Observe a real regular file below your own VM home: canonical path, byte count, SHA-256 and up to 8192 bytes of text. "
+                 "metadata_only=true returns no contents. This is observation, not execution or a test.",
+                 R"({"type":"object","properties":{"path":{"type":"string"},"metadata_only":{"type":"boolean"}},"required":["path"]})"));
     list.push(fn("delete_file",
                  "Delete a file or folder in your own VM only when Chris requests its removal. Never delete the VM home itself, "
                  "other users' data, or a path outside your home. For files in www, the published website is "
@@ -327,7 +332,8 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "will_drop") return "Gibt eigenes Ziel auf";
   if (name == "shell") return "$ " + one(jstr(args, "command"), 140);
   if (name == "delete_file") return "Löscht " + one(jstr(args, "path"), 90);
-  if (name == "write_file") return "Schreibt " + one(jstr(args, "path"), 100);
+  if (name == "write_file") return "Schreibt und prüft " + one(jstr(args, "path"), 100);
+  if (name == "read_file") return "Liest und prüft " + one(jstr(args, "path"), 100);
   if (name == "browser_open") return "Öffnet " + one(jstr(args, "url"), 120);
   if (name == "browser_read") return "Liest die Seite";
   if (name == "browser_look") return "Sieht sich die Seite an";
@@ -670,6 +676,36 @@ inline Result phone(const std::string &name, const Val &args, Ctx &ctx) {
   return {res.body.empty() ? "ok" : clip(res.body, 2000), true};
 }
 
+// Host-authored observation in the assigned guest, never model-authored stdout.
+// Only regular files below the bot's home; return a bounded preview and hash.
+inline Val observe_file(Ctx &ctx, const std::string &path, bool metadata_only) {
+  if (path.empty() || path.size() > 4096 || path.find('\0') != std::string::npos) return Val();
+  const std::string code = R"MAGPY(import os,sys,stat,hashlib,json
+home=os.path.realpath(os.path.expanduser('~'))
+p=os.path.realpath(os.path.join(home,sys.argv[1]))
+if p==home or not p.startswith(home+os.sep): sys.exit('outside home')
+fd=os.open(p,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW)
+with os.fdopen(fd,'rb') as f:
+ if not stat.S_ISREG(os.fstat(f.fileno()).st_mode): sys.exit('not a regular file')
+ h=hashlib.sha256(); n=0; preview=b''
+ while True:
+  b=f.read(65536)
+  if not b: break
+  h.update(b); n+=len(b)
+  if sys.argv[2]=='text' and len(preview)<8192: preview+=b[:8192-len(preview)]
+ print(json.dumps({'path':p,'bytes':n,'sha256':h.hexdigest(),'preview':preview.decode('utf-8','replace'),'truncated':sys.argv[2]=='text' and n>len(preview)},ensure_ascii=False))
+)MAGPY";
+  const auto r = ctx.guests.exec(jstr(ctx.bot, "vm"), "python3 -I -c " + shell_quote(code) +
+                                  " " + shell_quote(path) + (metadata_only ? " meta" : " text"),
+                                  60, ctx.cancel, {});
+  if (r.code != 0 || r.cancelled || r.timed_out || r.failed_to_start) return Val();
+  Val v = jparse(trim(r.out));
+  const std::string hash = jstr(v, "sha256");
+  if (!v.isObj() || jstr(v, "path").empty() || !v.find("bytes") ||
+      hash.size() != 64 || hash.find_first_not_of("0123456789abcdef") != std::string::npos) return Val();
+  return v;
+}
+
 inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (starts_with(name, "s23_")) return phone(name, args, ctx);
   const std::string vm = jstr(ctx.bot, "vm");
@@ -717,6 +753,18 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     }
     return {"Gelöscht: " + deleted, true};
   }
+  if (name == "read_file") {
+    if (!need_vm()) return fail("Du hast keine eigene VM.");
+    const Val seen = observe_file(ctx, jstr(args, "path"), jbool(args, "metadata_only"));
+    if (!seen.isObj()) return fail("Datei nicht beobachtet: fehlt, nicht lesbar oder außerhalb des eigenen Home.");
+    Result out{mj::dump(seen), true};
+    out.fs_evidence = Val::object();
+    out.fs_evidence["kind"] = "read_verified";
+    out.fs_evidence["path"] = jstr(seen, "path");
+    out.fs_evidence["sha256"] = jstr(seen, "sha256");
+    out.fs_evidence["bytes"] = *seen.find("bytes");
+    return out;
+  }
   if (name == "write_file") {
     if (!need_vm()) return fail("Du hast keine eigene VM.");
     const std::string path = jstr(args, "path");
@@ -725,7 +773,12 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     const auto r = ctx.guests.write(vm, path, content->str, false, ctx.cancel);
     if (r.cancelled) return {"abgebrochen (Stop)", false};
     if (r.code != 0) return fail("Schreiben fehlgeschlagen: " + clip(trim(r.out), 600));
+    const Val seen = observe_file(ctx, path, true);
+    if (!seen.isObj() || jstr(seen, "sha256") != sha256_hex(content->str) ||
+        jnum(seen, "bytes") != (double)content->str.size())
+      return fail("Schreibversuch beendet, aber Rücklesen/Hash-Abgleich nicht bestätigt. Nicht als gespeichert oder getestet melden.");
     std::string text = clip(trim(r.out), 400);
+    text += "\nDatei zurückgelesen: " + jstr(seen, "path") + ", SHA-256 " + jstr(seen, "sha256");
     // "saved <path> <n> bytes": a file of the bot's site goes online at once.
     std::istringstream saved(r.out);
     std::string word, where;
@@ -740,7 +793,13 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
         text += "\nVeröffentlicht: " + site::base_url(ctx.bot) + "/" + rel + " (Chris sieht die Seite live im Chat.)";
       } else text += "\nVeröffentlicht: " + site::base_url(ctx.bot) + "/" + rel;
     }
-    return {text, true};
+    Result out{text, true};
+    out.fs_evidence = Val::object();
+    out.fs_evidence["kind"] = "write_verified";
+    out.fs_evidence["path"] = jstr(seen, "path");
+    out.fs_evidence["sha256"] = jstr(seen, "sha256");
+    out.fs_evidence["bytes"] = *seen.find("bytes");
+    return out;
   }
   if (starts_with(name, "browser_")) {
     if (!need_vm()) return fail("Du hast keine eigene VM.");

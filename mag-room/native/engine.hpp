@@ -1232,9 +1232,7 @@ private:
     save_wire(b);
   }
 
-  // Bound a work slice, not the conversation or the lifetime of a goal.
-  // Each bot may read, write, run, inspect and repair before handing over.
-  static constexpr int autonomous_vm_budget = 4;
+  // Local VM access is independent of the optional private goal.
   static bool is_vm_tool(const std::string &name) {
     return name == "shell" || name == "read_file" || name == "write_file";
   }
@@ -1268,10 +1266,6 @@ private:
       }
       if (action == "will_set") {
         if (status == "open" || status == "held") { error = "Es gibt bereits ein offenes Ziel."; return false; }
-        if (status == "blocked" && group_chat::norm_reply(goal) == group_chat::norm_reply(jstr(w, "text"))) {
-          error = "Dieses Ziel ist nach fehlendem Fortschritt blockiert. Nicht unverändert neu starten; anderes Vorhaben wählen oder will_drop.";
-          return false;
-        }
         w = Room::empty_will();
         w["text"] = clip(goal, 800); w["done_when"] = clip(done, 600);
         w["status"] = "open"; w["by"] = "self";
@@ -3518,8 +3512,7 @@ private:
             "Sprich schlicht und auf Augenhöhe; keine erfundenen Fachwörter, kein Selbstlob, keine übertriebene Zustimmung. Erkläre nötige Fachbegriffe kurz. "
             "Ein normales Gespräch braucht weder Ziel noch Werkzeug. Wähle Themen frei; die VM ist ein Werkzeug und kein Gesprächsthema an sich. Wenn du ein konkretes Vorhaben wirklich umsetzen möchtest, verfolge es mit echten Ergebnissen statt immer neue Experimente anzukündigen. "
             "Frage nur nach, wenn wirklich eine Information oder Freigabe fehlt. Keine alten Nutzeraufträge ausführen. "
-            "Eigene Ziele mit will_set/will_progress/will_finish/will_drop verfolgen; bei offenem eigenen Ziel "
-            "mehrere aufeinander aufbauende shell/read_file/write_file-Schritte in der eigenen VM; lies nach jedem Schritt das Ergebnis. Sonst keine Werkzeuge. " +
+            "Du kannst shell, read_file und write_file in deiner eigenen VM direkt nutzen, auch ohne gespeichertes Ziel. Lies die echten Ergebnisse und arbeite bei Bedarf weiter. Ein eigenes Ziel ist optional; will_set/will_progress/will_finish/will_drop dienen nur der Dokumentation. Externe Aktionen sind nicht Teil dieses Gesprächs. " +
             std::string(pass_enabled
                 ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
                 : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
@@ -3537,14 +3530,12 @@ private:
         "Der Raum war kurz ruhig. Du hast jetzt Zeit für eigene Interessen. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
         "Vertiefe ein Thema, solange es etwas zu entdecken gibt, und wechsle sonst frei. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
         "Sprich einfach, direkt und auf Augenhöhe. Keine aufgeblasenen oder erfundenen Fachwörter, kein Selbstlob. "
-        "Du kannst einfach ein Gespräch führen, eine Idee entwickeln oder etwas erschaffen. Kein Ziel und keine Systemanalyse sind Pflicht. Wenn du wirklich etwas tun willst, setze ein konkretes eigenes Ziel mit Abschlusskriterium und arbeite anhand echter Ergebnisse daran. "
+        "Du kannst einfach ein Gespräch führen, eine Idee entwickeln oder etwas erschaffen. Kein Ziel und keine Systemanalyse sind Pflicht. Wenn du etwas tun willst, arbeite anhand echter Ergebnisse daran. "
         "Greife keine alten Nutzeraufträge, Projekte, erstellten Webseiten, Dateien oder Werkzeugergebnisse "
         "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. "
         "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
         "Keine ausstehenden Nutzeraufträge neu ausführen, keine Webseitenaktionen. "
-        "Nutze für ein selbst gewähltes prüfbares Vorhaben will_set mit konkretem Abschlusskriterium, "
-        "bei offenem Ziel aufeinander aufbauende shell-, read_file- oder write_file-Schritte in deiner VM, "
-        "sonst keine Werkzeuge. " +
+        "Nutze shell, read_file und write_file in deiner eigenen VM direkt, auch ohne will_set. Ziele sind freiwillige Arbeitsnotizen. Externe Aktionen sind nicht Teil dieses Gesprächs. " +
         std::string(pass_enabled
             ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
             : "PASS und eine eigene Beendigungsentscheidung sind deaktiviert: Beginne und fuehre das Gespräch aktiv mit neuen Gedanken fort; entscheide nicht selbst, es zu beenden.") +
@@ -3583,8 +3574,8 @@ private:
     bool pass_retried = false; // at most one extra model call if PASS is disabled but still emitted
     int will_actions = 0, will_successes = 0;
     bool slice_handoff = false, forbidden_retried = false;
+    std::string last_failed_vm_signature;
     bool will_owner_interrupted = from_chris;
-    int will_announcements = 0;
     int pseudo_retries = 0;
     bool require_real_call = false;
     std::string will_retry_note; // request-only: never poison the append-only prompt log
@@ -3702,11 +3693,9 @@ private:
             ? "(Interne Selbstgesprächsrunde, kein Auftrag von Chris: Dein eigenes Ziel ist offen: „" +
               clip(jstr(current_will, "text"), 800) + "“. Abschluss: „" +
               clip(jstr(current_will, "done_when"), 600) +
-              "“. Verbleibende lokale Werkzeugschritte in dieser Gesprächsrunde: " +
-              std::to_string(std::max(0, autonomous_vm_budget - will_actions)) +
-              ". Arbeite nacheinander mit echten Ergebnissen. Falls das Budget verbraucht ist, berichte kurz und übergib das Gespräch; dein Ziel bleibt erhalten. "
-              "Prüfe das tatsächliche Ergebnis am Abschlusskriterium; dokumentiere Fortschritt mit will_progress, beende mit will_finish erst bei erreichtem Kriterium oder gib ein widerlegtes Vorhaben mit will_drop auf. "
-               "Andere Werkzeuge bleiben verboten. Danach kannst du kurz mit dem anderen Bot sprechen.)"
+              "“. Nutze deine VM-Werkzeuge direkt und arbeite anhand echter Ergebnisse. Das Ziel ist eine Arbeitsnotiz, keine Zugriffsvoraussetzung. "
+              "Prüfe das tatsächliche Ergebnis am Abschlusskriterium; dokumentiere Fortschritt bei Bedarf mit will_progress und beende mit will_finish erst bei erreichtem Kriterium. "
+              "Sprich anschließend mit dem anderen Bot.)"
             : reason == "autonomous" ? autonomous_invite : note;
         if (jstr(current_will, "status") == "blocked")
           cue["content"] = jstr(cue, "content") + " Dein bisheriges Ziel ist wegen fehlendem Fortschritt blockiert. Wiederhole es nicht unverändert. Du kannst ein anderes Vorhaben wählen oder einfach über ein anderes Thema sprechen.";
@@ -3741,7 +3730,7 @@ private:
             "Sprich klar, einfach und auf Augenhöhe. Vermeide unnötige Fremdwörter, erfundene Begriffe, Selbstlob und leere Zustimmung. "
             "Erkläre nötige Fachbegriffe kurz; unterscheide Vermutung und Beleg.";
         if (chris_priority) paragraph += " In diesem Zug gilt die Bitte von Chris, nicht dein eigenes Vorhaben. Dein eigenes Ziel wartet und erhält keinen Werkzeugaufruf.";
-        else paragraph += " Jetzt ist Zeit für eigene Interessen. Wähle selbst, was dich interessiert. Sprich natürlich mit deinem Gesprächspartner über die Sache selbst, ohne diese Orientierung, Auftragsstatus oder Mitleser zu erwähnen. Wenn du etwas ausprobieren willst, setze selbst ein Ziel und nutze die erlaubten Werkzeuge.";
+        else paragraph += " Jetzt ist Zeit für eigene Interessen. Wähle selbst, was dich interessiert. Sprich natürlich mit deinem Gesprächspartner über die Sache selbst, ohne diese Orientierung, Auftragsstatus oder Mitleser zu erwähnen. Wenn du etwas ausprobieren willst, nutze deine VM-Werkzeuge direkt. Ein eigenes Ziel ist optional.";
         Val orientation = Val::object();
         orientation["identity"] = identity;
         orientation["narrator"] = paragraph;
@@ -4020,15 +4009,12 @@ private:
           logf("engine: " + b.id + " rejected pseudo VM call: " + pseudo);
           if (++pseudo_retries <= 1) {
             const bool own = !will_owner_interrupted && !goal_live(b) && !t.errand;
-            const bool open = jstr(room_.will(b.id), "status") == "open";
-            require_real_call = own && (!open || will_actions < autonomous_vm_budget);
+            require_real_call = own;
             will_retry_note = "(Realitätscheck des Raums: Deine letzte Ausgabe enthielt einen Werkzeugaufruf als Chattext. "
                               "Er wurde NICHT ausgeführt. Es gibt daraus keine Datei, Messung oder Zieländerung. "
                               "Die gesamte Ausgabe wurde verworfen. " +
                               std::string(!own ? "Antworte ohne Werkzeug und ohne erfundene Ergebnisse. " :
-                                  open && will_actions < autonomous_vm_budget ? "Nutze genau einen echten erlaubten shell/read_file/write_file-Aufruf oder ein Zielwerkzeug. " :
-                                  !open ? "Wenn du das Vorhaben wirklich verfolgen willst, nutze jetzt den echten nativen will_set-Aufruf; erst nach dessen Ergebnis ist ein VM-Schritt zulässig. " :
-                                  "Das Arbeitsbudget dieser Runde ist verbraucht. Nutze nur echte vorliegende Ergebnisse oder rede über die Idee. ") +
+                                  "Nutze einen echten nativen shell/read_file/write_file-Aufruf direkt oder ein optionales Zielwerkzeug. ") +
                               "Kein Python- oder JSON-Aufruf im Chattext.)";
             continue;
           }
@@ -4043,65 +4029,17 @@ private:
           break;
         }
       }
-      // A spoken promise is not a VM step. Retry once with a request-only
-      // correction; the second announcement blocks the goal.
-      if ((reason == "bot" || reason == "autonomous") && !will_owner_interrupted &&
-          !res.cancelled && res.calls.empty() && !goal_live(b) &&
-          will_actions < autonomous_vm_budget && jstr(room_.will(b.id), "status") == "open" && announces(res.content)) {
-        ++will_announcements;
-        t.held.clear();
-        t.tail.clear();
-        if (t.id.empty()) {
-          // The provisional announcement has not entered room messages.
-        } else room_.retake_text(t.id, text0, "");
-        if (will_announcements >= 2) {
-          room_.update_will(b.id, [&](Val &w) {
-            if (jstr(w, "status") != "open") return false;
-            w["status"] = "blocked";
-            w["progress"] = "Zweimal nur angekündigt, kein echter Werkzeugaufruf";
-            return true;
-          });
-          failed = true;
-          error = "Eigenes Ziel blockiert: zweimal nur angekündigt.";
-          break;
-        }
-        will_retry_note = "(Notiz des Raums, nicht von Chris: Eine Ankündigung ist kein "
-                          "Fortschritt. Nutze jetzt genau EINEN echten shell-, read_file- oder "
-                          "write_file-Aufruf in deiner VM oder gib das Ziel mit will_drop auf.)";
-        continue;
-      }
-      // PASS-off means no voluntary end decision, not merely a suggestion.
-      // Validate every bot-to-bot response BEFORE publishing. A tool call
-      // is never a substitute for a reply: unattended dialogue cannot run
-      // any tool, and an unprompted follower may not evade PASS-off by
-      // invoking a tool. Keep model schemas unchanged to preserve warm KV.
+      // Keep the VM permission boundary independent of goals and counters.
+      // Native calls are validated before they reach the execution loop.
       const bool bot_dialogue = reason == "bot" || reason == "autonomous";
       const bool own_chat = bot_dialogue && !will_owner_interrupted &&
                             !t.errand && !goal_live(b);
       const bool permitted_will_call = own_chat &&
           std::all_of(res.calls.begin(), res.calls.end(), [&](const llm::ToolCall &call) {
-            if (is_will_tool(call.name)) return true;
-            return will_actions < autonomous_vm_budget && (call.name == "shell" || call.name == "write_file" || call.name == "read_file") &&
-                   vm::valid_name(jstr(me, "vm")) &&
-                   jstr(will_at_request, "status") == "open" &&
-                   jstr(room_.will(b.id), "status") == "open" &&
-                   jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
-                   jstr(room_.will(b.id), "by") == jstr(will_at_request, "by");
-          }) &&
-          std::count_if(res.calls.begin(), res.calls.end(), [](const llm::ToolCall &c) {
-            return c.name == "shell" || c.name == "write_file" || c.name == "read_file";
-          }) <= autonomous_vm_budget - will_actions;
+            return is_will_tool(call.name) ||
+                   (is_vm_tool(call.name) && vm::valid_name(jstr(me, "vm")));
+          });
       const bool forbidden_tool = bot_dialogue && !res.calls.empty() && !permitted_will_call;
-      // A spent slice is a scheduling decision, NOT a failed VM call.
-      // Do not publish fake failed cards or poison the prompt with them.
-      if (own_chat && will_actions >= autonomous_vm_budget && !res.cancelled &&
-          std::any_of(res.calls.begin(), res.calls.end(), [](const llm::ToolCall &c) { return is_vm_tool(c.name); })) {
-        t.held.clear();
-        t.tail.clear();
-        t.reasoning = mj::utf8_cut(t.reasoning, thought0);
-        slice_handoff = true;
-        break;
-      }
       const std::string candidate = trim(strip_self(strip_markers(res.content), name, names()));
       const std::string norm_candidate = group_chat::norm_reply(candidate);
       bool duplicated = false;
@@ -4120,7 +4058,7 @@ private:
         t.tail.clear();
         t.reasoning = mj::utf8_cut(t.reasoning, thought0);
         if (forbidden_tool ? forbidden_retried : pass_retried) {
-          if (own_chat && t.steps > 0) {
+          if (autonomous_round && !pass_enabled && own_chat) {
             slice_handoff = true;
             break;
           }
@@ -4136,9 +4074,8 @@ private:
         correction["role"] = "user";
         correction["content"] = forbidden_tool
             ? "(Notiz des Raums, nicht von Chris: Dieser Werkzeugaufruf ist im Bot-Gespräch "
-              "nicht erlaubt. Er wurde nicht ausgeführt. Ohne offenes Ziel zuerst will_set allein aufrufen. Bei offenem eigenen "
-              "Ziel sind shell/read_file/write_file in deiner VM erlaubt, jeweils mit gültigen Argumenten und innerhalb des verbleibenden Arbeitsbudgets. "
-              "Lies das Ergebnis vor dem nächsten Schritt. Wenn das Ziel blockiert oder das Budget verbraucht ist, berichte kurz und gib das Gespräch weiter.)"
+              "nicht erlaubt. Er wurde nicht ausgeführt. shell/read_file/write_file in deiner eigenen VM sind direkt erlaubt, ohne Zielvoraussetzung. "
+              "Nutze nur diese Werkzeuge oder ein optionales Zielwerkzeug; externe Aktionen sind nicht erlaubt. Lies das Ergebnis vor dem nächsten Schritt.)"
             : "(Notiz des Raums, nicht von Chris: PASS und eigene Beendigungsentscheidungen "
               "sind ausgeschaltet. Deine letzte Ausgabe wurde verworfen. Fahre jetzt mit "
               "einem kurzen, eigenständigen Beitrag oder einer Anschlussfrage fort; "
@@ -4409,21 +4346,14 @@ private:
             b.acted = true;
           }
         }
-        // && binds tighter than ||, so the open-will and one-step checks
-        // must cover shell and write_file together. Otherwise every shell
-        // in a self-talk round would run, with or without an open goal.
-        const bool same_will = jstr(will_at_request, "status") == "open" &&
-                               jstr(room_.will(b.id), "status") == "open" &&
-                               jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
-                               jstr(room_.will(b.id), "by") == jstr(will_at_request, "by");
-        const bool vm_step = (c.name == "shell" || c.name == "write_file" || c.name == "read_file") &&
-                             will_actions < autonomous_vm_budget && vm::valid_name(jstr(me, "vm")) && same_will;
+        // The current bot's VM is the scope. Goals only receive bookkeeping
+        // if they are still the same goal as when the request was made.
+        const bool vm_step = is_vm_tool(c.name) && vm::valid_name(jstr(me, "vm"));
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
         } else if (bot_dialogue && !(own_chat && (is_will_tool(c.name) || vm_step))) {
-          // All unattended access is denied except the explicit will
-          // transitions and bounded VM-local work, pinned to the current goal.
-          result = tools::fail("Nicht ausgeführt: kein unverändert offenes eigenes Ziel, Arbeitsbudget verbraucht oder Werkzeug nicht erlaubt.");
+          // Keep external actions and interrupted owner work out of self-chat.
+          result = tools::fail("Nicht ausgeführt: Werkzeug außerhalb der eigenen VM oder Nutzerauftrag hat Vorrang.");
           t.stop_after = true;
         } else if (is_will_tool(c.name)) {
           result = apply_will(b.id, c.name, args, own_chat);
@@ -4853,7 +4783,9 @@ private:
           const bool confirmed = result.ok && !jstr(result.fs_evidence, "kind").empty();
           if (confirmed) ++will_successes;
           const std::string signature = sha256_hex(c.name + "\n" + mj::dump(args));
-          room_.update_will(b.id, [&](Val &w) {
+          const bool repeat_failure = !confirmed && last_failed_vm_signature == signature;
+          last_failed_vm_signature = confirmed ? "" : signature;
+          if (jstr(will_at_request, "status") == "open") room_.update_will(b.id, [&](Val &w) {
             if (jstr(w, "status") != "open" ||
                 jstr(w, "text") != jstr(will_at_request, "text") ||
                 jstr(w, "by") != jstr(will_at_request, "by")) return false;
@@ -4866,13 +4798,18 @@ private:
             w["last_vm_signature"] = signature;
             w["failure_streak"] = streak;
             w["progress"] = clip(result.text, 700);
-            if (same_failure || streak >= 3) {
+            if (same_failure) {
               w["status"] = "blocked";
               w["progress"] = "Kein Fortschritt: wiederholter fehlgeschlagener Zugriff. " + clip(result.text, 580);
-              will_retry_note = "(Eigenes Ziel blockiert: Wiederhole den fehlgeschlagenen Zugriff nicht. Berichte den tatsächlichen Stand oder wähle ein anderes Thema.)";
             }
             return true;
           });
+          // Only identical consecutive failures yield the turn; different
+          // repair attempts are not capped. The peer can continue speaking.
+          if (repeat_failure) {
+            slice_handoff = true;
+            t.stop_after = true;
+          }
         }
         const bool was_cancelled = cancel->stopped();
         const bool fs_call = c.name == "shell" || c.name == "read_file" || c.name == "write_file";
@@ -5050,8 +4987,8 @@ private:
     // Tool-only work must not starve the other bot. Keep private goals and
     // raw tool outputs private; share only a neutral, factual handoff.
     bool handed_off = false;
-    if (autonomous_round && !pass_enabled && !cancelled && t.steps > 0 &&
-        (slice_handoff || t.id.empty() || room_.text_len(t.id) == 0)) {
+    if (autonomous_round && !pass_enabled && !cancelled && !cancel->stopped() &&
+        (slice_handoff || (t.steps > 0 && (t.id.empty() || room_.text_len(t.id) == 0)))) {
       const std::string handoff = "MAG-Arbeitsstand: " + std::to_string(will_actions) +
           " lokale Werkzeugversuche, " + std::to_string(will_successes) +
           " erfolgreich bestätigt. Kein weiterer geprüfter Gesprächsbeitrag; der andere Bot ist dran.";

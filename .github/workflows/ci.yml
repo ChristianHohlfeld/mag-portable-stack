@@ -66,6 +66,8 @@ jobs:
             RoomContract.test_prefill_and_tool_only_stream_report_live_progress \
             RoomContract.test_human_reply_overlaps_peer_routine_and_filters_its_context \
             RoomContract.test_human_reply_overlaps_peer_goal_inference \
+            RoomContract.test_human_turn_preempts_optional_peer_review \
+            RoomContract.test_goal_retry_starts_while_peer_is_inferencing \
             RoomContract.test_autonomous_chat_unlimited_continues_past_both_hidden_caps \
             RoomContract.test_stop_cancels_a_running_answer \
             RoomContract.test_mistral_small4_chat_roles_and_effort_without_touching_gemma \

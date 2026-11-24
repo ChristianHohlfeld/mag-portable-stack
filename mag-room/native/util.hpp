@@ -358,9 +358,13 @@ inline std::string mime_for(const std::string &name) {
 
 // ------------------------------------------------------------- subprocess
 struct Cancel {
-  std::atomic<bool> flag{false};
+  explicit Cancel(const Cancel *parent = nullptr) : parent(parent) {}
   void stop() { flag = true; }
-  bool stopped() const { return flag.load(); }
+  bool stopped() const { return flag.load() || (parent && parent->stopped()); }
+
+private:
+  const Cancel *parent;
+  std::atomic<bool> flag{false};
 };
 using CancelPtr = std::shared_ptr<Cancel>;
 

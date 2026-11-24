@@ -378,6 +378,7 @@ public:
       if (bot.empty()) auto_last_ms_ = b->auto_started_ms;
       b->continues = 0;
       if (b->cancel) b->cancel->stop();
+      if (b->peer_review_cancel) b->peer_review_cancel->stop();
       // Stop ends that bot's browser goal. A new human message does not come through here.
       b->end_goal = true;
       b->goal_arm = false;
@@ -916,7 +917,7 @@ private:
     std::string reason;          // why the next turn runs: human | bot | continue
     std::string running;         // reason of the running turn, "" when idle
     bool acted = false;          // the running turn has used a tool that does something
-    CancelPtr cancel;
+    CancelPtr cancel, peer_review_cancel;
     std::string message;         // room message of the running turn
     int continues = 0;
     bool reset_pending = false;
@@ -1021,6 +1022,11 @@ private:
       last_bots_ms_ = mono_ms();
     }
     room_.bus.publish("bots", ev);
+  }
+
+  void start_background(Bot &b) {
+    std::lock_guard<std::mutex> lk(mu_);
+    b.background_inference = write_atomic(room_.cfg.models_control + "/" + b.id + ".background", "1\n", 0660);
   }
 
   void clear_background(Bot &b) {
@@ -3320,6 +3326,7 @@ private:
         cv_.wait(lk, [&] { return stop_ || ((b.want || routine_ready()) && !b.resetting) ||
             b.wipe_pending || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
         if (stop_) return;
+        if (b.peer_review_cancel) b.peer_review_cancel->stop();
         if (b.reset_pending) {
           b.reset_pending = false;
           b.warm_pending = false;
@@ -4074,11 +4081,7 @@ private:
       {
         std::lock_guard<std::mutex> inference(b.inference_mu);
         const bool background = t.routine || reason == "autonomous" || reason == "bot" || reason == "continue";
-        if (background) {
-          std::lock_guard<std::mutex> lk(mu_);
-          b.background_inference = true;
-          write_atomic(room_.cfg.models_control + "/" + b.id + ".background", "1\n", 0660);
-        }
+        if (background) start_background(b);
         res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
       }
       clear_background(b);
@@ -4711,13 +4714,27 @@ private:
                   result = tools::fail("Der andere Bot ist nicht verfügbar.");
                 else {
                   std::unique_lock<std::mutex> inference(peer->inference_mu, std::try_to_lock);
-                  bool busy = !inference.owns_lock();
+                  CancelPtr review_cancel;
                   {
                     std::lock_guard<std::mutex> lk(mu_);
-                    busy = busy || !peer->running.empty() || peer->want || peer->warming || peer->resetting || peer->wipe_pending || peer->reset_pending;
+                    if (inference.owns_lock() && peer->running.empty() && !peer->want &&
+                        !peer->warming && !peer->warm_pending && !peer->resetting && !peer->wipe_pending &&
+                        !peer->reset_pending && !peer->routine_pending && !peer->goal_on && !peer->goal_arm) {
+                      review_cancel = std::make_shared<Cancel>(cancel.get());
+                      peer->peer_review_cancel = review_cancel;
+                    }
                   }
-                  if (busy) result = tools::fail("Der andere Bot arbeitet gerade; Zweitprüfung später erneut anfordern.");
+                  if (!review_cancel) result = tools::fail("Der andere Bot arbeitet gerade; Zweitprüfung später erneut anfordern.");
                   else {
+                    struct ReleaseReview {
+                      Engine &engine;
+                      Bot &peer;
+                      ~ReleaseReview() {
+                        engine.clear_background(peer);
+                        std::lock_guard<std::mutex> lk(engine.mu_);
+                        peer.peer_review_cancel.reset();
+                      }
+                    } release{*this, *peer};
                     Val messages = Val::array(), sys = Val::object(), req = Val::object();
                     sys["role"] = "system";
                     sys["content"] = "Unabhängige Zweitprüfung. Lies die vorliegenden Angaben kritisch. "
@@ -4758,10 +4775,12 @@ private:
                     std::string backup_error;
                     if (!llm::slot_save(peer->backend, backup, &backup_error)) {
                       result = tools::fail("Zweitprüfung ohne gesicherten Peer-KV-Cache verweigert: " + clip(backup_error, 160));
+                    } else if (review_cancel->stopped()) {
+                      result = tools::fail("Der andere Bot hat einen eigenen Zug begonnen.");
                     } else {
-                      // The peer is another local CPU model; avoid an
-                      // artificial timeout during productive reviews too.
-                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {}, 0);
+                      // A peer's own work can stop the optional review.
+                      start_background(*peer);
+                      const auto review = llm::chat(peer->backend, review_body, review_cancel.get(), {}, 0);
                       std::string restore_error;
                       const bool restored = llm::slot_restore(peer->backend, backup, &restore_error);
                       if (!restored) {
@@ -5238,7 +5257,7 @@ private:
     if ((reason == "bot" || reason == "autonomous") && (cancelled || cancel->stopped())) {
       if (!t.id.empty()) room_.update(t.id, [](Val &m) { m["state"] = "stopped"; }, true);
       tag_turn(b, t);
-      after_turn(b, reason, false, false, false, "");
+      after_turn(b, t, reason, false, false, false, "");
       return;
     }
     const std::string unshown = t.held + t.tail;
@@ -5247,7 +5266,7 @@ private:
     if (pass) {
       tag_turn(b, t);
       // A Stop without any output is not a PASS: it must not rest the room.
-      after_turn(b, reason, false, !cancelled, false, "");
+      after_turn(b, t, reason, false, !cancelled, false, "");
       return;
     }
     if (failed && goal_live(b) && trim(unshown).empty() &&
@@ -5264,7 +5283,7 @@ private:
         !pass_enabled && !cancelled && !cancel->stopped() &&
         (slice_handoff || (t.steps > 0 && (t.id.empty() || room_.text_len(t.id) == 0)));
     if (handoff && t.id.empty()) {
-      after_turn(b, reason, false, false, false, "", true);
+      after_turn(b, t, reason, false, false, false, "", true);
       return;
     }
     ensure_message(b, t, reason);
@@ -5310,11 +5329,11 @@ private:
     }
     if (repeat) {
       room_.remove(t.id);
-      after_turn(b, reason, false, true, false, "");
+      after_turn(b, t, reason, false, true, false, "");
       return;
     }
     if (on_answer && !cancelled) on_answer(name, failed ? error : text, (now_ms() - t.started) / 1000, failed);
-    after_turn(b, reason, !cancelled && !failed && !trim(text).empty(), false,
+    after_turn(b, t, reason, !cancelled && !failed && !trim(text).empty(), false,
                !autonomous_round && wants_more && t.ok_tool && !cancelled && !failed, t.tool_sig, handoff);
     if (!cleared(t)) publish_pages(b, me, t.id, text);
   }
@@ -5384,14 +5403,14 @@ private:
   }
 
   // Decides what a finished turn triggers.
-  void after_turn(Bot &b, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig,
+  void after_turn(Bot &b, const TurnState &t, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig,
                   bool recovery_handoff = false) {
     const Val bots = room_.bots();
     std::lock_guard<std::mutex> lk(mu_);
     // Read the already synchronized limit. Taking a stale room snapshot
     // before this lock could undo a simultaneous settings_changed() update.
     const long limit = round_limit_;
-    if (b.running == "routine") return;
+    if (t.routine || !t.goal_id.empty()) return;
     const bool autonomous_turn = reason == "autonomous" || (reason == "bot" && auto_burst_);
     if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous")) return;
     if (autonomous_turn && !auto_enabled_) return;
@@ -5438,8 +5457,8 @@ private:
       for (auto &c : bots.asArr())
         if (jstr(c, "id") == o->id) enabled = jbool(c, "enabled", true);
       if (!enabled) continue;
-      if (o->want || o->routine_pending ||
-          (!o->running.empty() && o->running != "bot" && o->running != "autonomous")) continue;
+      if (o->want || o->routine_pending || o->running == "routine" || o->running == "continue") continue;
+      if (autonomous_turn && o->running == "human") continue;
       if (silenced_.count(o->id)) continue;
       // A bot's own goal reserves only its own worker.
       if (o->goal_on || o->goal_arm || o->resetting || o->reset_pending || o->wipe_pending) continue;

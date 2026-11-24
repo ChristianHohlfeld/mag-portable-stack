@@ -68,6 +68,10 @@ public:
     if (p == "/_internal/tailscale/whois") return gate_.whois(fd, r);
     if (p == "/healthz") return http::send(fd, 200, "text/plain; charset=utf-8", "ok\n");
     if (p == "/readyz") return readyz(fd);
+    // Something shared from the system's share menu is taken by the service
+    // worker (sw.js) and sent by the page like an upload. One that reaches the
+    // room (no service worker yet) is not read: the page says to share again.
+    if (r.method == "POST" && p == "/share") return http::send(fd, 303, "text/plain; charset=utf-8", "", {{"Location", "/?share=lost"}});
     if (!gate_.same_site(r)) return http::send_error(fd, 403, "Ungültige Herkunft der Anfrage (Seite neu laden)");
     const auth::Actor who = gate_.identify(r);
     if (!who.ok) return http::send(fd, 403, "text/html; charset=utf-8", kNoAccess);
@@ -621,7 +625,13 @@ private:
     const std::string v = "?v=" + web_;
     const std::string body =
         "{\"name\":\"MAG\",\"short_name\":\"MAG\",\"start_url\":\"/\",\"scope\":\"/\",\"display\":\"standalone\","
-        "\"background_color\":\"#17181b\",\"theme_color\":\"#17181b\",\"lang\":\"de\",\"icons\":["
+        "\"background_color\":\"#17181b\",\"theme_color\":\"#17181b\",\"lang\":\"de\","
+        // MAG in the system's share menu: pictures, videos, sounds, PDFs, any
+        // file, a link or words (sw.js takes them, the page sends them).
+        "\"share_target\":{\"action\":\"/share\",\"method\":\"POST\",\"enctype\":\"multipart/form-data\","
+        "\"params\":{\"title\":\"title\",\"text\":\"text\",\"url\":\"url\",\"files\":[{\"name\":\"files\",\"accept\":["
+        "\"image/*\",\"video/*\",\"audio/*\",\"application/pdf\",\"text/*\",\"application/*\",\"*/*\"]}]}},"
+        "\"icons\":["
         "{\"src\":\"/static/icon-192.png" + v + "\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"any\"},"
         "{\"src\":\"/static/icon-512.png" + v + "\",\"sizes\":\"512x512\",\"type\":\"image/png\",\"purpose\":\"any\"},"
         "{\"src\":\"/static/icon-maskable-192.png" + v + "\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"maskable\"},"

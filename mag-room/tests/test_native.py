@@ -4949,6 +4949,27 @@ class RoomContract(unittest.TestCase):
         self.assertIn('name="mag-token" content="', page)
         self.assertEqual(r.api("GET", "/readyz")[1]["ok"], True)
 
+    def test_share_menu_target(self):
+        # MAG is a target of the system's share menu; the service worker takes
+        # the post. One that reaches the room is not read and not refused as a
+        # cross-site post: the page is asked to say it, and nothing is stored.
+        r = self.room
+        status, manifest = r.api("GET", "/manifest.webmanifest")
+        self.assertEqual(status, 200)
+        target = manifest["share_target"]
+        self.assertEqual((target["action"], target["method"], target["enctype"]), ("/share", "POST", "multipart/form-data"))
+        self.assertEqual(target["params"]["files"][0]["name"], "files")
+        self.assertIn("*/*", target["params"]["files"][0]["accept"])
+        before = len(r.messages())
+        conn = http.client.HTTPConnection("127.0.0.1", r.port, timeout=10)
+        conn.request("POST", "/share", body=b"--x\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nhallo\r\n--x--\r\n",
+                     headers={"Content-Type": "multipart/form-data; boundary=x", "Origin": "null", "Sec-Fetch-Site": "none"})
+        res = conn.getresponse()
+        res.read()
+        conn.close()
+        self.assertEqual((res.status, res.getheader("Location")), (303, "/?share=lost"))
+        self.assertEqual(len(r.messages()), before)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

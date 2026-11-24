@@ -359,7 +359,11 @@ next to Löschen, the same for all: its files (picture, video, a joined video,
 3D model, scene film, document) go to the phone's own sharing (Web Share with
 the files, fetched when the menu opens so the tap hands them over at once);
 where a device cannot share a file it is downloaded, and a message without
-files shares its words.
+files shares its words. The other way round, MAG is in the system's share
+menu once installed as an app (manifest `share_target`): what is shared to
+it (files, a link, words) is kept by `sw.js` for the page, which sends it like
+the composer (`/api/upload`, then one message); a draft Chris was writing is
+never sent for him, the share waits next to it.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

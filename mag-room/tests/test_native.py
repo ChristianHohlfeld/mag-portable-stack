@@ -2902,6 +2902,51 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], bot("noah")["vm"], bot("noah")["enabled"]), ("agent1", False, "agent2", True))
         self.assertEqual((sorted(resets()[3:]), (guests / "agent1").is_dir(), (guests / "agent2").is_dir()), (["agent1", "agent2"], True, True))
 
+    def test_vm_reset_forgets_old_browser_goal_and_error(self):
+        ctl = pathlib.Path(tempfile.mkdtemp(prefix="magctl-"))
+        self.addCleanup(shutil.rmtree, ctl, True)
+        r = Room(MAG_ROOM_AGENT_CTL=str(HERE / "fake_agent_ctl"), FAKE_CTL=str(ctl))
+        self.addCleanup(r.close)
+        state = pathlib.Path(r.env["MAG_ROOM_STATE"])
+        goal = state / "goals" / "lena.json"
+        r.stop()
+        goal.parent.mkdir(exist_ok=True)
+        old = {"state": "blocked", "id": "old-browser-goal", "owner": "lena",
+               "text": "OLD-BROWSER-TASK", "error": "OLD-BROWSER-500", "progress": "blocked"}
+        goal.write_text(json.dumps(old))
+        r.start()
+        bot = lambda: next(b for b in r.state()["bots"] if b["id"] == "lena")
+        r.wait(lambda: bot().get("goal", {}).get("error") == "OLD-BROWSER-500",
+               "old goal loaded")
+        self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)
+        r.wait(lambda: "reset" not in bot(), "VM reset completed")
+        self.assertFalse(bot().get("goal", {}).get("state"))
+        self.assertEqual(json.loads(goal.read_text()), {})
+        r.stop()
+        r.start()
+        r.idle()
+        self.assertFalse(bot().get("goal", {}).get("state"))
+
+    def test_upgrade_discards_stale_ended_goal_in_fresh_context(self):
+        r = Room()
+        self.addCleanup(r.close)
+        r.idle()
+        r.stop()
+        state = pathlib.Path(r.env["MAG_ROOM_STATE"])
+        goal = state / "goals" / "lena.json"
+        goal.parent.mkdir(exist_ok=True)
+        goal.write_text(json.dumps({"state": "ended", "id": "old", "text": "OLD",
+                                    "error": "OLD-500"}))
+        wire = state / "wire" / "lena.json"
+        saved = json.loads(wire.read_text())
+        saved["messages"] = saved["messages"][:1]
+        saved.pop("goal_prompt_stamp", None)
+        wire.write_text(json.dumps(saved))
+        r.start()
+        r.wait(lambda: json.loads(goal.read_text()) == {}, "stale goal migrated")
+        self.assertFalse(next(b for b in r.state()["bots"] if b["id"] == "lena")
+                         .get("goal", {}).get("state"))
+
     def test_disk_reserve_rejects_reset_without_erasing_bot_memory(self):
         ctl = pathlib.Path(tempfile.mkdtemp(prefix="mag-reset-reserve-"))
         self.addCleanup(shutil.rmtree, ctl, True)

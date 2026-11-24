@@ -49,6 +49,7 @@ struct ChatCallbacks {
   std::function<void(const std::string &)> on_content, on_reasoning;
   std::function<void(int index, const std::string &name)> on_tool_start;
   std::function<void(long processed, long total, long cached)> on_progress;
+  std::function<void(long generated)> on_tokens;
 };
 
 // ---- what a model wrote, made fit for the chat ------------------------------
@@ -494,6 +495,7 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   body["cache_prompt"] = true;
   body["id_slot"] = 0;
   body["return_progress"] = true;
+  if (cb.on_tokens) body["timings_per_token"] = true;
 
   const int64_t started = mono_ms();
   std::string buffer, http_body;
@@ -553,7 +555,8 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       out.tps = jnum(*t, "predicted_per_second");
       if (!out.prompt_tokens) out.prompt_tokens = (long)(jnum(*t, "prompt_n") + jnum(*t, "cache_n"));
       if (!out.cached_tokens) out.cached_tokens = (long)jnum(*t, "cache_n");
-      if (!out.completion_tokens) out.completion_tokens = (long)jnum(*t, "predicted_n");
+      out.completion_tokens = std::max(out.completion_tokens, (long)jnum(*t, "predicted_n"));
+      if (out.completion_tokens && cb.on_tokens) cb.on_tokens(out.completion_tokens);
     }
     const Val *choices = ev.find("choices");
     if (!choices || !choices->isArr() || choices->asArr().empty()) return;
@@ -581,11 +584,12 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       take(text, thought);
     }
     if (const Val *tcs = delta->find("tool_calls"); tcs && tcs->isArr()) {
-      first();
+      if (!tcs->asArr().empty()) first();
       for (auto &tc : tcs->asArr()) {
         const int index = (int)jnum(tc, "index");
         const bool fresh = !calls.count(index);
         ToolCall &call = calls[index];
+        const std::string previous_name = call.name;
         const std::string id = jstr(tc, "id");
         if (!id.empty()) call.id = id;
         if (const Val *fn = tc.find("function"); fn && fn->isObj()) {
@@ -601,7 +605,8 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
           if (!more.empty() && (find_tag(call.arguments, had > 24 ? had - 24 : 0) != std::string::npos || circles(call.arguments, true) != std::string::npos))
             halt("call");
         }
-        if (fresh && !call.name.empty() && cb.on_tool_start) cb.on_tool_start(index, call.name);
+        if (cb.on_tool_start && (fresh || previous_name != call.name))
+          cb.on_tool_start(index, call.name);
       }
     }
   };

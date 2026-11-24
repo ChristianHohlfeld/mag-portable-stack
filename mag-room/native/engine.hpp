@@ -205,7 +205,8 @@ public:
       if (!only && owners.size() > 1) owners.resize(1); // one bot carries an unaddressed task
     } else {
       for (auto &b : bots_)
-        if (enabled_ids.count(b->id) && (b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
+        if (std::find(to.begin(), to.end(), b->id) != to.end() &&
+            (b->goal_on || b->goal_arm) && !b->end_goal.load()) owners.push_back(b->id);
       // An explicitly addressed correction targets that bot, even if another
       // bot currently has an open goal. A completed goal can be superseded,
       // while blocked/stopped goals are never silently restarted.
@@ -221,12 +222,13 @@ public:
     }
     // A status question or a correction does not replace the bot that is on the task.
     // A new browser task claims that bot at once, before its first tool.
-    const bool keep_lead = hush_only || how.kind == goal::Kind::Status || how.kind == goal::Kind::Correction ||
-                           (how.kind != goal::Kind::Task && how.kind != goal::Kind::Stop && !owners.empty());
+    const bool keep_lead = hush_only || (!owners.empty() &&
+        how.kind != goal::Kind::Task && how.kind != goal::Kind::Stop);
     if (!keep_lead) {
       lead_.clear();
       for (auto &b : bots_)
-        if (b->running == "human" && b->acted && b->cancel && !b->cancel->stopped()) lead_ = b->id;
+        if (std::find(to.begin(), to.end(), b->id) != to.end() &&
+            b->running == "human" && b->acted && b->cancel && !b->cancel->stopped()) lead_ = b->id;
     }
     if (!owners.empty() && (how.kind == goal::Kind::Task || how.kind == goal::Kind::Correction))
       lead_ = owners[0];
@@ -263,35 +265,31 @@ public:
     };
     if (hush_only) {
       for (auto &b : bots_) {
-        if (b->cancel && b->running != "human" && !b->warming) b->cancel->stop();
+        if (b->cancel && (b->running == "bot" || b->running == "autonomous") && !b->warming) b->cancel->stop();
         if (std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end()) b->want = false;
       }
       cv_.notify_all();
       return;
     }
     for (auto &b : bots_) {
-      // Bot rounds and self-continuations yield to the human at once. The
-      // prefix being evaluated does not: the turn needs it anyway, and only
-      // a finished one is saved, so that the next trash restores it in seconds.
-      if (b->cancel && b->running != "human" && !b->warming) b->cancel->stop();
-      b->continues = 0;
-      b->said.clear();
       const bool addressed = std::find(to.begin(), to.end(), b->id) != to.end();
       const bool hushed = std::find(how.hush.begin(), how.hush.end(), b->id) != how.hush.end();
+      const bool autonomous = b->running == "bot" || b->running == "autonomous";
       if (hushed) silenced_.insert(b->id);
-      if (how.kind == goal::Kind::Stop && (addressed || to.size() == bots_.size())) mark_end(*b);
-      if (!enabled_ids.count(b->id) || (silenced_.count(b->id) && !(only && addressed && !hushed))) {
-        b->want = false;
+      const bool ending = how.kind == goal::Kind::Stop && (addressed || to.size() == bots_.size());
+      if (ending) mark_end(*b);
+      // Dialogue yields room-wide. Independent work only yields to its own
+      // addressed input; a peer's queued human or goal turn stays queued.
+      if (b->cancel && !b->warming && (autonomous || ending ||
+          (addressed && (b->running == "routine" || b->running == "continue")))) b->cancel->stop();
+      if (!addressed) {
+        if (b->reason == "bot" || b->reason == "autonomous" || hushed) b->want = false;
         continue;
       }
-      if (!owners.empty() && how.kind != goal::Kind::Stop) {
-        const bool owner = std::find(owners.begin(), owners.end(), b->id) != owners.end();
-        if (owner) b->want = !only || addressed;
-        else if (only && addressed) b->want = true; // an explicit word to the other bot
-        else b->want = false;
-      } else {
-        b->want = addressed && !hushed;
-      }
+      b->last_human_ms = last_human_ms_;
+      b->continues = 0;
+      b->said.clear();
+      b->want = !hushed && (!silenced_.count(b->id) || only);
       b->reason = "human";
       if (!b->want) continue;
       const bool correct_done = how.kind == goal::Kind::Correction && only && addressed &&
@@ -380,6 +378,7 @@ public:
       if (bot.empty()) auto_last_ms_ = b->auto_started_ms;
       b->continues = 0;
       if (b->cancel) b->cancel->stop();
+      if (b->peer_review_cancel) b->peer_review_cancel->stop();
       // Stop ends that bot's browser goal. A new human message does not come through here.
       b->end_goal = true;
       b->goal_arm = false;
@@ -872,6 +871,7 @@ public:
         v["total"] = (double)b->progress_total;
         v["cached"] = (double)b->progress_cached;
       }
+      if (b->generated_tokens > 0) v["generated_tokens"] = (double)b->generated_tokens;
       v["message"] = b->message;
       v["ctx_tokens"] = (double)b->ctx_tokens;
       v["ctx_budget"] = (double)(b->budget + plugins_.weight(conf));
@@ -913,11 +913,11 @@ private:
     bool want = false;
     bool routine_pending = false;
     std::string routine_instruction;
-    int64_t auto_started_ms = 0, running_since_ms = 0;
+    int64_t auto_started_ms = 0, running_since_ms = 0, last_human_ms = 0;
     std::string reason;          // why the next turn runs: human | bot | continue
     std::string running;         // reason of the running turn, "" when idle
     bool acted = false;          // the running turn has used a tool that does something
-    CancelPtr cancel;
+    CancelPtr cancel, peer_review_cancel;
     std::string message;         // room message of the running turn
     int continues = 0;
     bool reset_pending = false;
@@ -926,7 +926,7 @@ private:
     std::vector<std::string> forget;
     std::string phase = "idle", detail, kv = "unknown";
     int64_t phase_since = 0;
-    long progress_done = 0, progress_total = 0, progress_cached = 0, ctx_tokens = 0, last_cached = 0;
+    long progress_done = 0, progress_total = 0, progress_cached = 0, ctx_tokens = 0, last_cached = 0, generated_tokens = 0;
     double last_prompt_ms = 0;
     Val goal_public; // status snapshot, protected by mu_
     double tps = 0;
@@ -938,6 +938,7 @@ private:
     int cut_off = 0;             // > 0: a restart of the room cut this bot's answer off before any of it could be seen (how often)
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     std::vector<std::shared_ptr<Look>> looks; // things Chris named in a photo: where are they?
+    bool background_inference = false;
     bool warming = false;        // evaluating the system prefix to save it (warm_prefix): a new message waits for it
     bool resetting = false;      // the owner resets this bot (reset_vm) or restores its VM (restore_vm): it gets no turn until that is done
     bool saving = false;         // a save of its VM is under way (save_vm)
@@ -1023,6 +1024,30 @@ private:
     room_.bus.publish("bots", ev);
   }
 
+  void start_background(Bot &b) {
+    std::lock_guard<std::mutex> lk(mu_);
+    b.background_inference = write_atomic(room_.cfg.models_control + "/" + b.id + ".background", "1\n", 0660);
+  }
+
+  void clear_background(Bot &b) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!b.background_inference) return;
+    b.background_inference = false;
+    unlink((room_.cfg.models_control + "/" + b.id + ".background").c_str());
+  }
+
+  void report_prefill(Bot &b, long done, long total, long cached) {
+    bool publish;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      b.progress_done = done;
+      b.progress_total = total;
+      b.progress_cached = cached;
+      publish = mono_ms() - last_bots_ms_ > 700;
+    }
+    if (publish) publish_bots();
+  }
+
   void set_phase(Bot &b, const std::string &phase, const std::string &detail = "") {
     {
       std::lock_guard<std::mutex> lk(mu_);
@@ -1031,6 +1056,7 @@ private:
       b.phase = phase;
       b.detail = detail;
       b.progress_done = b.progress_total = 0;
+      if (phase == "reading" || phase == "warming" || phase == "idle") b.generated_tokens = 0;
     }
     publish_bots();
   }
@@ -1067,6 +1093,9 @@ private:
       {
         std::lock_guard<std::mutex> lk(mu_);
         for (auto &b : bots_) {
+          if (b->background_inference)
+            utimensat(AT_FDCWD, (room_.cfg.models_control + "/" + b->id + ".background").c_str(),
+                      nullptr, AT_SYMLINK_NOFOLLOW);
           const Val *m = bots.find(b->id);
           const bool ready = m && jstr(*m, "state") == "ready";
           const double since = m ? jnum(*m, "since", 0) : 0;
@@ -1098,11 +1127,11 @@ private:
     const Val models = models_snapshot();
     const int64_t now = now_ms();
     std::lock_guard<std::mutex> lk(mu_);
-    if (stop_ || (last_human_ms_ && now - last_human_ms_ < 15000)) return;
-    for (const auto &b : bots_)
-      if (b->want || !b->running.empty() || b->warming || b->warm_pending ||
-          b->resetting || b->reset_pending || b->wipe_pending || b->cut_off > 0) return;
+    if (stop_) return;
     for (auto &b : bots_) {
+      if (b->last_human_ms && now - b->last_human_ms < 15000) continue;
+      if (b->want || !b->running.empty() || b->warming || b->warm_pending ||
+          b->resetting || b->reset_pending || b->wipe_pending || b->cut_off > 0) continue;
       if (!b->goal_on || b->goal_arm || b->end_goal.load() ||
           exists(goal_mark(*b)) || silenced_.count(b->id)) continue;
       const Val *model = models.find(b->id);
@@ -1114,9 +1143,7 @@ private:
       if (!enabled || at <= 0 || at > now) continue;
       b->want = true;
       b->reason = "continue";
-      lead_ = b->id;
       cv_.notify_all();
-      return;
     }
   }
 
@@ -1557,7 +1584,9 @@ private:
     }
     // Cold CPU prefills can be silent for several minutes. Warmup has no
     // arbitrary wall/stall timeout; explicit Stop/shutdown still cancels.
-    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 0);
+    llm::ChatCallbacks cb;
+    cb.on_progress = [&](long done, long total, long cached) { report_prefill(b, done, total, cached); };
+    const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, cb, 0);
     {
       std::lock_guard<std::mutex> lk(mu_);
       b.warming = false;
@@ -1574,7 +1603,8 @@ private:
         set_kv(b, "cold");
       }
     } else {
-      logf("engine: " + b.id + " prefix prewarm failed: " + clip(res.error, 240));
+      if (res.cancelled) logf("engine: " + b.id + " prefix prewarm cancelled");
+      else logf("engine: " + b.id + " prefix prewarm failed: " + clip(res.error, 240));
       set_kv(b, "cold");
     }
     set_phase(b, "idle");
@@ -1659,8 +1689,14 @@ private:
       }
       save_wire(b);
     }
-    if (ids.empty() || !b.wire.isObj() || !b.wire.find("messages")) return;
-    Val &msgs = b.wire["messages"];
+    forget_messages(b, ids);
+  }
+
+  void forget_messages(Bot &b, const std::vector<std::string> &ids) {
+    if (ids.empty()) return;
+    Val *messages = b.wire.find("messages");
+    if (!messages || !messages->isArr()) return;
+    Val &msgs = *messages;
     bool changed = false;
     for (auto &id : ids) {
       for (size_t i = 1; i < msgs.arr->size();) {
@@ -1989,6 +2025,37 @@ private:
     return false;
   }
 
+  static bool private_context(const Val &m, const std::string &bot) {
+    const std::string from = jstr(m, "from");
+    if (from == bot) return false;
+    if (from == "routine") return !routine_for(m, bot);
+    if (jstr(m, "role") != "bot") return false;
+    if (jstr(m, "reason") == "routine") return true;
+    if (const Val *parts = m.find("parts"); parts && parts->isArr())
+      for (const auto &part : parts->asArr())
+        if (is_will_tool(jstr(part, "tool"))) return true;
+    return false;
+  }
+
+  // Existing logs can already contain another bot's routine. Remove those
+  // entries once, preserving the rest of the prompt and the chat timeline.
+  void isolate_existing_context(Bot &b) {
+    if (jbool(b.wire, "isolated_job_context")) return;
+    const Val *messages = b.wire.find("messages");
+    if (!messages || !messages->isArr()) return;
+    std::vector<std::string> ids;
+    for (const auto &message : messages->asArr())
+      if (const Val *items = message.find("_items"); items && items->isArr())
+        for (const auto &item : items->asArr()) {
+          const std::string id = jstr(item, "id");
+          Val source;
+          if (room_.get(id, source) && private_context(source, b.id)) ids.push_back(id);
+        }
+    b.wire["isolated_job_context"] = true;
+    forget_messages(b, ids);
+    save_wire(b);
+  }
+
   // Room messages this bot has not read yet (others' finished messages).
   // Notes that ask the bots nothing (a 3D order, its result) are context too:
   // they are read, they never start a turn.
@@ -1999,9 +2066,10 @@ private:
     Val still = Val::array();
     auto take = [&](const Val &m) {
       const std::string role = jstr(m, "role");
-      if (jstr(m, "from") == b.id) return true;                 // own messages are in the log already
-      if (jstr(m, "state") == "streaming") return false;        // not finished: later
-      if (humans_only && (role != "user" || (jstr(m, "from") == "routine" && !routine_for(m, b.id)))) return false;
+      if (jstr(m, "from") == b.id) return true; // own messages are in the log already
+      if (jstr(m, "state") == "streaming") return false;
+      if (private_context(m, b.id)) return true;
+      if (humans_only && role != "user") return false;
       out.push_back(m);
       return true;
     };
@@ -2014,7 +2082,7 @@ private:
       if (!take(m)) still.push(jstr(m, "id"));
       b.wire["cursor"] = jstr(m, "id");
     }
-    pending = still;
+    b.wire["pending"] = std::move(still);
     std::sort(out.begin(), out.end(), [](const Val &a, const Val &c) { return jstr(a, "id") < jstr(c, "id"); });
     return out;
   }
@@ -3230,7 +3298,7 @@ private:
     std::vector<std::string> only;
     const auto all = room_.all();
     for (auto it = all.rbegin(); it != all.rend(); ++it) {
-      if (jstr(*it, "role") != "user") continue;
+      if (jstr(*it, "role") != "user" || jstr(*it, "from") == "routine") continue;
       if (const Val *to = it->find("mentions"); to && to->isArr())
         for (auto &id : to->asArr()) only.push_back(id.asStr());
       break;
@@ -3244,6 +3312,7 @@ private:
   void work(Bot &b) {
     b.wire = read_json(wire_path(b));
     heal_wire(b);
+    isolate_existing_context(b);
     load_goal(b);
     take_up(b);
     while (true) {
@@ -3253,8 +3322,11 @@ private:
       std::vector<std::shared_ptr<Look>> looks;
       {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&] { return stop_ || ((b.want || b.routine_pending) && !b.resetting) || b.wipe_pending || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
+        auto routine_ready = [&] { return b.routine_pending && !b.goal_on && !b.goal_arm; };
+        cv_.wait(lk, [&] { return stop_ || ((b.want || routine_ready()) && !b.resetting) ||
+            b.wipe_pending || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
         if (stop_) return;
+        if (b.peer_review_cancel) b.peer_review_cancel->stop();
         if (b.reset_pending) {
           b.reset_pending = false;
           b.warm_pending = false;
@@ -3271,7 +3343,7 @@ private:
           b.warm_pending = false;
           warm = true;
           b.cancel = std::make_shared<Cancel>();
-        } else if (b.routine_pending && !b.resetting && !(b.want && b.reason == "human")) {
+        } else if (routine_ready() && !b.resetting && !(b.want && b.reason == "human")) {
           b.routine_pending = false;
           routine_instruction.swap(b.routine_instruction);
           reason = "human";
@@ -3320,6 +3392,7 @@ private:
           const Val me = room_.bot(b.id);
           if (me.isObj() && jbool(me, "enabled", true) && model_state(b.id) == "ready") describe_images(b, me);
         } catch (const std::exception &e) {
+          clear_background(b);
           logf("engine: " + b.id + " turn failed: " + e.what());
         }
         set_phase(b, "idle");
@@ -3418,6 +3491,7 @@ private:
     std::string tool_sig;
     int steps = 0;
     bool more = false;       // the bot wrote [[MAG:WEITER]] (taken out of the text as it streamed)
+    bool routine = false;
     bool errand = false;     // this turn is an explicit browser task for this bot
     bool wrap = false;       // the next request is the short German answer after goal_finish
     bool stop_after = false; // that answer was this request: do not keep going
@@ -3505,7 +3579,7 @@ private:
     m["text"] = "";
     m["parts"] = Val::array();
     m["attachments"] = Val::array();
-    m["reason"] = reason;
+    m["reason"] = t.routine ? "routine" : reason;
     if (!t.goal_id.empty()) m["goal_id"] = t.goal_id; // presentation only, steps retain their own audit entries
     if (const std::string thoughts = llm::tidy_thoughts(t.reasoning); !thoughts.empty()) m["reasoning"] = thoughts;
     t.id = jstr(room_.add(m), "id");
@@ -3608,6 +3682,7 @@ private:
     TurnState t;
     {
       std::lock_guard<std::mutex> lk(mu_);
+      t.routine = b.running == "routine";
       cancel = b.cancel;
       t.epoch = clear_epoch_;
     }
@@ -3695,7 +3770,7 @@ private:
     // From here the bot is at work, and the log says so. A restart of the
     // room (every deploy is one) that cuts the turn off leaves the mark, and
     // the room that starts takes the turn up again (see work()).
-    AtWork at_work(*this, b, reason, tries);
+    AtWork at_work(*this, b, t.routine ? "routine" : reason, tries);
     // Bot-to-bot directives are not part of b.wire; a PASS never persists a
     // synthetic user sentence, while the LLM receives it for this turn only.
     // New images are described for the bots without eyes. That is a short
@@ -3747,7 +3822,7 @@ private:
       std::vector<std::string> mentions;
       const auto all = room_.all();
       for (auto it = all.rbegin(); it != all.rend(); ++it) {
-        if (jstr(*it, "role") != "user") continue;
+        if (jstr(*it, "role") != "user" || jstr(*it, "from") == "routine") continue;
         human = jstr(*it, "text");
         if (const Val *ms = it->find("mentions"); ms && ms->isArr())
           for (auto &id : ms->asArr()) mentions.push_back(id.asStr());
@@ -3764,7 +3839,7 @@ private:
       const bool mentioned = std::find(mentions.begin(), mentions.end(), b.id) != mentions.end() ||
                              std::find(addressed.begin(), addressed.end(), b.id) != addressed.end();
       // A historical human task is not a current order in an autonomous round.
-      t.errand = !autonomous_round && (reason == "human" || from_chris) &&
+      t.errand = !t.routine && !autonomous_round && (reason == "human" || from_chris) &&
                  goal::classify(human, roster).kind == goal::Kind::Task && mentioned;
     }
     std::string error;
@@ -3966,13 +4041,12 @@ private:
         require_real_call = false;
       }
       llm::ChatCallbacks cb;
-      cb.on_progress = [&](long done, long total, long cached) {
-        bool publish = false;
+      cb.on_progress = [&](long done, long total, long cached) { report_prefill(b, done, total, cached); };
+      cb.on_tokens = [&](long generated) {
+        bool publish;
         {
           std::lock_guard<std::mutex> lk(mu_);
-          b.progress_done = done;
-          b.progress_total = total;
-          b.progress_cached = cached;
+          b.generated_tokens = generated;
           publish = mono_ms() - last_bots_ms_ > 700;
         }
         if (publish) publish_bots();
@@ -3991,7 +4065,7 @@ private:
         if (!autonomous_round && reason != "bot")
           emit_text(b, t, d, name, reason, false);
       };
-      cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
+      cb.on_tool_start = [&](int, const std::string &) { set_phase(b, "preparing_tool"); };
       set_phase(b, "reading");
       const int remaining_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
       // An active browser goal may be slow on CPU: do not label a live
@@ -4006,8 +4080,11 @@ private:
       llm::ChatResult res;
       {
         std::lock_guard<std::mutex> inference(b.inference_mu);
+        const bool background = t.routine || reason == "autonomous" || reason == "bot" || reason == "continue";
+        if (background) start_background(b);
         res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
       }
+      clear_background(b);
       const int64_t call_ms = mono_ms() - call_started_ms;
       ++model_calls_in_turn;
       t.last = res;
@@ -4328,7 +4405,7 @@ private:
         // A request for approval written as text reaches Chris as no card, and
         // a yes in the chat is no approval. Once per turn the room takes that
         // text back and has the bot ask the only way that counts: consent.
-        const bool guest = !goal_live(b) && !t.errand && other_goal(b);
+        const bool guest = !t.routine && !goal_live(b) && !t.errand && other_goal(b);
         if (!nudged && assist && asks_in_words(content) && !guest) {
           nudged = true;
           logf("engine: " + b.id + " asked for approval in words; the room has it call consent");
@@ -4493,7 +4570,7 @@ private:
         tools::Result result;
         const int look_version = (int)jnum(b.goal, "version") + 1;
         std::string lead;
-        if (acts(c.name) && !(bot_dialogue && own_chat)) {
+        if (acts(c.name) && !t.routine && !(bot_dialogue && own_chat)) {
           // The bot that was given the task may act at once. While its goal is open the
           // other bot's acting tools are refused, unless Chris just gave that bot a task of its own.
           std::lock_guard<std::mutex> lk(mu_);
@@ -4637,13 +4714,27 @@ private:
                   result = tools::fail("Der andere Bot ist nicht verfügbar.");
                 else {
                   std::unique_lock<std::mutex> inference(peer->inference_mu, std::try_to_lock);
-                  bool busy = !inference.owns_lock();
+                  CancelPtr review_cancel;
                   {
                     std::lock_guard<std::mutex> lk(mu_);
-                    busy = busy || !peer->running.empty() || peer->want || peer->warming || peer->resetting || peer->wipe_pending || peer->reset_pending;
+                    if (inference.owns_lock() && peer->running.empty() && !peer->want &&
+                        !peer->warming && !peer->warm_pending && !peer->resetting && !peer->wipe_pending &&
+                        !peer->reset_pending && !peer->routine_pending && !peer->goal_on && !peer->goal_arm) {
+                      review_cancel = std::make_shared<Cancel>(cancel.get());
+                      peer->peer_review_cancel = review_cancel;
+                    }
                   }
-                  if (busy) result = tools::fail("Der andere Bot arbeitet gerade; Zweitprüfung später erneut anfordern.");
+                  if (!review_cancel) result = tools::fail("Der andere Bot arbeitet gerade; Zweitprüfung später erneut anfordern.");
                   else {
+                    struct ReleaseReview {
+                      Engine &engine;
+                      Bot &peer;
+                      ~ReleaseReview() {
+                        engine.clear_background(peer);
+                        std::lock_guard<std::mutex> lk(engine.mu_);
+                        peer.peer_review_cancel.reset();
+                      }
+                    } release{*this, *peer};
                     Val messages = Val::array(), sys = Val::object(), req = Val::object();
                     sys["role"] = "system";
                     sys["content"] = "Unabhängige Zweitprüfung. Lies die vorliegenden Angaben kritisch. "
@@ -4684,10 +4775,12 @@ private:
                     std::string backup_error;
                     if (!llm::slot_save(peer->backend, backup, &backup_error)) {
                       result = tools::fail("Zweitprüfung ohne gesicherten Peer-KV-Cache verweigert: " + clip(backup_error, 160));
+                    } else if (review_cancel->stopped()) {
+                      result = tools::fail("Der andere Bot hat einen eigenen Zug begonnen.");
                     } else {
-                      // The peer is another local CPU model; avoid an
-                      // artificial timeout during productive reviews too.
-                      const auto review = llm::chat(peer->backend, review_body, cancel.get(), {}, 0);
+                      // A peer's own work can stop the optional review.
+                      start_background(*peer);
+                      const auto review = llm::chat(peer->backend, review_body, review_cancel.get(), {}, 0);
                       std::string restore_error;
                       const bool restored = llm::slot_restore(peer->backend, backup, &restore_error);
                       if (!restored) {
@@ -5164,7 +5257,7 @@ private:
     if ((reason == "bot" || reason == "autonomous") && (cancelled || cancel->stopped())) {
       if (!t.id.empty()) room_.update(t.id, [](Val &m) { m["state"] = "stopped"; }, true);
       tag_turn(b, t);
-      after_turn(b, reason, false, false, false, "");
+      after_turn(b, t, reason, false, false, false, "");
       return;
     }
     const std::string unshown = t.held + t.tail;
@@ -5173,7 +5266,7 @@ private:
     if (pass) {
       tag_turn(b, t);
       // A Stop without any output is not a PASS: it must not rest the room.
-      after_turn(b, reason, false, !cancelled, false, "");
+      after_turn(b, t, reason, false, !cancelled, false, "");
       return;
     }
     if (failed && goal_live(b) && trim(unshown).empty() &&
@@ -5190,7 +5283,7 @@ private:
         !pass_enabled && !cancelled && !cancel->stopped() &&
         (slice_handoff || (t.steps > 0 && (t.id.empty() || room_.text_len(t.id) == 0)));
     if (handoff && t.id.empty()) {
-      after_turn(b, reason, false, false, false, "", true);
+      after_turn(b, t, reason, false, false, false, "", true);
       return;
     }
     ensure_message(b, t, reason);
@@ -5236,11 +5329,11 @@ private:
     }
     if (repeat) {
       room_.remove(t.id);
-      after_turn(b, reason, false, true, false, "");
+      after_turn(b, t, reason, false, true, false, "");
       return;
     }
     if (on_answer && !cancelled) on_answer(name, failed ? error : text, (now_ms() - t.started) / 1000, failed);
-    after_turn(b, reason, !cancelled && !failed && !trim(text).empty(), false,
+    after_turn(b, t, reason, !cancelled && !failed && !trim(text).empty(), false,
                !autonomous_round && wants_more && t.ok_tool && !cancelled && !failed, t.tool_sig, handoff);
     if (!cleared(t)) publish_pages(b, me, t.id, text);
   }
@@ -5310,14 +5403,14 @@ private:
   }
 
   // Decides what a finished turn triggers.
-  void after_turn(Bot &b, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig,
+  void after_turn(Bot &b, const TurnState &t, const std::string &reason, bool visible, bool passed, bool wants_more, const std::string &tool_sig,
                   bool recovery_handoff = false) {
     const Val bots = room_.bots();
     std::lock_guard<std::mutex> lk(mu_);
     // Read the already synchronized limit. Taking a stale room snapshot
     // before this lock could undo a simultaneous settings_changed() update.
     const long limit = round_limit_;
-    if (b.running == "routine") return;
+    if (t.routine || !t.goal_id.empty()) return;
     const bool autonomous_turn = reason == "autonomous" || (reason == "bot" && auto_burst_);
     if (dialogue_stopped_ && (reason == "bot" || reason == "autonomous")) return;
     if (autonomous_turn && !auto_enabled_) return;
@@ -5364,21 +5457,12 @@ private:
       for (auto &c : bots.asArr())
         if (jstr(c, "id") == o->id) enabled = jbool(c, "enabled", true);
       if (!enabled) continue;
-      if (o->want || o->routine_pending || o->running == "routine") continue;
-      if (autonomous_turn && (o->running == "human" || o->running == "continue")) continue;
+      if (o->want || o->routine_pending || o->running == "routine" || o->running == "continue") continue;
+      if (autonomous_turn && o->running == "human") continue;
       if (silenced_.count(o->id)) continue;
-      // Private work does not inherit the peer's browser goal.
-      if (autonomous_turn) {
-        if (o->goal_on || o->goal_arm || o->resetting || o->reset_pending || o->wipe_pending ||
-            model_state(o->id) != "ready") continue;
-      } else {
-        bool goal_busy = false, owns = false;
-        for (auto &g : bots_) {
-          if (g->goal_on || g->goal_arm) goal_busy = true;
-          if (g.get() == o.get() && (g->goal_on || g->goal_arm)) owns = true;
-        }
-        if (goal_busy && !owns) continue;
-      }
+      // A bot's own goal reserves only its own worker.
+      if (o->goal_on || o->goal_arm || o->resetting || o->reset_pending || o->wipe_pending) continue;
+      if (autonomous_turn && model_state(o->id) != "ready") continue;
       o->want = true;
       o->reason = "bot";
     }

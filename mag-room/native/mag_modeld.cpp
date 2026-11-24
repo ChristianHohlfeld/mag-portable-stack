@@ -431,7 +431,7 @@ static int health(int port) {
 struct Bot {
   std::string gpu_runtime;
   std::string id, label, unit, spec_hash, thinking_control, active_spec_hash;
-  int port = 0, numa = 0, ctx = 0;
+  int port = 0, numa = 0, ctx = 0, cpu_weight = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
 
   std::string state = "unknown", detail;
@@ -521,32 +521,57 @@ static Val artifact_json(const Artifact &a) {
 }
 
 static void systemctl(const std::string &verb, const std::string &unit) {
+  std::vector<std::string> args{g_systemctl, verb};
+  if (verb == "start" || verb == "stop" || verb == "restart") args.push_back("--no-block");
+  args.push_back(unit);
   std::string out;
-  const int rc = run({g_systemctl, verb, "--no-block", unit}, &out, 30);
+  const int rc = run(args, &out, 30);
   logf("systemctl " + verb + " " + unit + (rc ? " -> " + std::to_string(rc) + " " + trim(out) : ""));
+}
+
+static void thaw_if_frozen(const std::string &unit) {
+  const std::string state = unit_state(unit).freezer;
+  if (state == "frozen" || state == "freezing") systemctl("thaw", unit);
+}
+
+// A room crash or a failed unlink relinquishes background priority when
+// the lease expires. Only this bot's service competes at the lower weight.
+static void update_cpu_weight(Bot &b) {
+  struct stat st{};
+  const auto path = g_state_dir + "/control/" + b.id + ".background";
+  const auto now = time(nullptr);
+  const bool background = lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+                          st.st_mtime <= now && now - st.st_mtime < 15;
+  const int weight = background ? 10 : 100;
+  if (weight == b.cpu_weight) return;
+  std::string out;
+  if (run({g_systemctl, "set-property", "--runtime", b.unit, "CPUWeight=" + std::to_string(weight)}, &out, 10) == 0)
+    b.cpu_weight = weight;
+  else
+    logf(b.id + ": cannot set CPUWeight: " + trim(out));
 }
 
 static void apply_control(Bot &b, const std::string &verb) {
   logf(b.id + ": control " + verb);
   if (verb == "stop") {
     set_flag(b.id, "stopped", true);
-    systemctl("thaw", b.unit);
+    thaw_if_frozen(b.unit);
     systemctl("stop", b.unit);
   } else if (verb == "start") {
     set_flag(b.id, "stopped", false);
-    systemctl("thaw", b.unit);
+    thaw_if_frozen(b.unit);
     systemctl("reset-failed", b.unit);
     b.started_once = false;
   } else if (verb == "restart") {
     set_flag(b.id, "stopped", false);
-    systemctl("thaw", b.unit);
+    thaw_if_frozen(b.unit);
     systemctl("reset-failed", b.unit);
     systemctl("restart", b.unit);
     b.ever_ready = false;
   } else if (verb == "freeze") {
     if (b.gpu_runtime.empty()) systemctl("freeze", b.unit); // A GPU process must always be able to yield to Idol.
   } else if (verb == "thaw") {
-    systemctl("thaw", b.unit);
+    thaw_if_frozen(b.unit);
   }
 }
 
@@ -575,7 +600,14 @@ static void step(Bot &b) {
   track(b.id, b.mmproj);
   const auto now = Clock::now();
   const Unit u = unit_state(b.unit);
+  if (u.active == "deactivating") {
+    b.state = "unloading";
+    b.detail.clear();
+    return; // systemd still owns the stop/restart job
+  }
   const bool running = u.active == "active" || u.active == "activating" || u.active == "reloading";
+  if (running) update_cpu_weight(b);
+  else b.cpu_weight = 0;
   b.detail.clear();
   b.draft_active = false;
   b.mmproj_active = false;

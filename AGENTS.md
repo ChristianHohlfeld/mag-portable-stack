@@ -219,9 +219,10 @@ the bot named and Tab). Cards are sealed in `STATE/pay/cards.enc`
 stored; the page and the bots see brand and last four digits only.
 The room drives a browser task as a goal kept outside the prompt log
 (`STATE/goals/<bot>.json`): the addressed bot is the lead as soon as the
-task is given, and while it is open the other bot gets no automatic turn,
-no acting tool and no consent nudge. An explicit new task to that other bot
-still runs; "Noah du nicht" stops only him. The goal stays across a restart
+task is given, and while it is open that bot handles its follow-ups. Peers can answer
+unaddressed or independently addressed messages and run their own jobs.
+The goal owner uses its acting tools and requests its consent. "Noah du nicht"
+stops only him. The goal stays across a restart
 and across "Done?" / "Und?" / "Hallo"; a correction updates its text; Trash
 and Stop end it. It ends only with `goal_finish` or `goal_blocked`. A stop
 without a tool call is another step, not a result. A card that ended
@@ -334,7 +335,11 @@ same actions everywhere: set up, change, pause, run now, delete
 (`POST /api/routines`, `PUT`/`POST`/`DELETE /api/routines/<id>`). A bot
 sets up and changes its jobs with the same tool (`routine` add, update,
 pause, resume, run, remove; add and update by Chris's rules for routines).
-A job is its bot's: it runs as that bot's turn, in that bot's VM.
+A job is its bot's: it runs as that bot's turn, in that bot's VM. Routine
+instructions and replies and internal Will updates stay out of peer models’
+contexts. The room also removes identifiable foreign job entries from older
+prompt logs once. Background inference uses a lower CPU weight on that bot’s own
+model unit.
 Plugins are remote MCP servers Chris connects in the settings and gives to a
 bot in its sheet (`plugins` of the bot; `STATE/mcp/servers.json`, a token in
 `STATE/mcp/<id>.secret`, never in a prompt, a log or the page). The room

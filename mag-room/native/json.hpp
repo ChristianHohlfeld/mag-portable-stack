@@ -121,10 +121,12 @@ struct Val {
       return !str.empty();
     return false;
   }
-  const Arr &asArr() const {
+  const Arr &asArr() const & {
     static Arr empty;
     return isArr() ? *arr : empty;
   }
+  // Range-for over a temporary Val must own the array for the loop's lifetime.
+  Arr asArr() const && { return isArr() ? *arr : Arr{}; }
 };
 
 // Valid UTF-8 everywhere, one entry point: utf8_fix(). Conversion is done by

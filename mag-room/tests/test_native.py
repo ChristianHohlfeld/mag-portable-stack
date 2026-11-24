@@ -3828,19 +3828,22 @@ class RoomContract(unittest.TestCase):
         def finish(body):
             fin["n"] += 1
             fin["last"] = body
+            # Recovery must reconcile the current browser before any goal action.
             if fin["n"] == 1:
+                return {"tool_calls": [{"name": "browser_look", "arguments": {}}]}
+            if fin["n"] == 2:
                 return {"content": "", "tool_calls": [{"name": "goal_requirements", "arguments": {
                     "requirements": [{"id": "result", "need": "Zwei verschiedene Artikel belegen"}]}}]}
-            if fin["n"] == 2:
+            if fin["n"] == 3:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei Stück.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch", "url": "https://www.amazon.de/dp/B00SEEN"}]}}]}
-            if fin["n"] == 3:
+            if fin["n"] == 4:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei transparente Schrumpfschläuche.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
                               {"name": "Fake", "url": "https://www.amazon.de/dp/B00FAKE"}]}}]}
-            if fin["n"] == 4:
+            if fin["n"] == 5:
                 return {"content": "", "tool_calls": [{"name": "goal_finish", "arguments": {
                     "summary": "Zwei transparente Schrumpfschläuche.", "proofs": proof,
                     "items": [{"name": "Schrumpfschlauch transparent 2s", "url": "https://www.amazon.de/dp/B00SEEN", "price": "4,20 €"},
@@ -3850,6 +3853,8 @@ class RoomContract(unittest.TestCase):
         r.lena.reply = finish
         r.say("Done?")
         r.idle()
+        self.assertEqual(fin["n"], 5)  # reconcile, criteria, two rejected finishes, verified finish
+        self.assertEqual(browser.clicks, [28])  # no replay across recovery/restart
         self.assertEqual(fin["last"].get("tool_choice"), "required")  # no redundant closing LLM call
         self.assertIn("required", [body.get("tool_choice") for body in r.lena.chats()[-4:-1]])
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step" and p["tool"] == "goal_finish"]

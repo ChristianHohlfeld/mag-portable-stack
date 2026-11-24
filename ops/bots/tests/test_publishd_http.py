@@ -153,5 +153,44 @@ class PublisherHTTP(unittest.TestCase):
         self.assertEqual((self.root / "www" / "agent2" / "index.html").read_text(), "after")
 
 
+class SiteProvisioning(unittest.TestCase):
+    def test_fresh_vm_with_reused_name_gets_fresh_site(self):
+        with tempfile.TemporaryDirectory(prefix="mag-site-spawn-") as work:
+            root = Path(work)
+            site = root / "www" / "agent1"
+            site.mkdir(parents=True)
+            (site / "index.html").write_text("previous owner's page")
+            token = root / "tokens" / "agent1"
+            token.parent.mkdir()
+            token.write_text(TOKEN + "\n")
+            guest = root / "guest"
+            guest.mkdir()
+            magbot = root / "magbot"
+            magbot.write_text("""#!/bin/bash
+set -e
+case "$1" in
+  spawn) [[ $2 == agent1 ]] ;;
+  file-write)
+    dest="$FAKE_GUEST/${3#/home/bot/}"
+    mkdir -p "$(dirname "$dest")"
+    cat > "$dest"
+    ;;
+  exec) test -f "$FAKE_GUEST/www/index.html" ;;
+  *) exit 1 ;;
+esac
+""")
+            magbot.chmod(0o755)
+            env = dict(os.environ, MAG_BOTS_ROOT=work, MAG_BOTS_ZONE="example.test",
+                       MAG_BOTS_MAGBOT=str(magbot), MAG_BOTS_SITE=str(ROOT / "ops/bots/site.sh"),
+                       FAKE_GUEST=str(guest))
+            subprocess.run(["bash", str(ROOT / "ops/magbot-agent-ctl"), "spawn", "agent1"],
+                           check=True, env=env, capture_output=True, text=True)
+            [archived] = (root / "archive").glob("agent1-*/index.html")
+            self.assertEqual(archived.read_text(), "previous owner's page")
+            self.assertNotEqual(token.read_text(), TOKEN + "\n")
+            self.assertEqual((guest / ".site-token").read_text(), token.read_text())
+            self.assertEqual((guest / "www" / "index.html").read_text(), (site / "index.html").read_text())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

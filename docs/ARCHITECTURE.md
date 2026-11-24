@@ -142,6 +142,11 @@ uncore frequency fixed at its maximum, energy bias 0, C1E disabled.
 Blake and Noah use the CPU-only llama.cpp runtime. Qwen (`qwen`, port 8193)
 uses the separate HIP gfx906 build from `ops/models/build-runtime.sh hip`
 and a single local Q6 GGUF in `/home/chris/models/qwen3.8-27b`.
+Its launch arguments enable Flash Attention and use a `q8_0` K and V cache.
+The launcher inspects the GGUF tensor directory before trying embedded
+NextN/MTP with up to two draft tokens. If the MTP server exits before it
+responds successfully to `/health`, the launcher retries within the same
+GPU guard with speculation disabled.
 The model installer schedules the HIP build in the background if the ROCm
 6.3.4 toolchain is present. The gateway routes by stable bot ID. Each model
 server exposes its own slot 0.
@@ -561,7 +566,10 @@ projector on the CPU (`--no-mmproj-offload`).
 
 Each bot has its own KVM guest, bound to the bot's id. The VM name is
 `agentN`, the libvirt domain `magbot-agentN`; the binding never changes with
-a rename.
+a rename. On startup the room provisions a dedicated VM in the background
+for each roster entry with no assigned VM, including bots added from
+`models.json`. The existing guest lifecycle reserves a free name and records
+the assignment once the golden-image spawn succeeds.
 
 ### Image and disks
 

@@ -121,7 +121,7 @@ records of `MAG_DOMAIN` and `*.MAG_BOTS_ZONE` pointed at the new address.
 | `media` | speech recognizer, Blender and its face landmarker (`ops/stt`, `ops/scene`) |
 | `idol` | `ops/idol/env/setup.sh`: the ROCm venv from `requirements.lock`, idol-sdk at its commit with the MI50 patch, TripoSG, all weights including pictures and the paint stage (only with an MI50; H3 videos are the owner's own download) |
 | `deploy` | `ops/deploy.sh`: the release, nginx, the model supervisor (models download now), all services, timers, boot |
-| `bots` | VMs `agent1` (Lena) and `agent2` (Noah) from the golden image |
+| `bots` | Waits for the room to provision one dedicated golden-image VM per bot |
 | `funnel` | Gitea over Tailscale Funnel |
 | `backup` | `ops/backup/install.sh`: nightly room/Gitea, the timers; VM saves and the weekly whole-system backup come with `deploy` |
 | `check` | `ops/health.sh`, boot enablement, where to look next |

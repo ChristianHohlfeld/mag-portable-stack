@@ -677,6 +677,8 @@ private:
       a["enabled"] = jbool(b, "enabled", true);
       // A VM that is being made anew is this bot's already: the host's
       // clean-up of unreferenced VMs (agent-drift) must leave it alone.
+      const std::string pending = jstr(b, "vm_pending");
+      if (!pending.empty()) a["pending_vm"] = pending;
       if (const Val *reset = b.find("reset")) a["pending_vm"] = jstr(*reset, "vm");
       agents.push(a);
     }
@@ -810,9 +812,20 @@ private:
       bots_.push(default_bot("noah", "Noah"));
       changed = true;
     }
-    std::set<std::string> ids;
+    std::set<std::string> ids, assigned_vms;
     for (auto &b : *bots_.arr) {
       ids.insert(jstr(b, "id"));
+      // An interrupted spawn never assigned an owned VM to this bot.
+      // Leave any half-created guest to the host's orphan cleanup.
+      if (!jstr(b, "vm_pending").empty()) {
+        b["vm_pending"] = "";
+        changed = true;
+      }
+      const std::string vm = jstr(b, "vm");
+      if (!vm.empty() && !assigned_vms.insert(vm).second) {
+        b["vm"] = "";
+        changed = true;
+      }
       changed = ensure_self(b) || changed;
     }
     const Val models = model_config();

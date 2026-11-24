@@ -2,7 +2,7 @@
 """mag-modeld contract: a bot starts by itself once its GGUF is complete and
 verified, a partial file is "downloading" (never an error), a wrong checksum
 is never started and never modified, and control verbs reach systemctl."""
-import hashlib, http.server, json, os, pathlib, socket, subprocess, sys, tempfile, threading, time
+import hashlib, http.server, json, os, pathlib, socket, struct, subprocess, sys, tempfile, threading, time
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = pathlib.Path(os.environ.get("MAG_MODELD_BIN", ROOT / "build/mag-modeld"))
@@ -69,6 +69,89 @@ fi
         assert "-DCMAKE_HIP_FLAGS=-fPIC" in log[0], log
         assert "already built" in subprocess.check_output(command, env=env, text=True)
         assert (home / "cmake.log").read_text().splitlines() == log
+
+
+def test_mi50_mtp():
+    defaults = json.loads((ROOT / "ops/models/models.json").read_text())
+    with tempfile.TemporaryDirectory(prefix="model-mtp-") as work:
+        tmp = pathlib.Path(work)
+        launcher = ROOT / "ops/models/run-mi50.sh"
+        model = tmp / "Qwen3.8-27B-Q6_K.gguf"
+        state = tmp / "state"
+        state.mkdir()
+        config = tmp / "models.json"
+        qwen = defaults["bots"]["qwen"]
+        qwen.update(model={"local_dir": work}, cpus=str(min(os.sched_getaffinity(0))),
+                    mmproj=None, port=free_port())
+        qwen["args"] += ["--chat-template", "value with spaces"]
+        defaults.update(runtime=dict(defaults["runtime"], dir=work), state_dir=str(state))
+        config.write_text(json.dumps(defaults))
+        (tmp / "mag-modeld").symlink_to(BIN.resolve())
+        server = tmp / defaults["runtime"]["rev"] / "hip-gfx906/bin/llama-server"
+        server.parent.mkdir(parents=True)
+        server.write_text("""#!/usr/bin/env python3
+import http.server, json, os, sys
+args = sys.argv[1:]
+print(json.dumps(args), flush=True)
+if "--spec-type" not in args:
+    sys.exit(78)  # the guard returns the child status without a relaunch
+if os.environ["TEST_MTP_START"] == "fail":
+    sys.exit(42)
+class Health(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", int(args[args.index("--port") + 1])), Health)
+server.handle_request()
+sys.exit(78)
+""")
+        server.chmod(0o755)
+        lock = tmp / "gpu.lock"
+        lock.touch()
+        (tmp / "gpu.lock.idol").touch()
+        env = dict(os.environ, MAG_MODELS_CONF=str(config), MAG_GPU_LOCK=str(lock),
+                   MAG_H3D_PORT=str(free_port()))
+
+        def string(value):
+            return struct.pack("<Q", len(value)) + value
+
+        def write_gguf(tensor):
+            # A metadata string containing MTP must never trigger detection.
+            contents = b"GGUF" + struct.pack("<IQQ", 3, 1, 1)
+            contents += string(b"tokenizer.example") + struct.pack("<IIQ", 9, 8, 1)
+            contents += string(b"blk.64.nextn.eh_proj.weight")
+            contents += string(tensor) + struct.pack("<IQIQ", 1, 1, 0, 0) + b"\0" * 64
+            model.write_bytes(contents)
+            (state / "qwen.model.ok").write_text(
+                f"{len(contents)} {int(model.stat().st_mtime)} {hashlib.sha256(contents).hexdigest()} {model}\n"
+            )
+
+        def launch(mode):
+            run = subprocess.run(["bash", str(launcher), "qwen"], env=dict(env, TEST_MTP_START=mode),
+                                 text=True, capture_output=True, timeout=10)
+            assert run.returncode == 78, run
+            spec = (state / "slots/qwen/.spec").read_text()
+            return [json.loads(line) for line in run.stdout.splitlines()], spec, run.stderr
+
+        write_gguf(b"blk.0.attn_q.weight")
+        calls, spec, _ = launch("fail")
+        assert len(calls) == 1 and "--spec-type" not in calls[0]
+        assert "draft=0" in spec
+        normal = calls[0]
+        for flag, value in (("--flash-attn", "on"), ("-ctk", "q8_0"), ("-ctv", "q8_0"),
+                            ("--chat-template", "value with spaces"), ("--model", str(model))):
+            assert normal[normal.index(flag) + 1] == value, normal
+
+        write_gguf(b"blk.64.nextn.eh_proj.weight")
+        calls, spec, log = launch("fail")
+        assert calls == [normal + qwen["mtp_args"], normal], calls
+        assert "draft=0" in spec and "retrying llama-server without MTP" in log
+
+        calls, spec, _ = launch("ready")
+        assert calls == [normal + qwen["mtp_args"]], calls
+        assert "draft=4" in spec
 
 
 def main():
@@ -272,4 +355,5 @@ esac
 
 if __name__ == "__main__":
     test_hip_build()
+    test_mi50_mtp()
     main()

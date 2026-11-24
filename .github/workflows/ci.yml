@@ -56,6 +56,9 @@ jobs:
             RoomContract.test_unaddressed_message_is_answered_by_all_bots_then_rests \
             RoomContract.test_named_bot_answers_alone \
             RoomContract.test_third_bot_from_existing_roster_routes_by_id_through_audit \
+            RoomContract.test_new_builtin_bots_get_distinct_vms \
+            RoomContract.test_qwen_vm_migration_enables_tools_and_page_cards \
+            RoomContract.test_html_preview_prompt_without_vm \
             RoomContract.test_autonomous_chat_can_start_without_human_or_browser \
             RoomContract.test_autonomous_chat_respects_paused_bot \
             RoomContract.test_autonomous_peer_can_start_while_other_bot_is_working \

@@ -29,7 +29,7 @@ if getent group magbot >/dev/null; then
 else
   install -d -m 0700 "$STATE/control"
 fi
-for f in run.sh run-mi50.sh gpu-guard.py fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
+for f in run.sh run-mi50.sh gpu-guard.py mi50-mtp.py fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
 # Paths and the unit's user follow this host's owner (ops/host.env).
 # A software deploy must not silently change local model selection.
 # Replace the retired uncensored default once, or on explicit operator request.
@@ -38,14 +38,21 @@ if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e
   chmod 0644 "$LIB/models.json.next"
   mv -f "$LIB/models.json.next" "$LIB/models.json"
 fi
-# Add Qwen on older installs and add vision for the existing default weights.
+# Add Qwen on older installs and backfill defaults for the existing Q6 model.
 mag_render "$SOURCE/ops/models/models.json" |
   jq --slurpfile installed "$LIB/models.json" '
     .bots.qwen as $qwen | $installed[0] |
     if (.bots | has("qwen") | not) then .bots.qwen = $qwen
-    elif (.bots.qwen | .gpu == "mi50" and .model.local_dir == $qwen.model.local_dir and (has("mmproj") | not))
-    then .bots.qwen.mmproj = $qwen.mmproj
-    else empty end
+    elif (.bots.qwen | .gpu == "mi50" and .model.local_dir == $qwen.model.local_dir)
+    then .bots.qwen |= (
+      .mmproj //= $qwen.mmproj |
+      .mtp_args //= $qwen.mtp_args |
+      .args = (reduce range(0; ($qwen.args | length); 2) as $i (.args // [];
+        if any(.[]; split("=")[0] == $qwen.args[$i] or split("=")[0] == (
+          {"--flash-attn":"-fa","-ctk":"--cache-type-k","-ctv":"--cache-type-v"}[$qwen.args[$i]]
+        )) then . else . + $qwen.args[$i:$i+2] end))
+    )
+    end | select(. != $installed[0])
   ' > "$LIB/models.json.next"
 if [[ -s $LIB/models.json.next ]]; then
   chmod 0644 "$LIB/models.json.next"

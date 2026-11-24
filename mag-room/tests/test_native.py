@@ -198,7 +198,7 @@ class FakeBrowser:
 class Room:
     """One magroom process with scripted model servers."""
 
-    def __init__(self, connect_events=True, third_bot=False, **env):
+    def __init__(self, connect_events=True, third_bot=False, provision_vms=False, legacy_qwen=False, **env):
         self.connect_events = connect_events
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="magroom-"))
         self.lena, self.noah, self.idol, self.scene = FakeLlama("Lena"), FakeLlama("Noah"), FakeIdol(), FakeScene()
@@ -215,7 +215,7 @@ class Room:
                         MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_SCENE_URL="http://127.0.0.1:%d" % self.scene.port,
                         MAG_TEST_ALLOW_LOCAL_OWNER="1", MAG_ROOM_VERSION="test",
                         MAG_ROOM_NO_SUDO="1", MAG_ROOM_GUEST_RUN=str(HERE / "fake_guest_run"),
-                        MAG_ROOM_AGENT_CTL="/bin/false", MAG_ROOM_NETMODE="/bin/true",
+                        MAG_ROOM_AGENT_CTL="/bin/false", MAG_ROOM_AUTO_VM="0", MAG_ROOM_NETMODE="/bin/true",
                         FAKE_GUEST_HOME=str(self.tmp / "guests"), MAG_ROOM_GUEST_HOME=str(self.tmp / "guests" / "agent1"),
                         MAG_BOTS_WWW=str(self.tmp / "www"),
                         MAG_ROOM_BRAVE_KEY="", BRAVE_API_KEY="")
@@ -224,7 +224,36 @@ class Room:
         (self.tmp / "state").mkdir()
         # Lena has a (fake) VM, Noah is chat-only.
         bot = lambda id, name, vm: {"id": id, "name": name, "vm": vm, "enabled": True, "thinking": False, "persona": "", "memory": []}
-        (self.tmp / "state" / "bots.json").write_text(json.dumps([bot("lena", "Lena", "agent1"), bot("noah", "Noah", "")]))
+        bots = [bot("lena", "Lena", "agent1"), bot("noah", "Noah", "")]
+        if provision_vms:
+            bots = [bot("lena", "Blake", "agent3"), bot("noah", "Noah", "agent2")] if third_bot else [
+                bot("lena", "Blake", ""), bot("noah", "Noah", "")]
+            guests = self.tmp / "guests"
+            guests.mkdir()
+            for entry in bots:
+                if entry["vm"]:
+                    (guests / entry["vm"]).mkdir()
+            ctl = self.tmp / "agent-ctl"
+            ctl.write_text("""#!/bin/bash
+set -e
+guest=$FAKE_GUEST_HOME/$2
+case "$1" in
+  verify) [[ -d $guest ]] || exit 3 ;;
+  spawn)
+    sleep 0.2
+    mkdir "$guest"
+    printf '%s\n' 'ls www > published.txt' > "$guest/publish-site"
+    echo "$2" >> "$FAKE_GUEST_HOME/spawned"
+    ;;
+  *) exit 1 ;;
+esac
+""")
+            ctl.chmod(0o755)
+            self.env.update(MAG_ROOM_AUTO_VM="1", MAG_ROOM_AGENT_CTL=str(ctl),
+                            MAG_ROOM_GUEST_HOME=str(guests / "agent1"))
+        if legacy_qwen:
+            bots.append(dict(bot("qwen", "Quinn", ""), persona="Eigener Stil", memory=["Bleibt erhalten"]))
+        (self.tmp / "state" / "bots.json").write_text(json.dumps(bots))
         self.qwen = FakeLlama("Qwen") if third_bot else None
         self.gateway = None
         if self.qwen:
@@ -384,11 +413,12 @@ class RoomContract(unittest.TestCase):
         self.addCleanup(self.room.close)
 
     def test_third_bot_from_existing_roster_routes_by_id_through_audit(self):
-        r = Room(third_bot=True)
+        r = Room(third_bot=True, provision_vms=True)
         self.addCleanup(r.close)
+        r.wait(lambda: all(b["vm"] for b in r.state()["bots"]), "dedicated Qwen VM")
         bots = r.state()["bots"]
         self.assertEqual([(b["id"], b["name"], b["vm"]) for b in bots],
-                         [("lena", "Lena", "agent1"), ("noah", "Noah", ""), ("qwen", "Qwen", "")])
+                         [("lena", "Blake", "agent3"), ("noah", "Noah", "agent2"), ("qwen", "Qwen", "agent1")])
         with urllib.request.urlopen(r.gateway_url + "/v1/models", timeout=5) as response:
             self.assertEqual([b["id"] for b in json.load(response)["data"]], ["lena", "noah", "qwen"])
         self.assertEqual(r.say("@Qwen bist du da?")["mentions"], ["qwen"])
@@ -410,12 +440,65 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("PUT", "/api/bot/qwen", {"name": "Quinn"})[0], 200)
         r.stop()
         r.start()
-        self.assertEqual([b["name"] for b in r.state()["bots"]], ["Lena", "Noah", "Quinn"])
+        self.assertEqual([b["name"] for b in r.state()["bots"]], ["Blake", "Noah", "Quinn"])
         r.idle()
         self.assertEqual(r.say("@Quinn weiter?")["mentions"], ["qwen"])
         r.idle()
         self.assertEqual(len(r.qwen.chats()), 2)
         self.assertTrue(any(action == "save" for action, _ in r.qwen.slot_actions))
+
+    def test_new_builtin_bots_get_distinct_vms(self):
+        r = Room(provision_vms=True)
+        self.addCleanup(r.close)
+        r.wait(lambda: all(b["vm"] for b in r.state()["bots"]), "dedicated built-in VMs")
+        self.assertCountEqual([b["vm"] for b in r.state()["bots"]], ["agent1", "agent2"])
+        self.assertCountEqual((r.tmp / "guests" / "spawned").read_text().splitlines(), ["agent1", "agent2"])
+
+    def test_qwen_vm_migration_enables_tools_and_page_cards(self):
+        r = Room(third_bot=True, provision_vms=True, legacy_qwen=True)
+        self.addCleanup(r.close)
+        r.wait(lambda: all(b["vm"] for b in r.state()["bots"]), "migrated Qwen VM")
+        roster = json.loads((r.tmp / "state" / "bots.json").read_text())
+        qwen = next(b for b in roster if b["id"] == "qwen")
+        self.assertEqual((qwen["name"], qwen["vm"], qwen["persona"], qwen["memory"]),
+                         ("Quinn", "agent1", "Eigener Stil", ["Bleibt erhalten"]))
+        guests = r.tmp / "guests"
+        self.assertEqual((guests / "spawned").read_text().splitlines(), ["agent1"])
+        doc = "<!doctype html><html><head><title>Qwen Demo</title></head><body>Hallo</body></html>"
+        r.qwen.reply = lambda body: "```html\n" + doc + "\n```"
+        r.say("@Quinn bau eine Demo")
+        r.idle()
+        block = [m for m in r.messages() if m["from"] == "qwen"][-1]["pages"][0]
+        self.assertEqual((block["bot"], block["title"]), ("qwen", "Qwen Demo"))
+        self.assertIn("Hallo", (guests / "agent1" / "www" / block["path"]).read_text())
+
+        target = guests / "agent1" / "www" / "demo.html"
+        calls = iter([{"content": "", "tool_calls": [{"name": "write_file", "arguments": {
+            "path": str(target), "content": doc}}]}, "Fertig."])
+        r.qwen.reply = lambda body: next(calls)
+        r.say("@Quinn veröffentliche demo.html")
+        r.idle()
+        card = [m for m in r.messages() if m["from"] == "qwen"][-1]["pages"][0]
+        self.assertEqual((card["bot"], card["path"], card["title"]), ("qwen", "demo.html", "Qwen Demo"))
+        self.assertEqual(target.read_text(), doc)
+        self.assertIn("demo.html", (guests / "agent1" / "published.txt").read_text())
+        request = r.qwen.chats()[-1]
+        self.assertTrue({"write_file", "shell"} <= {t["function"]["name"] for t in request["tools"]})
+        self.assertIn("/home/bot/www/", text_of(request["messages"][0]["content"]))
+        self.assertIn("Chat-Vorschau", text_of(request["messages"][0]["content"]))
+
+    def test_html_preview_prompt_without_vm(self):
+        r = self.room
+        r.say("@Noah bau eine Demo")
+        r.idle()
+        request = r.noah.chats()[-1]
+        prompt = text_of(request["messages"][0]["content"])
+        self.assertIn("vollständige, eigenständige Demo", prompt)
+        self.assertIn("mit ```html eröffneten und mit ``` geschlossenen Codeblock", prompt)
+        self.assertIn("Chat-Vorschau", prompt)
+        self.assertIn("Fordere Chris nie auf, den Code als Datei zu speichern.", prompt)
+        self.assertNotIn("/home/bot/www/", prompt)
+        self.assertFalse({"write_file", "shell"} & {t["function"]["name"] for t in request["tools"]})
 
     def test_thinking_capability_survives_room_only_deploy_without_modeld_restart(self):
         """The current release has explicit model capabilities, while the

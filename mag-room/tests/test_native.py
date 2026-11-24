@@ -639,11 +639,32 @@ class RoomContract(unittest.TestCase):
             "pass_enabled": False, "bot_rounds": 1})[0], 200)
         r.say("Lena, wie geht es dir?")
         r.idle()
-        self.assertEqual(len(r.noah.chats()), 2,
-                         "do not spend unlimited CPU attempts on a non-cooperating model")
-        self.assertTrue(any(m["state"] == "error" and "technisch unterbrochen" in m["text"]
-                            for m in r.messages() if m["from"] == "noah"))
+        self.assertEqual(len(r.noah.chats()), 8,
+                         "tolerate eight completed unusable decisions before yielding")
+        self.assertFalse(any(m["state"] == "error" for m in r.messages() if m["from"] == "noah"))
+        self.assertEqual(r.texts("noah"), [], "no fabricated assistant speech")
         self.assertNotIn("PASS", " ".join(r.texts()))
+
+    def test_autonomous_tolerates_multiple_unusable_decisions_and_short_reply(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+        attempts = [0]
+        def respond(body):
+            attempts[0] += 1
+            return "PASS" if attempts[0] <= 4 else "Ja."
+        r.lena.reply = respond
+        r.noah.reply = lambda body: "Verstanden."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False,
+            "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" and m["state"] == "done" for m in r.messages()),
+               "peer after four invalid decisions", 40)
+        r.idle()
+        self.assertEqual(attempts[0], 5)
+        self.assertEqual(r.texts("lena"), ["Ja."])
+        self.assertEqual(r.texts("noah"), ["Verstanden."])
+        self.assertTrue(r.state()["settings"]["auto_chat"])
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
     def test_autonomous_round_limit_counts_followups_not_the_opener(self):
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
@@ -1466,11 +1487,12 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
         w = r.api("GET", "/api/bot/lena/will")[1]
-        self.assertEqual((w["status"], w["steps"], w["last_ok"]), ("blocked", 2, False))
+        self.assertEqual((w["status"], w["steps"], w["last_ok"]), ("open", 9, False))
         steps = [p for m in r.messages() if m["from"] == "lena"
                  for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
-        self.assertEqual(len(steps), 2, "only actual failed commands, no permission-error cards")
-        self.assertTrue(any("MAG-Arbeitsstand" in m.get("text", "") for m in r.messages()))
+        self.assertEqual(len(steps), 9, "initial observation plus eight unchanged outcomes")
+        self.assertFalse(any("MAG-Arbeitsstand" in m.get("text", "") for m in r.messages()))
+        self.assertTrue(r.state()["settings"]["auto_chat"] is False)
 
     def test_autonomous_work_without_goal_has_no_special_step_cap(self):
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")

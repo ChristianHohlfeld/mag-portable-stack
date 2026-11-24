@@ -338,11 +338,13 @@ public:
   }
 
   // Routines are targeted owner instructions, not room-wide human turns.
-  void on_routine(const std::string &id) {
+  void on_routine(const std::string &id, const std::string &instruction) {
     std::lock_guard<std::mutex> lk(mu_);
     Bot *b = find(id);
     if (!b || !jbool(room_.bot(id), "enabled", true)) return;
     b->routine_pending = true;
+    if (!b->routine_instruction.empty()) b->routine_instruction += "\n";
+    b->routine_instruction += instruction;
     if ((b->running == "autonomous" || b->running == "bot") && b->cancel && !b->warming)
       b->cancel->stop();
     if (b->want && (b->reason == "autonomous" || b->reason == "bot")) b->want = false;
@@ -367,6 +369,7 @@ public:
       if (!bot.empty() && b->id != bot) continue;
       b->want = false;
       b->routine_pending = false;
+      b->routine_instruction.clear();
       b->auto_started_ms = now_ms();
       if (bot.empty()) auto_last_ms_ = b->auto_started_ms;
       b->continues = 0;
@@ -403,6 +406,7 @@ public:
       for (auto &b : bots_) {
         b->want = false;
         b->routine_pending = false;
+        b->routine_instruction.clear();
         b->continues = 0;
         if (b->cancel) b->cancel->stop();
         b->reset_pending = true;
@@ -923,6 +927,7 @@ private:
     // --- guarded by Engine::mu_ ---
     bool want = false;
     bool routine_pending = false;
+    std::string routine_instruction;
     int64_t auto_started_ms = 0, running_since_ms = 0;
     std::string reason;          // why the next turn runs: human | bot | continue
     std::string running;         // reason of the running turn, "" when idle
@@ -3222,7 +3227,7 @@ private:
     load_goal(b);
     take_up(b);
     while (true) {
-      std::string reason;
+      std::string reason, routine_instruction;
       uint64_t reset_epoch = 0;
       bool warm = false, see = false, wiping = false;
       std::vector<std::shared_ptr<Look>> looks;
@@ -3248,6 +3253,7 @@ private:
           b.cancel = std::make_shared<Cancel>();
         } else if (b.routine_pending && !b.resetting && !(b.want && b.reason == "human")) {
           b.routine_pending = false;
+          routine_instruction.swap(b.routine_instruction);
           reason = "human";
           b.running = "routine";
           b.running_since_ms = now_ms();
@@ -3289,7 +3295,7 @@ private:
       } else if (!reason.empty()) {
         apply_forget(b);
         try {
-          turn(b, reason);
+          turn(b, reason, routine_instruction);
           // Whatever the turn left undescribed (see turn()) is described now.
           const Val me = room_.bot(b.id);
           if (me.isObj() && jbool(me, "enabled", true) && model_state(b.id) == "ready") describe_images(b, me);
@@ -3563,7 +3569,7 @@ private:
     return text;
   }
 
-  void turn(Bot &b, const std::string &reason) {
+  void turn(Bot &b, const std::string &reason, const std::string &routine_instruction = "") {
     const Val me = room_.bot(b.id);
     if (!me.isObj() || !jbool(me, "enabled", true)) return;
     double since = 0;
@@ -3653,7 +3659,7 @@ private:
     // while it described an image for the other bot.
     bool from_chris = false;
     const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "", &from_chris);
-    const bool read_before = jbool(b.wire, "fresh") || reason == "autonomous" ||
+    const bool read_before = !routine_instruction.empty() || jbool(b.wire, "fresh") || reason == "autonomous" ||
                              (reason == "bot" && autonomous_round);
     b.wire["fresh"] = false;
     const int tries = b.cut_off;
@@ -3665,7 +3671,7 @@ private:
     // result) is read, not answered a second time.
     const bool answered = b.read_at_work && !from_chris && !read_before;
     b.read_at_work = false;
-    if (reason == "human" && answered) return;
+    if (reason == "human" && answered && routine_instruction.empty()) return;
     // From here the bot is at work, and the log says so. A restart of the
     // room (every deploy is one) that cuts the turn off leaves the mark, and
     // the room that starts takes the turn up again (see work()).
@@ -3799,6 +3805,12 @@ private:
         hint["content"] = will_retry_note;
         body["messages"].push(hint);
         will_retry_note.clear();
+      }
+      if (!routine_instruction.empty() && step == 0) {
+        Val cue = Val::object();
+        cue["role"] = "user";
+        cue["content"] = "(Aktuell fällige Routine, nur für dich, von Chris eingerichtet. Bearbeite sie jetzt, ohne einen früheren Auftrag zu wiederholen.)\n" + routine_instruction;
+        body["messages"].push(cue);
       }
       if (reason == "bot" || reason == "autonomous") {
         Val cue = Val::object();

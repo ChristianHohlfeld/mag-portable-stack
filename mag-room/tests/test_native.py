@@ -1519,6 +1519,18 @@ class RoomContract(unittest.TestCase):
         steps = [p for m in r.messages() if m["from"] == "lena"
                  for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
         self.assertEqual([p["state"] for p in steps], ["ok"] * 6)
+        wire_path = r.tmp / "state" / "wire" / "lena.json"
+        driver = json.loads(wire_path.read_text())["state_driver"]
+        self.assertEqual(driver["direction_key"], "exploration")
+        self.assertEqual(driver["revision"], 8)
+        # A read after a verified write of the same path/hash is not a
+        # different file state. A new command name is not evidence either.
+        self.assertFalse(driver["new_observation"])
+        self.assertEqual(driver["last_evidence"]["kind"], "read_verified")
+        self.assertEqual(len(driver["history"]), 2)
+        r.stop()
+        r.start()
+        self.assertEqual(json.loads(wire_path.read_text())["state_driver"], driver)
 
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room

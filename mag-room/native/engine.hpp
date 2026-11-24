@@ -1149,6 +1149,9 @@ private:
       s += "\nWerkzeuge\n"
            "- Du hast eine eigene Linux-VM (Benutzer bot, Home /home/bot) mit Shell, Dateien und einem echten Chrome-Browser. Chris sieht jeden Schritt live mit Befehl, Ausgabe und Laufzeit und kann ihn abbrechen.\n"
            "- Nutze Werkzeuge, statt Handlungen nur zu beschreiben, und schreibe vor dem ersten Werkzeug einen kurzen Satz, was du vorhast. Behaupte kein Ergebnis, das kein Werkzeug geliefert hat.\n"
+           "- Realitätscheck beim Coding: Chat-Code, Gedanken, Beispiele, Pläne und eigene Aussagen sind ENTWURF, keine Dateisystem-Beobachtung. Zu Beginn jedes Zugs ist der aktuelle Zustand ungeprüft. Nur echte Werkzeugresultate des Raums belegen, was in welcher VM passiert ist.\n"
+           "- read_file beobachtet eine vorhandene Datei mit Pfad und SHA-256. write_file schreibt und liest den Inhalt automatisch zurück; nur ein bestätigter Hash belegt den Schreibvorgang. shell führt einen echten Befehl aus; ein Exit-Code allein beweist weder Dateiinhalte noch, dass ein Programm fachlich funktioniert. Prüfe nach Shell-Änderungen die betroffenen Dateien mit read_file.\n"
+           "- Für eine Erfolgsaussage über funktionsfähigen Code führe die passenden Tests/Builds tatsächlich aus, lies deren Ausgabe, und prüfe das Ergebnis gegen die Anforderungen. Ein echo, ein Codeblock, ein Tool-Aufruf ohne Ergebnis oder ein früheres Ergebnis belegt keine aktuelle Ausführung. Ohne Beleg sag konkret: Entwurf, nicht gespeichert, nicht geprüft oder nicht getestet. Ein Git-Commit, Push oder Deployment ist eine eigene Handlung mit eigenem Nachweis; ein VM-Pfad ist kein Host- oder GitHub-Pfad.\n"
            "- Trägt Chris dir etwas auf, verfolgst du das Ziel selbst bis zum Ende: Schritt für Schritt, nach einem Fehler neu hinsehen und einen anderen Weg nehmen, nie mitten drin aufhören. Nur eine echte Sperre (Anmeldung, Freigabe, Bezahlung) gibst du über ihre Karte an Chris. Am Ende ein, zwei Sätze auf Deutsch mit dem Ergebnis. Führt schon der andere Bot die Aufgabe aus, machst du sie nicht noch einmal.\n"
            "- Kartendaten tippst du nie: an der Kasse rufst du browser_pay auf.\n"
            "- Nach zweimal demselben Fehler prüfst du die Ursache, statt blind zu wiederholen. Eine Zugriffssperre einer Website ist kein Cookie-Problem, solange nichts darauf hinweist. Login, CAPTCHA und 2FA umgehst du nicht: dafür rufst du browser_login auf (keine Freigabe nötig), Chris erledigt es auf der Karte.\n"
@@ -1160,7 +1163,7 @@ private:
            "- Dateien aus dem Chat liegen in deiner VM unter /home/bot/room/. Mit share_file zeigst du Chris eine Datei. " +
            std::string(sees(id) ? "Bilder aus dem Chat siehst du direkt." : "Bilder siehst du nicht selbst: du bekommst eine Beschreibung, und read_image liest Text in einem Bild.") + "\n"
            "- Wenn Chris eine Webseite, Demo oder ein Spiel als HTML verlangt, liefere eine vollständige HTML-Datei: entweder als ```html-Codeblock in deiner Antwort oder mit write_file nach /home/bot/www/<name>.html. "
-           "Beides erscheint automatisch auf deiner Website " + site::base_url(me) + " und läuft bei Chris direkt im Chat als Live-Vorschau; Skripte von CDNs sind erlaubt. Mache davon keine Screenshots.\n"
+           "Bei einem Codeblock erfolgt die automatische Speicherung erst nach deiner Antwort; behaupte davor keine bestätigte Speicherung oder Prüfung. Beides erscheint bei erfolgreicher Veröffentlichung automatisch auf deiner Website " + site::base_url(me) + " und läuft bei Chris direkt im Chat als Live-Vorschau; Skripte von CDNs sind erlaubt. Mache davon keine Screenshots.\n"
            "- Braucht dein Auftrag nach einem erfolgreichen Werkzeugschritt noch einen konkreten weiteren Schritt, den du in dieser Antwort nicht mehr schaffst, beende sie mit " + std::string(kContinue) + ". Sonst nie.\n";
     else
       s += "\nDu hast keine eigene VM: keine Shell, kein Browser. Behaupte nie, etwas ausgeführt oder geöffnet zu haben.\n";
@@ -3216,6 +3219,7 @@ private:
     Val self_orientation;    // structured, server-generated cue, never model reasoning
     bool visible = false;
     bool ok_tool = false;
+    int fs_reads = 0, fs_writes = 0, fs_commands = 0; // only actual receipts in this turn
     bool last_ok = true;     // how the last tool call went
     bool blocked = false;    // a card ended without a yes (consent, login): a real blocker
     int drives = 0;          // times the room sent the bot back to its goal in this turn
@@ -3456,7 +3460,7 @@ private:
             "Eine prüfbare Idee nicht nur ankündigen: Setze ein eigenes Ziel mit Abschlusskriterium und arbeite daran weiter, bevor du neue Experimente vorschlägst. "
             "Frage nur nach, wenn wirklich eine Information oder Freigabe fehlt. Keine alten Nutzeraufträge ausführen. "
             "Eigene Ziele mit will_set/will_progress/will_finish/will_drop verfolgen; bei offenem eigenen Ziel "
-            "höchstens EIN shell oder write_file in der eigenen VM, sonst keine Werkzeuge. " +
+            "höchstens EIN shell, read_file oder write_file in der eigenen VM, sonst keine Werkzeuge. " +
             std::string(pass_enabled
                 ? "Wenn die Unterhaltung erschöpft ist, antworte exakt PASS; diese Antwort bleibt unsichtbar."
                 : "PASS und eigene Beendigungsentscheidungen sind deaktiviert: Fuehre den Dialog mit einem eigenen Gedanken oder einer konkreten Anschlussfrage fort. Nur Chris, das eingestellte Rundenlimit oder technische Fehler beenden die Folge.") +
@@ -3480,7 +3484,7 @@ private:
         "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
         "Keine ausstehenden Nutzeraufträge neu ausführen, keine Webseitenaktionen. "
         "Nutze für ein selbst gewähltes prüfbares Vorhaben will_set mit konkretem Abschlusskriterium, "
-        "bei offenem Ziel genau einen shell- oder write_file-Schritt in deiner VM, "
+        "bei offenem Ziel genau einen shell-, read_file- oder write_file-Schritt in deiner VM, "
         "sonst keine Werkzeuge. " +
         std::string(pass_enabled
             ? "Wenn dir nichts Sinnvolles einfällt, antworte exakt PASS; die Antwort bleibt unsichtbar."
@@ -3636,7 +3640,7 @@ private:
             ? "(Interne Selbstgesprächsrunde, kein Auftrag von Chris: Dein eigenes Ziel ist offen: „" +
               clip(jstr(current_will, "text"), 800) + "“. Abschluss: „" +
               clip(jstr(current_will, "done_when"), 600) +
-              "“. Setze es mit höchstens EINEM echten shell- oder write_file-Schritt "
+              "“. Setze es mit höchstens EINEM echten shell-, read_file- oder write_file-Schritt "
               "in deiner VM fort, statt etwas nur anzukündigen. "
               "Prüfe das tatsächliche Ergebnis am Abschlusskriterium; dokumentiere Fortschritt mit will_progress, beende mit will_finish erst bei erreichtem Kriterium oder gib ein widerlegtes Vorhaben mit will_drop auf. "
                "Andere Werkzeuge bleiben verboten. Danach kannst du kurz mit dem anderen Bot sprechen.)"
@@ -3688,7 +3692,7 @@ private:
         inner["content"] = "(PRIVATE SELBSTORIENTIERUNG, keine Nachricht von Chris; "
             "nur dieser Modellanfrage beigefügt, nicht Teil des Gesprächslogs. " +
             paragraph + " Diese Orientierung nicht ausgeben. "
-            "Werkzeuge nur als echte native Aufrufe, niemals als JSON-Text oder Python.)";
+            "Werkzeuge nur als echte native Aufrufe, niemals als JSON-Text oder Python. Ohne echten Realitätscheck in diesem Zug sind aktuelle Dateiinhalte und ausgeführte Arbeit ungeprüft.)";
         // Put the request-only orientation after the stable system prefix,
         // before the append-only chat. A tail injection masquerades as the
         // latest user/tool instruction and breaks the warm KV-prefix across
@@ -3951,7 +3955,7 @@ private:
           break;
         }
         will_retry_note = "(Notiz des Raums, nicht von Chris: Eine Ankündigung ist kein "
-                          "Fortschritt. Nutze jetzt genau EINEN echten shell- oder "
+                          "Fortschritt. Nutze jetzt genau EINEN echten shell-, read_file- oder "
                           "write_file-Aufruf in deiner VM oder gib das Ziel mit will_drop auf.)";
         continue;
       }
@@ -3966,7 +3970,7 @@ private:
       const bool permitted_will_call = own_chat &&
           std::all_of(res.calls.begin(), res.calls.end(), [&](const llm::ToolCall &call) {
             if (is_will_tool(call.name)) return true;
-            return !will_action_used && (call.name == "shell" || call.name == "write_file") &&
+            return !will_action_used && (call.name == "shell" || call.name == "write_file" || call.name == "read_file") &&
                    vm::valid_name(jstr(me, "vm")) &&
                    jstr(will_at_request, "status") == "open" &&
                    jstr(room_.will(b.id), "status") == "open" &&
@@ -3974,7 +3978,7 @@ private:
                    jstr(room_.will(b.id), "by") == jstr(will_at_request, "by");
           }) &&
           std::count_if(res.calls.begin(), res.calls.end(), [](const llm::ToolCall &c) {
-            return c.name == "shell" || c.name == "write_file";
+            return c.name == "shell" || c.name == "write_file" || c.name == "read_file";
           }) <= (will_action_used ? 0 : 1);
       const bool forbidden_tool = bot_dialogue && !res.calls.empty() && !permitted_will_call;
       const std::string candidate = trim(strip_self(strip_markers(res.content), name, names()));
@@ -4008,7 +4012,7 @@ private:
         correction["content"] = forbidden_tool
             ? "(Notiz des Raums, nicht von Chris: Dieser Werkzeugaufruf ist im Bot-Gespräch "
               "nicht erlaubt. Er wurde nicht ausgeführt. Nur Zielwerkzeuge und bei offenem eigenen "
-              "Ziel ein einzelner VM-Schritt shell/write_file sind zulässig. Antworte ohne weiteren "
+              "Ziel ein einzelner VM-Schritt shell/read_file/write_file sind zulässig. Antworte ohne weiteren "
               "verbotenen Werkzeugaufruf.)"
             : "(Notiz des Raums, nicht von Chris: PASS und eigene Beendigungsentscheidungen "
               "sind ausgeschaltet. Deine letzte Ausgabe wurde verworfen. Fahre jetzt mit "
@@ -4287,13 +4291,13 @@ private:
                                jstr(room_.will(b.id), "status") == "open" &&
                                jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
                                jstr(room_.will(b.id), "by") == jstr(will_at_request, "by");
-        const bool vm_step = (c.name == "shell" || c.name == "write_file") &&
+        const bool vm_step = (c.name == "shell" || c.name == "write_file" || c.name == "read_file") &&
                              !will_action_used && vm::valid_name(jstr(me, "vm")) && same_will;
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
         } else if (bot_dialogue && !(own_chat && (is_will_tool(c.name) || vm_step))) {
           // All unattended access is denied except the explicit will
-          // transitions and ONE VM-local shell/write_file per bot round.
+          // transitions and ONE VM-local shell/read_file/write_file per bot round.
           result = tools::fail("Selbstgespräch: nur eigenes Ziel und höchstens ein eigener VM-Schritt erlaubt.");
           t.stop_after = true;
         } else if (is_will_tool(c.name)) {
@@ -4719,7 +4723,7 @@ private:
             result = tools::fail(e.what());
           }
         }
-        if (bot_dialogue && (c.name == "shell" || c.name == "write_file") && own_chat &&
+        if (bot_dialogue && (c.name == "shell" || c.name == "write_file" || c.name == "read_file") && own_chat &&
             !will_action_used && jstr(will_at_request, "status") == "open" &&
             jstr(room_.will(b.id), "status") == "open" &&
             jstr(room_.will(b.id), "text") == jstr(will_at_request, "text") &&
@@ -4738,6 +4742,34 @@ private:
           });
         }
         const bool was_cancelled = cancel->stopped();
+        const bool fs_call = c.name == "shell" || c.name == "read_file" || c.name == "write_file";
+        std::string fs_receipt;
+        if (fs_call) {
+          const std::string kind = was_cancelled ? "" : jstr(result.fs_evidence, "kind");
+          Val receipt = Val::object();
+          receipt["vm"] = jstr(me, "vm");
+          receipt["tool"] = c.name;
+          receipt["kind"] = kind.empty() ? "unverified" : kind;
+          if (kind == "read_verified" || kind == "write_verified") {
+            receipt["path"] = jstr(result.fs_evidence, "path");
+            receipt["sha256"] = jstr(result.fs_evidence, "sha256");
+            receipt["bytes"] = *result.fs_evidence.find("bytes");
+            if (kind == "read_verified") ++t.fs_reads;
+            else ++t.fs_writes;
+          } else if (kind == "command_exited") {
+            receipt["exit"] = jnum(result.fs_evidence, "exit");
+            ++t.fs_commands;
+          }
+          fs_receipt = "\n\n[MAG Realitätscheck – vom Raum erzeugt, nicht vom Modell] " + mj::dump(receipt);
+          fs_receipt += "\nIn diesem Zug: " + std::to_string(t.fs_reads) + " bestätigte Dateilesungen, " +
+                        std::to_string(t.fs_writes) + " bestätigte Schreibvorgänge, " +
+                        std::to_string(t.fs_commands) + " beendete Shell-Aufrufe. ";
+          fs_receipt += kind.empty() ? "Dieser Zugriff ist NICHT bestätigt. " :
+                        kind == "command_exited" ? "Nur Ausführung und Exit-Code belegt; keine automatische Funktionsprüfung. " :
+                        "Nur die konkrete Datei zu diesem Zeitpunkt belegt; kein automatischer Funktionstest. ";
+          fs_receipt += "Behaupte nur, was diese konkreten Nachweise tragen.";
+          room_.update_step(t.id, index, [&](Val &s) { s["fs_evidence"] = receipt; });
+        }
         room_.update_step(t.id, index, [&](Val &s) {
           s["state"] = was_cancelled ? "cancelled" : result.ok ? "ok" : "error";
           s["t1"] = (double)now_ms();
@@ -4794,7 +4826,7 @@ private:
         tr["role"] = "tool";
         tr["tool_call_id"] = c.id;
         tr["name"] = c.name;
-        tr["content"] = result.text;
+        tr["content"] = result.text + fs_receipt;
         tr["_turn"] = t.token;
         // Optional vision is only sent to a model with a loaded projector
         // (or an explicit test override), never enabled on CPU by default.
@@ -4961,8 +4993,19 @@ private:
         logf("engine: " + b.id + " page " + name + " not written: " + clip(trim(saved.out), 300));
         continue;
       }
+      const Val seen = tools::observe_file(guests_, vm, "www/" + name, true);
+      if (!seen.isObj() || jstr(seen, "sha256") != sha256_hex(doc) ||
+          jnum(seen, "bytes") != (double)doc.size()) {
+        logf("engine: " + b.id + " page " + name + " readback not verified");
+        continue;
+      }
       Val page = site::page(b.id, name, title);
       page["sig"] = site::sig(block.code);
+      page["fs_evidence"] = Val::object();
+      page["fs_evidence"]["kind"] = "write_verified";
+      page["fs_evidence"]["vm"] = vm;
+      page["fs_evidence"]["path"] = jstr(seen, "path");
+      page["fs_evidence"]["sha256"] = jstr(seen, "sha256");
       pages.push_back(page);
     }
     if (pages.empty()) return;

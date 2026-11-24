@@ -667,7 +667,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(sorted(m["from"] for m in messages), ["lena", "noah"])
         self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
 
-    def test_autonomous_external_tool_call_cannot_end_dialogue_or_run_tool(self):
+    def test_autonomous_tool_call_cannot_end_dialogue_or_run_tool(self):
         """The first bot's prefatory text and native tool call must be
         rejected before a chat bubble or tool execution is persisted."""
         r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")

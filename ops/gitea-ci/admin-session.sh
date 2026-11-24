@@ -14,9 +14,10 @@ cli create --username "$admin" --email "$admin@mag.local" --random-password --ra
 cli generate-access-token --username "$admin" --token-name setup --scopes write:admin,write:repository,write:organization,read:user --raw > "$session/token"
 printf 'Authorization: token %s\n' "$(tr -d '\r\n' < "$session/token")" > "$session/header"
 api() {
- local method=$1 path=$2 body=${3:-} code
+ local method=$1 path=$2 body=${3:-}
+ api_status=""
  local args=(-sS --max-time 30 -o "$session/reply" -w '%{http_code}' -X "$method" -H @"$session/header" -H 'Content-Type: application/json')
  [[ -z $body ]] || args+=(--data-binary @"$body")
- code=$(curl "${args[@]}" "http://127.0.0.1:3000/api/v1$path")
- [[ $code =~ ^2[0-9][0-9]$ ]] || { echo "Gitea setup API failed: HTTP $code" >&2;return 1; }
+ api_status=$(curl "${args[@]}" "http://127.0.0.1:3000/api/v1$path") || { api_status=""; return 1; }
+ [[ $api_status =~ ^2[0-9][0-9]$ ]] || { echo "Gitea setup API failed: HTTP $api_status" >&2;return 1; }
 }

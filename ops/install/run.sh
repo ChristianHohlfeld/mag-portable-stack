@@ -89,6 +89,10 @@ p_users() {
   install -d -m 0755 /etc/magbot /etc/mag-stack
   [[ -e /etc/magbot/config.json ]] || install -m 0644 "$REPO/ops/vm/config.json" /etc/magbot/config.json
   usermod -aG libvirt,kvm "$OWNER"
+  if (( PROBE )); then
+    install -d /etc/systemd/system.control/mag-120.service.d
+    printf '[Service]\nEnvironment=MAG_ROOM_AUTO_VM=0\n' > /etc/systemd/system.control/mag-120.service.d/91-trial-vms.conf
+  fi
   # A trial machine has no CPUs 28-55 and one NUMA node: the services run on
   # whatever it has (persistent control drop-ins; deploys leave them alone).
   if (( PROBE )) && ! taskset -c 28-55 true 2>/dev/null; then
@@ -262,23 +266,13 @@ p_deploy() {
   MAG_DEPLOY_NO_INGRESS=$PROBE MAG_BUILD_JOBS=$JOBS MAG_BUILD_CPUS=$CPUS bash "$REPO/ops/deploy.sh"
 }
 
-# Lena and Noah get their VMs (agent1, agent2) from the golden image.
+# The room creates and binds a dedicated Golden Image guest for each bot.
 p_bots() {
   local state=/var/lib/magbot/room/bots.json
-  for _ in $(seq 1 30); do [[ -s $state ]] && break; sleep 2; done
-  [[ -s $state ]] || stop 'the room has not written bots.json yet (journalctl -u mag-120)'
-  local n=1 bot vm
-  for bot in lena noah; do
-    vm=$(jq -r --arg b "$bot" '.[] | select(.id==$b) | .vm // ""' "$state")
-    if [[ -z $vm ]]; then
-      vm=agent$n
-      /usr/local/sbin/magbot-agent-ctl verify "$vm" >/dev/null 2>&1 || /usr/local/sbin/magbot-agent-ctl spawn "$vm"
-      systemctl stop mag-120
-      jq --arg b "$bot" --arg vm "$vm" 'map(if .id==$b then .vm=$vm else . end)' "$state" > "$state.new"
-      chown magbot:magbot "$state.new"; mv "$state.new" "$state"
-      systemctl start mag-120
-    fi
-    n=$((n + 1))
+  local deadline=$((SECONDS + 1200))
+  until jq -e 'length > 0 and all(.[]; (.vm // "") != "")' "$state" >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || stop 'bot VMs are not ready (journalctl -u mag-120)'
+    sleep 2
   done
 }
 
@@ -310,7 +304,7 @@ p_check() {
 
 MAG is installed. https://$MAG_DOMAIN from a device of the tailnet.
  - The models download now (about 400 GB): /usr/local/lib/mag-models/mag-modeld status
- - Bot VMs: agent1 (Lena), agent2 (Noah); each bot's sheet shows its VM.
+ - Bot VMs: each bot's sheet shows its own VM.
  - Backups: nightly room/Gitea, nightly VM saves, weekly whole system
    (connect a disk at /mnt/mag-backup or set MAG_SYSTEM_REPO, docs/OPERATIONS.md).
 EOF

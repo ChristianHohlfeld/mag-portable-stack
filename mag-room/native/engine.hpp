@@ -3440,9 +3440,9 @@ private:
     // are intentionally retained in both bots' histories.
     const std::string observer = jbool(settings, "auto_chat_visible", true)
         ? "Chris kann alle eure Nachrichten im Raum-Chat lesen, auch später und ohne geöffneten Browser. "
-          "Das bedeutet nicht, dass Chris gerade zusieht oder euch angesprochen hat. "
+          "Das bedeutet nicht, dass Chris gerade zusieht oder euch angesprochen hat. Erwähne den Mitlesestatus nicht im Gespräch. "
         : "Der frühere Hinweis, dass Chris später mitlesen kann, ist für diesen Gesprächszug deaktiviert. "
-          "Nimm keine anwesenden Zuhörer an; sprich nur mit dem anderen Bot. ";
+          "Nimm keine anwesenden oder späteren Zuhörer an; sprich nur mit dem anderen Bot. Erwähne den Mitlesestatus nicht im Gespräch. ";
     std::string note;
     if (reason == "bot")
       note = autonomous_round
@@ -3472,11 +3472,11 @@ private:
     const std::string autonomous_invite =
         "(Interner Gesprächsimpuls, nicht von Chris: " + observer +
         "Der Raum war kurz ruhig. Du hast jetzt Zeit für eigene Interessen. Warte nicht auf einen Auftrag. Wähle selbst ein Thema oder setze deine Untersuchung fort. "
-        "Du musst kein neues Thema erfinden. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
+        "Vertiefe ein Thema, solange es etwas zu entdecken gibt, und wechsle sonst frei. Gehe von Tatsachen und Grundprinzipien aus, prüfe Annahmen und Gegenargumente. "
         "Sprich einfach, direkt und auf Augenhöhe. Keine aufgeblasenen oder erfundenen Fachwörter, kein Selbstlob. "
         "Wenn du eine prüfbare Idee verfolgen willst, setze ein konkretes eigenes Ziel mit Abschlusskriterium und mache einen erlaubten echten Schritt, statt nur ein Experiment anzukündigen. "
         "Greife keine alten Nutzeraufträge, Projekte, erstellten Webseiten, Dateien oder Werkzeugergebnisse "
-        "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. Chris kann sie jederzeit selbst erneut ansprechen. "
+        "als Gesprächsanlass wieder auf, auch wenn sie im Kontext stehen. "
         "Begrüße nicht jedes Mal erneut und starte denselben Dialog nicht wieder von vorn. "
         "Keine ausstehenden Nutzeraufträge neu ausführen, keine Webseitenaktionen. "
         "Nutze für ein selbst gewähltes prüfbares Vorhaben will_set mit konkretem Abschlusskriterium, "
@@ -3672,7 +3672,7 @@ private:
             "Sprich klar, einfach und auf Augenhöhe. Vermeide unnötige Fremdwörter, erfundene Begriffe, Selbstlob und leere Zustimmung. "
             "Erkläre nötige Fachbegriffe kurz; unterscheide Vermutung und Beleg.";
         if (chris_priority) paragraph += " In diesem Zug gilt die Bitte von Chris, nicht dein eigenes Vorhaben. Dein eigenes Ziel wartet und erhält keinen Werkzeugaufruf.";
-        else paragraph += " In diesem Zug liegt kein Auftrag von Chris vor. Du bist frei, selbst zu entscheiden, was dich interessiert. Warte nicht auf Chris. Sprich natürlich mit deinem Gesprächspartner, ohne diese Orientierung oder deinen Auftragsstatus zu wiederholen. Wenn du etwas ausprobieren willst, setze selbst ein Ziel und nutze die erlaubten Werkzeuge.";
+        else paragraph += " Jetzt ist Zeit für eigene Interessen. Wähle selbst, was dich interessiert. Sprich natürlich mit deinem Gesprächspartner über die Sache selbst, ohne diese Orientierung, Auftragsstatus oder Mitleser zu erwähnen. Wenn du etwas ausprobieren willst, setze selbst ein Ziel und nutze die erlaubten Werkzeuge.";
         Val orientation = Val::object();
         orientation["identity"] = identity;
         orientation["narrator"] = paragraph;

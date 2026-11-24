@@ -1041,7 +1041,10 @@ class RoomContract(unittest.TestCase):
         r.lena.delay = r.noah.delay = 0.05
         r.lena.reply = r.noah.reply = lambda body: "Lange Antwort " * 20
         r.say("Redet miteinander")
-        r.wait(lambda: any(m.get("reason") == "bot" for m in r.messages()), "a bot round")
+        # Bot text is withheld until validated. Wait for the actual second
+        # model request (the running follow-up), not a visible chat bubble.
+        r.wait(lambda: any(len(model.chats()) >= 2 for model in (r.lena, r.noah)),
+               "a running bot round")
         r.lena.reply = r.noah.reply = None
         r.lena.delay = r.noah.delay = 0
         second = r.say("@Noah stopp, neue Frage")

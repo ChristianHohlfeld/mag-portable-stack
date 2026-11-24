@@ -837,7 +837,13 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
         Result miss = browser_result(r, 1500);
         if (r.error.empty()) {
           const Result now = look(ctx, vm);
-          if (now.ok) miss.text += "\nDie Seite jetzt; nimm ein Element daraus oder versuche einen anderen Weg:\n" + now.text;
+          if (now.ok && now.snapshot.isObj()) {
+            // The action failed, but the replacement observation is real.
+            // Keep its versioned DOM in sync with the controller's new list.
+            // Never automatically retry the old click or mark it successful.
+            miss.snapshot = now.snapshot;
+            miss.text += "\nDie Seite jetzt; die alte Elementliste ist ungültig. Wähle das Ziel anhand dieser neuen Seite, nicht anhand der alten Nummer:\n" + now.text;
+          }
         }
         return miss;
       }
@@ -887,7 +893,19 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
           Val body = Val::object(); body["ms"] = std::clamp(jnum(s, "seconds", 1) * 1000, 100.0, 15000.0);
           r = ctx.guests.browser(vm, "POST", "/wait", mj::dump(body), 30, ctx.cancel);
         } else return fail("browser_flow: nur eine erste Navigation (https-URL oder geprüfter Link), danach scroll/wait.");
-        if (!r.error.empty() || r.status != 200) return browser_result(r, 1500);
+        if (!r.error.empty() || r.status != 200) {
+          // A flow can also lose a numbered DOM element after rendering.
+          // Observe again without replaying any action from the flow.
+          Result miss = browser_result(r, 1500);
+          if (r.error.empty()) {
+            Result now = look(ctx, vm);
+            if (now.ok && now.snapshot.isObj()) {
+              miss.snapshot = now.snapshot;
+              miss.text += "\nDie Seite jetzt; alte Elementnummern nicht wiederverwenden:\n" + now.text;
+            }
+          }
+          return miss;
+        }
       }
       Result final_page = look(ctx, vm);
       final_page.navigated = navigated;

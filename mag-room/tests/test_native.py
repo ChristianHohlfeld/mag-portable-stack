@@ -1413,6 +1413,90 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("100 Prozent", spoken)
         self.assertNotIn("shell(command", spoken)
 
+    def test_autonomous_work_can_repair_verify_and_finish_in_same_turn(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+
+        def call(name, args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+
+        calls = iter([
+            call("will_set", {"text": "Ein lokales Vorhaben", "done_when": "Datei geprueft"}),
+            call("shell", {"command": "exit 7"}),
+            call("write_file", {"path": "repair.txt", "content": "repaired"}),
+            call("read_file", {"path": "repair.txt"}),
+            call("shell", {"command": "test $(cat repair.txt) = repaired"}),
+            call("will_finish", {"progress": "Datei geprueft"}),
+            "Ich habe die Datei geschrieben, gelesen und erfolgreich geprüft.",
+        ])
+        r.lena.reply = lambda body: next(calls, "Ein neuer Gedanke.")
+        r.noah.reply = lambda body: "Was lernen wir daraus für andere Projekte?"
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()),
+               "peer follows multi-step work", 40)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        w = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((w["status"], w["steps"], w["last_ok"]), ("done", 4, True))
+        self.assertEqual((r.tmp / "guests" / "agent1" / "repair.txt").read_text(), "repaired")
+        steps = [p for m in r.messages() if m["from"] == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step"]
+        self.assertEqual([p["state"] for p in steps if p["tool"] in ("shell", "write_file", "read_file")],
+                         ["error", "ok", "ok", "ok"])
+
+    def test_autonomous_repeated_failure_blocks_goal_and_hands_over(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+
+        def call(name, args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+
+        failing = call("shell", {"command": "exit 7"})
+        calls = iter([
+            call("will_set", {"text": "Lokale Untersuchung", "done_when": "Befehl erfolgreich"}),
+            failing, failing, failing, failing,
+        ])
+        r.lena.reply = lambda body: next(calls, failing)
+        r.noah.reply = lambda body: "Dann sprechen wir lieber über einen neuen Entwurf."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()),
+               "peer follows failed work", 40)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        w = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((w["status"], w["steps"], w["last_ok"]), ("blocked", 2, False))
+        steps = [p for m in r.messages() if m["from"] == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
+        self.assertEqual(len(steps), 2, "only actual failed commands, no permission-error cards")
+        self.assertTrue(any("MAG-Arbeitsstand" in m.get("text", "") for m in r.messages()))
+
+    def test_autonomous_work_slice_defers_extra_command_without_error(self):
+        r = Room(connect_events=False, MAG_ROOM_AUTO_CHAT_INTERVAL_S="1200")
+        self.addCleanup(r.close)
+
+        def call(name, args):
+            return {"content": "", "tool_calls": [{"name": name, "arguments": args}]}
+
+        calls = iter([call("will_set", {"text": "Lokale Arbeit", "done_when": "fuenf Dateien"})] +
+                     [call("shell", {"command": "touch slice%d.txt" % i}) for i in range(1, 6)])
+        r.lena.reply = lambda body: next(calls, "Ich gebe das Gespräch weiter.")
+        r.noah.reply = lambda body: "Meine eigene Idee ist etwas anderes."
+        self.assertEqual(r.api("PUT", "/api/settings", {
+            "auto_chat": True, "bot_rounds": 1, "pass_enabled": False, "web": False})[0], 200)
+        r.wait(lambda: any(m["from"] == "noah" for m in r.messages()), "work slice handed off", 40)
+        r.idle()
+        self.assertEqual(r.api("PUT", "/api/settings", {"auto_chat": False})[0], 200)
+        w = r.api("GET", "/api/bot/lena/will")[1]
+        self.assertEqual((w["status"], w["steps"]), ("open", 4))
+        home = r.tmp / "guests" / "agent1"
+        self.assertTrue(all((home / ("slice%d.txt" % i)).exists() for i in range(1, 5)))
+        self.assertFalse((home / "slice5.txt").exists())
+        steps = [p for m in r.messages() if m["from"] == "lena"
+                 for p in m.get("parts", []) if p.get("k") == "step" and p.get("tool") == "shell"]
+        self.assertEqual([p["state"] for p in steps], ["ok"] * 4)
+
     def test_owner_manages_persistent_memories_per_bot(self):
         r = self.room
         lena = "/api/bot/lena/memory"

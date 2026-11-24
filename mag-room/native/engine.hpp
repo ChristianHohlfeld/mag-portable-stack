@@ -1486,9 +1486,7 @@ private:
     b.wire = Val();
     ensure_wire(b, me, true);
     b.last_tool_sig.clear();
-    goal::end(b.goal, "ended");
-    unlink(goal_pending_file(b).c_str());
-    save_goal(b);
+    forget_browser_goal(b, false, "");
     {
       std::lock_guard<std::mutex> lk(mu_);
       b.ctx_tokens = 0;
@@ -2416,9 +2414,7 @@ private:
       save_wire(b);
     }
     b.last_tool_sig.clear();
-    goal::end(b.goal, "ended");
-    unlink(goal_pending_file(b).c_str());
-    save_goal(b);
+    forget_browser_goal(b, preserve_queue, cursor_at_reset);
     {
       std::lock_guard<std::mutex> lk(mu_);
       b.ctx_tokens = 0;
@@ -2690,6 +2686,37 @@ private:
   std::string goal_file(const Bot &b) const { return room_.cfg.state_dir + "/goals/" + b.id + ".json"; }
   std::string goal_mark(const Bot &b) const { return goal_file(b) + ".end"; }
   std::string goal_pending_file(const Bot &b) const { return goal_file(b) + ".pending"; }
+  // A reset is a new context, not a stopped historical browser task.
+  // Preserve only a fresh explicit task received after the VM reset began.
+  // Serialize with the HTTP thread that queues/stops browser tasks.
+  void forget_browser_goal(Bot &b, bool preserve_queue, const std::string &cursor) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const Val queued = read_json(goal_pending_file(b));
+    const bool keep = preserve_queue && !b.end_goal.load() && !exists(goal_mark(b)) &&
+        jstr(queued, "kind") == "begin" && jstr(queued, "supersedes").empty() &&
+        jstr(queued, "id") > cursor;
+    std::error_code ec;
+    std::filesystem::create_directories(room_.cfg.state_dir + "/goals", ec);
+    if (ec || !write_json(goal_file(b), Val::object(), 0600))
+      throw std::runtime_error("Alter Browser-Auftrag konnte nicht gelöscht werden.");
+    b.goal = Val::object();
+    if (!keep) {
+      unlink(goal_pending_file(b).c_str());
+      b.goal_cmd = 0;
+      b.goal_text.clear();
+      b.goal_fix.clear();
+    }
+    unlink(goal_mark(b).c_str());
+    b.end_goal = false;
+    b.goal_on = false;
+    b.goal_arm = keep;
+    b.goal_public = Val::object();
+    if (keep) {
+      b.goal_public["state"] = "pending";
+      b.goal_public["text"] = clip(jstr(queued, "text"), 200);
+    }
+  }
+
   bool save_goal(Bot &b) {
     const bool stopped = b.end_goal.load() || exists(goal_mark(b));
     if (stopped) goal::end(b.goal, jstr(b.goal, "state") == "done" || jstr(b.goal, "state") == "blocked" ? jstr(b.goal, "state") : "ended");
@@ -2727,6 +2754,15 @@ private:
   void load_goal(Bot &b) {
     b.goal = read_json(goal_file(b));
     if (!b.goal.isObj()) b.goal = Val::object();
+    // Older releases retained ended task text after a successful wipe.
+    // A fresh prompt log cannot contain an observed browser task. Migrate
+    // only these stale ended records, never an active/blocked/done task.
+    if (jstr(b.goal, "state") == "ended" && !jstr(b.goal, "text").empty() &&
+        !exists(goal_pending_file(b)) && jstr(b.wire, "goal_prompt_stamp").empty() &&
+        b.wire["messages"].isArr() && b.wire["messages"].asArr().size() == 1 &&
+        jstr(b.wire["messages"].asArr().front(), "role") == "system") {
+      forget_browser_goal(b, false, "");
+    }
     if (exists(goal_mark(b)) && jstr(b.goal, "state") != "done" && jstr(b.goal, "state") != "blocked") {
       goal::end(b.goal, "ended");
       if (!write_json(goal_file(b), b.goal, 0600))

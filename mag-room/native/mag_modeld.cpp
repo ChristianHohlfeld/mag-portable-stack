@@ -47,6 +47,7 @@ static std::atomic<bool> g_stop{false};
 static std::string g_systemctl = "systemctl";
 // A download counts as abandoned after this long without growth.
 static int g_quiet_s = 75;
+static bool g_auto_download = true;
 static std::string g_state_dir = "/var/lib/mag-models";
 static std::string g_run_dir = "/run/mag-models";
 
@@ -391,7 +392,7 @@ static int health(int port) {
 }
 
 struct Bot {
-  std::string id, label, unit, spec_hash, thinking_control;
+  std::string id, label, unit, spec_hash, thinking_control, active_spec_hash;
   int port = 0, numa = 0, ctx = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
 
@@ -540,6 +541,7 @@ static void step(Bot &b) {
   b.draft_active = false;
   b.mmproj_active = false;
   b.restart_pending = false;
+  b.active_spec_hash.clear();
 
   // Resume a download nobody is working on: one file at a time, only when
   // no process has it open (a second writer would corrupt it), and the
@@ -547,7 +549,7 @@ static void step(Bot &b) {
   // A host that must not download (a trial install: /etc/mag-stack/no-model-download)
   // leaves every model missing.
   for (Artifact *a : {&b.model, &b.draft, &b.mmproj}) {
-    if (access("/etc/mag-stack/no-model-download", F_OK) == 0) break;
+    if (!g_auto_download || access("/etc/mag-stack/no-model-download", F_OK) == 0) break;
     if (!a->configured || (a->url.empty() && !a->built) || a->complete() || a->verify == Artifact::OK) continue;
     if (a != &b.model && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file
@@ -576,6 +578,7 @@ static void step(Bot &b) {
     b.draft_active = spec.find("draft=0") == std::string::npos && spec.find("draft=") != std::string::npos;
     b.mmproj_active = spec.find("mmproj=0") == std::string::npos && spec.find("mmproj=") != std::string::npos;
     b.restart_pending = !spec.empty() && spec.compare(0, b.spec_hash.size(), b.spec_hash) != 0;
+    if (spec.size() > 64 && spec[64] == ' ') b.active_spec_hash = spec.substr(0,64);
     if (b.seen_restarts >= 0 && u.restarts > b.seen_restarts && !b.ever_ready && (b.draft_active || b.mmproj_active)) {
       // The server died before it ever answered /health while an optional
       // part was attached: run without it rather than loop. The projector
@@ -709,7 +712,7 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     v["port"] = b.port;
     v["numa"] = b.numa;
     v["ctx"] = b.ctx;
-    v["spec_hash"] = b.spec_hash; // identifies the active runtime/launch specification for prefix restore
+    v["spec_hash"] = b.active_spec_hash.empty() ? b.spec_hash : b.active_spec_hash; // active launch identity for prefix restore
     v["slot_dir"] = g_state_dir + "/slots/" + b.id; // same directory passed to llama-server --slot-save-path
     v["detail"] = b.detail;
     v["model"] = artifact_json(b.model);
@@ -761,6 +764,7 @@ int main(int argc, char **argv) {
     return 78;
   }
   if (auto p = conf.find("state_dir")) g_state_dir = p->asStr(g_state_dir);
+  if (auto p = conf.find("auto_download")) g_auto_download = p->asBool();
   if (const char *e = getenv("MAG_MODELS_RUN")) g_run_dir = e;
   if (const char *e = getenv("MAG_MODELD_SYSTEMCTL")) g_systemctl = e;
   if (const char *e = getenv("MAG_MODELD_QUIET_S")) g_quiet_s = std::max(1, atoi(e));

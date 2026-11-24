@@ -46,11 +46,12 @@ output; read only the configuration needed for a specific operation.
 ## Models
 
 Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
-Lena on NUMA0 (physical cores 0-13, :8191) and Noah on NUMA1 (cores 14-27,
-:8192) run the same model, Gemma 4 26B-A4B (HauhauCS build, the same file),
-with the same MTP drafter and the Gemma vision projector (`mmproj`, on the
-CPU), so both see images (Chris, 2026-11-13: "eine Kopie identischer Modelle
-von Lena"; gpt-oss 120B stays on disk, unused). A drafter only guesses ahead,
+Blake (internal ID lena) on NUMA0 (cores 0-13, :8191) runs original Gemma 4
+26B-A4B-it QAT UD-Q4_K_XL with MTP and vision; Noah on NUMA1 (cores 14-27,
+:8192) runs Mistral Small 4 119B UD-Q4_K_M with vision. There are exactly
+two selected models, no automatic replacements or downloads. Normal deploys
+preserve the installed models.json; an explicit model change uses
+`MAG_REPLACE_MODEL_CONFIG=1` with ops/models/install.sh. A drafter only guesses ahead,
 the bot's model checks every token, so it changes speed, never words. No GPU offload: the MI50 belongs to MAG
 Idol alone and its power cap stays at 78 W (Chris, 2026-11-13; 82 W, 100 W, 85 W,
 78 W and 73 W for a while that day, 72 W before; the card is cooled passively,

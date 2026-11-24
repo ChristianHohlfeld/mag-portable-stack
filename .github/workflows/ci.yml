@@ -54,6 +54,8 @@ jobs:
             RoomContract.test_unaddressed_message_is_answered_by_all_bots_then_rests \
             RoomContract.test_named_bot_answers_alone \
             RoomContract.test_autonomous_chat_can_start_without_human_or_browser \
+            RoomContract.test_autonomous_chat_respects_paused_bot \
+            RoomContract.test_autonomous_peer_can_start_while_other_bot_is_working \
             RoomContract.test_autonomous_chat_unlimited_continues_past_both_hidden_caps \
             RoomContract.test_stop_cancels_a_running_answer \
             RoomContract.test_mistral_small4_chat_roles_and_effort_without_touching_gemma \

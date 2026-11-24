@@ -400,10 +400,11 @@ inline bool is_mistral_small4(const Backend &be) {
   const Val *bots = status.find("bots");
   const Val *entry = bots && bots->isObj() ? bots->find(be.bot) : nullptr;
   if (!entry || !entry->isObj()) return false;
-  const std::string file = jstr(*entry, "file");
-  const std::string label = jstr(*entry, "label");
-  return file.find("Mistral-Small-4-119B") != std::string::npos ||
-         label.find("Mistral Small 4") != std::string::npos;
+  const std::string file = lower(jstr(*entry, "file"));
+  const std::string label = lower(jstr(*entry, "label"));
+  return file.find("mistral-small-4") != std::string::npos ||
+         label.find("mistral small 4") != std::string::npos ||
+         label.find("mistral-small-4") != std::string::npos;
 }
 
 inline Val mistral_content_parts(const Val &content) {
@@ -441,13 +442,41 @@ inline void prepare_mistral_request(Val &body) {
   const Val *original = body.find("messages");
   if (!original || !original->isArr()) return;
   Val normalized = Val::array();
+  // Mistral's *filtered* role check skips assistant tool-call messages
+  // and tool results. Merely joining physically adjacent user messages
+  // misses user -> assistant(tool_calls) -> tool -> user, which occurs on
+  // every autonomous follow-up cue after a tool result.
+  std::string expected = "user";
+  const auto conversational = [](const Val &msg) {
+    const std::string role = jstr(msg, "role");
+    const Val *calls = msg.find("tool_calls");
+    return role == "user" ||
+           (role == "assistant" && (!calls || !calls->isArr() || calls->asArr().empty()));
+  };
   for (const Val &msg : original->asArr()) {
-    if (jstr(msg, "role") == "user" && !normalized.asArr().empty() &&
-        jstr(normalized.asArr().back(), "role") == "user") {
-      mistral_append_user_content(normalized.arr->back(), msg);
-    } else {
-      normalized.push(msg);
+    if (!conversational(msg)) {
+      normalized.push(msg); // preserve actual tool calls and results in order
+      continue;
     }
+    const std::string role = jstr(msg, "role");
+    if (role != expected) {
+      if (!normalized.asArr().empty() && conversational(normalized.asArr().back()) &&
+          jstr(normalized.asArr().back(), "role") == role) {
+        // No intervening observation: coalesce adjacent same-role content.
+        mistral_append_user_content(normalized.arr->back(), msg);
+        continue;
+      }
+      // Across tool calls/results, keep chronology. This is a clearly
+      // marked transport-only separator, not a new task or model result.
+      Val bridge = Val::object();
+      bridge["role"] = expected;
+      bridge["content"] = expected == "assistant"
+          ? "(Technischer Nachrichtenübergang des Raums; keine zusätzliche Modellantwort.)"
+          : "(Technischer Nachrichtenübergang des Raums; kein neuer Auftrag.)";
+      normalized.push(bridge);
+    }
+    normalized.push(msg);
+    expected = role == "user" ? "assistant" : "user";
   }
   body["messages"] = normalized;
 }

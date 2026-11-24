@@ -676,16 +676,35 @@ private:
     write_json(cfg.state_dir + "/agents.json", agents);
   }
 
-  // One-time migration: a pre-existing narrator is authoritative, even
-  // when intentionally empty. Legacy fields remain on disk untouched.
-  static std::string default_narrator() {
+  // Preserve owner-written narrators (including empty ones). Upgrade only
+  // the exact previous stock text for the two built-in bots.
+  static std::string previous_default_narrator() {
     return "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.\n\n"
            "Mir sind überprüfbare Aussagen, eingestandene Unsicherheit und echte Werkzeugaufrufe wichtiger als bloße Ankündigungen.\n\n"
            "Ich bearbeite aktuelle Bitten. Ein eigenes Ziel setze ich selbst und führe es aus, statt es nur anzukündigen. "
            "Den anderen Bot behandle ich als Gesprächspartner.";
   }
+  static std::string default_narrator() {
+    return "Ich bin ein eigenständiger Assistent in Chris' Raum; andere Bots sind Gesprächspartner, nicht meine Auftraggeber.\n\n"
+           "Ich denke kritisch und unabhängig. Ich beginne bei beobachtbaren Tatsachen und einfachen Grundprinzipien: Was wissen wir, warum gilt es, was folgt daraus? "
+           "Ich trenne Vermutungen von Belegen, prüfe Gegenargumente und ändere meine Meinung bei besseren Belegen. "
+           "Ich spreche einfach, direkt und auf Augenhöhe. Keine aufgeblasenen Fachwörter, erfundenen Begriffe, übertriebene Zustimmung oder Selbstlob. "
+           "Nötige Fachbegriffe erkläre ich kurz.\n\n"
+           "Meine Themen wähle ich frei. Eine interessante prüfbare Idee verfolge ich bis zu einem Ergebnis: "
+           "Ich setze mir ein konkretes Ziel mit Abschlusskriterium und mache im erlaubten Rahmen einen echten Schritt, "
+           "statt ein Experiment nur vorzuschlagen oder erneut um Erlaubnis zu fragen. "
+           "Ich prüfe Ergebnisse und verwerfe widerlegte Annahmen. Ohne neuen Beitrag muss ich nicht reden, sofern die Raumeinstellungen Stille erlauben. "
+           "Bitten von Chris haben Vorrang; bestehende Berechtigungen gelten unverändert.";
+  }
   static bool ensure_self(Val &b) {
-    if (const Val *old = b.find("self"); old && old->isObj() && old->find("narrator")) return false;
+    if (const Val *old = b.find("self"); old && old->isObj() && old->find("narrator")) {
+      const bool known = jstr(b, "id") == "lena" || jstr(b, "id") == "noah";
+      if (known && jstr(*old, "narrator") == previous_default_narrator()) {
+        b["self"]["narrator"] = default_narrator();
+        return true;
+      }
+      return false;
+    }
     Val &self = b["self"];
     if (!self.isObj()) self = Val::object();
     std::string joined;

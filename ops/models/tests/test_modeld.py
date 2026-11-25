@@ -168,7 +168,7 @@ sys.exit(78)
         write_gguf(b"blk.0.attn_q.weight")
         calls, spec, _ = launch("fail")
         assert len(calls) == 1 and "--spec-type" not in calls[0]
-        assert "draft=0" in spec
+        assert spec.split()[1:] == ["draft=0", "mmproj=0", "runtime=upstream"]
         normal = calls[0]
         for flag, value in (("--flash-attn", "on"), ("-ctk", "q8_0"), ("-ctv", "q8_0"),
                             ("--chat-template", "value with spaces"), ("--model", str(model))):
@@ -177,11 +177,12 @@ sys.exit(78)
         write_gguf(b"blk.64.nextn.eh_proj.weight")
         calls, spec, log = launch("fail")
         assert calls == [normal + qwen["mtp_args"], normal], calls
-        assert "draft=0" in spec and "retrying llama-server without MTP" in log
+        assert spec.split()[1:] == ["draft=0", "mmproj=0", "runtime=upstream"]
+        assert "retrying llama-server without MTP" in log
 
         calls, spec, _ = launch("ready")
         assert calls == [normal + qwen["mtp_args"]], calls
-        assert "draft=4" in spec
+        assert spec.split()[1:] == ["draft=4", "mmproj=0", "runtime=upstream"]
 
 
 def main():
@@ -390,14 +391,14 @@ esac
 
         args = launch_args()
         assert args[args.index("--mmproj") + 1] == str(projector)
-        assert (qwen_slots / ".spec").read_text().endswith("draft=0 mmproj=3\n")
+        assert (qwen_slots / ".spec").read_text().endswith("draft=0 mmproj=3 runtime=upstream\n")
         assert status("qwen")["mmproj"]["total"] == len(mmproj)
         gpu_state.write_text("running 1234\n")
         ready = wait("qwen", "ready")
         assert ready["since"] == 1234 and ready["mmproj"]["active"]
         (state / "qwen.mmproj.off").touch()
         assert "--mmproj" not in launch_args()
-        assert (qwen_slots / ".spec").read_text().endswith("draft=0 mmproj=0\n")
+        assert (qwen_slots / ".spec").read_text().endswith("draft=0 mmproj=0 runtime=upstream\n")
         gpu_state.write_text("waiting\n")
         assert "since" not in wait("qwen", "waiting_gpu")
         gpu_state.write_text("running 5678\n")

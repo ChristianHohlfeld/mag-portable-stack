@@ -26,7 +26,12 @@ if jq -r '.bots[] | (.args + (.draft.args // []))[]' ops/models/models.json | gr
   echo 'models.json: GPU placement flags belong in the launchers' >&2; exit 1
 fi
 grep -Fq -- '--device none --n-gpu-layers 0' ops/models/run.sh
-grep -Fq -- '--device ROCm0 --n-gpu-layers all --fit off' ops/models/run-mi50.sh
+# The launcher selects logical devices explicitly: one for upstream/single
+# MI50, two only for the opt-in dual-MI50 path. Full offload is mandatory.
+grep -qx 'device_names=ROCm0' ops/models/run-mi50.sh
+grep -Eq '^[[:space:]]+device_names=ROCm0,ROCm1$' ops/models/run-mi50.sh
+grep -Fq -- 'if [[ $device_ids == *,* ]]; then' ops/models/run-mi50.sh
+grep -Fq -- '--device "$device_names" --n-gpu-layers all --fit off' ops/models/run-mi50.sh
 # The bots' sites stay inside the tailnet and are read-only.
 grep -Fq 'deny all;' ops/bots/mag-bots.nginx.in
 grep -Fq 'limit_except GET { deny all; }' ops/bots/mag-bots.nginx.in

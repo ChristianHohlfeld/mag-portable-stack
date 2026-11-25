@@ -35,7 +35,7 @@ case "$variant" in
     fi
     export HSA_XNACK=0 HSA_ENABLE_SDMA=1 HIP_GRAPH=1
     export GGML_CUDA_FATTN_PATH=force_convert GGML_CUDA_CUBLAS_COMPUTE_TYPE=f16
-    repack=$(q '.gfx906_experiment.q8_repack // true')
+    repack=$(q '.gfx906_experiment | if has("q8_repack") then .q8_repack else true end')
     case "$repack" in true) export GGML_CUDA_Q8_REPACK=1 ;; false) export GGML_CUDA_Q8_REPACK=0 ;; *) exit 78 ;; esac
     draft_path=$(q '.gfx906_experiment.dflash.path // empty')
     if [[ -n $draft_path ]]; then
@@ -85,7 +85,7 @@ SAVE_SLOTS="$SLOTS"
 # Keep supervisor/guard status at its original path; isolate serialized slots.
 if [[ $variant != upstream ]]; then SAVE_SLOTS="$SLOTS/$variant"; fi
 mkdir -p "$SAVE_SLOTS"
-printf '%s draft=%s mmproj=%s\n' "$("$MODELD" --config "$CONF" spec-hash "$bot")" "${#mtp_args[@]}" "${#vision_args[@]}" > "$SLOTS/.spec"
+printf '%s draft=%s mmproj=%s runtime=%s\n' "$("$MODELD" --config "$CONF" spec-hash "$bot")" "$(("${#mtp_args[@]}" + "${#dflash_args[@]}"))" "${#vision_args[@]}" "$variant" > "$SLOTS/.spec"
 threads=$(q .threads)
 port=$(q .port)
 # The explicit HIP device makes device initialization a requirement. Full

@@ -50,14 +50,18 @@ done
 replace=${MAG_REPLACE_MODEL_CONFIG:-0}
 if [[ $replace != 0 && $replace != 1 ]]; then
   # Merge only the selected bot into the installed manifest.
-  mag_render "$SOURCE/ops/models/models.json" |
+  candidate="$LIB/models.json.merge"
+  if ! mag_render "$SOURCE/ops/models/models.json" |
     jq -e --arg bot "$replace" --slurpfile installed "$LIB/models.json" '
       .bots[$bot] as $spec | $installed[0] |
       if $spec != null and (.bots | has($bot)) then .bots[$bot] = $spec
       else error("unknown model: " + $bot) end
-    ' > "$LIB/models.json.next"
-  install_if_changed "$LIB/models.json.next" "$LIB/models.json" 0644
-  rm -f "$LIB/models.json.next"
+    ' > "$candidate"; then
+    rm -f "$candidate"
+    exit 1
+  fi
+  install_if_changed "$candidate" "$LIB/models.json" 0644
+  rm -f "$candidate"
 elif [[ ! -f "$LIB/models.json" || $replace == 1 ]] || jq -e '.bots | to_entries | any((.value.model.path // "") | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
   mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
   chmod 0644 "$LIB/models.json.next"

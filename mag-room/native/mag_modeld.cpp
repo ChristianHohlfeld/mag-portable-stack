@@ -428,7 +428,7 @@ static int health(int port) {
 }
 
 struct Bot {
-  std::string gpu_runtime;
+  std::string gpu_runtime, gpu_variant, active_gpu_variant;
   std::string id, label, unit, spec_hash, thinking_control, active_spec_hash;
   int port = 0, numa = 0, ctx = 0, cpu_weight = 0;
   Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
@@ -612,6 +612,7 @@ static void step(Bot &b) {
   b.mmproj_active = false;
   b.restart_pending = false;
   b.active_spec_hash.clear();
+  b.active_gpu_variant.clear();
 
   // Resume a download nobody is working on: one file at a time, only when
   // no process has it open (a second writer would corrupt it), and the
@@ -648,7 +649,11 @@ static void step(Bot &b) {
     b.draft_active = spec.find("draft=0") == std::string::npos && spec.find("draft=") != std::string::npos;
     b.mmproj_active = spec.find("mmproj=0") == std::string::npos && spec.find("mmproj=") != std::string::npos;
     b.restart_pending = !spec.empty() && spec.compare(0, b.spec_hash.size(), b.spec_hash) != 0;
-    if (spec.size() > 64 && spec[64] == ' ') b.active_spec_hash = spec.substr(0,64);
+    if (spec.size() > 64 && spec[64] == ' ') {
+      b.active_spec_hash = spec.substr(0,64);
+      if (spec.find(" runtime=gfx906-dev-v2") != std::string::npos) b.active_gpu_variant = "gfx906-dev-v2";
+      else b.active_gpu_variant = "upstream";
+    }
     if (u.sub == "auto-restart") {
       // Change the next launch only while systemd is waiting after an actual
       // failure. A restart counter on a running unit describes past failures.
@@ -818,7 +823,8 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     else v["numa"] = b.numa;
     v["ctx"] = b.ctx;
     v["spec_hash"] = b.active_spec_hash.empty() ? b.spec_hash : b.active_spec_hash; // active launch identity for prefix restore
-    v["slot_dir"] = g_state_dir + "/slots/" + b.id; // same directory passed to llama-server --slot-save-path
+    const std::string slot_variant = b.active_gpu_variant.empty() ? b.gpu_variant : b.active_gpu_variant;
+    v["slot_dir"] = g_state_dir + "/slots/" + b.id + (slot_variant == "gfx906-dev-v2" ? "/gfx906-dev-v2" : "");
     v["detail"] = b.detail;
     v["model"] = artifact_json(b.model);
     if (b.draft.configured) {
@@ -932,7 +938,18 @@ int main(int argc, char **argv) {
       if (b.thinking_control != "toggle" && b.thinking_control != "effort") b.thinking_control = "none";
       if (auto gpu = kv.second.find("gpu"); gpu && gpu->asStr() == "mi50")
         b.gpu_runtime = runtime && runtime->find("dir") ? runtime->find("dir")->asStr() : "";
-      if (!b.gpu_runtime.empty()) b.gpu_runtime += "/" + rev + "/hip-gfx906/bin/llama-server";
+      if (!b.gpu_runtime.empty()) {
+        const auto *variant = kv.second.find("gpu_runtime_variant");
+        b.gpu_variant = variant ? variant->asStr() : "upstream";
+        if (b.gpu_variant == "gfx906-dev-v2")
+          b.gpu_runtime += "/36e84ddb7e5792af6994ee79e12452ba4c918e63/hip-gfx906-dev-v2/bin/llama-server";
+        else if (b.gpu_variant == "upstream")
+          b.gpu_runtime += "/" + rev + "/hip-gfx906/bin/llama-server";
+        else {
+          std::cerr << "mag-modeld: unknown GPU runtime variant for " << b.id << "\n";
+          return 78;
+        }
+      }
       b.port = num("port");
       b.numa = num("numa");
       b.ctx = num("ctx");

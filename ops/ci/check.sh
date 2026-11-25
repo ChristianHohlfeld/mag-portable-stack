@@ -26,7 +26,64 @@ if jq -r '.bots[] | (.args + (.draft.args // []))[]' ops/models/models.json | gr
   echo 'models.json: GPU placement flags belong in the launchers' >&2; exit 1
 fi
 grep -Fq -- '--device none --n-gpu-layers 0' ops/models/run.sh
-grep -Fq -- '--device ROCm0 --n-gpu-layers all --fit off' ops/models/run-mi50.sh
+# The launcher selects logical devices explicitly: one for upstream/single
+# MI50, two only for the opt-in dual-MI50 path. Full offload is mandatory.
+grep -qx 'device_names=ROCm0' ops/models/run-mi50.sh
+grep -Eq '^[[:space:]]+device_names=ROCm0,ROCm1
+# The bots' sites stay inside the tailnet and are read-only.
+grep -Fq 'deny all;' ops/bots/mag-bots.nginx.in
+grep -Fq 'limit_except GET { deny all; }' ops/bots/mag-bots.nginx.in
+! grep -Eq '^[[:space:]]*listen[[:space:]]+(0\.0\.0\.0|\[::\]|100\.)' ops/bots/mag-bots.nginx.in
+# The vision projector stays on the CPU as well.
+grep -Fq -- '--mmproj "$mmproj" --no-mmproj-offload' ops/models/run.sh
+# A deploy never probes, starts, stops or waits for a model, and never drains.
+if grep -nE '819[12]|mag-model@|drain_room|/api/state' ops/deploy.sh; then
+  echo 'deploy.sh must not depend on model or room-busy state' >&2; exit 1
+fi
+# Package updates never restart the stack: the needrestart rule parses and
+# names the models, the room and the Idol worker.
+if command -v perl >/dev/null; then
+  perl -e 'our %nrconf; do "./ops/boot/needrestart-mag.conf" or die "needrestart rule: $@$!";
+           for my $unit ("mag-model\@noah.service", "mag-120.service", "mag-idol.service", "mag-scene.service", "mag-stt.service") {
+             grep { $unit =~ $_ } @{$nrconf{blacklist_rc}} or die "needrestart rule misses $unit\n" }'
+fi
+# The MI50 power cap may only ever be lowered, and the clock helper never
+# opens that file (or any other clock file than the sclk mask).
+grep -Fq 'if (( now > LIMIT )); then' ops/idol/power-cap.sh
+if grep -nE 'power1_cap|pp_dpm_mclk|pp_od_clk' ops/idol/gpu-clock.sh ops/idol/worker.py; then
+  echo 'clock throttle must not touch the power cap' >&2
+  exit 1
+fi
+grep -Fq 'printf '"'"'auto\n'"'"' > "$level"' ops/idol/gpu-clock.sh
+grep -Fq 'printf '"'"'0 1 2\n'"'"' > "$sclk"' ops/idol/gpu-clock.sh
+# The page loads nothing from outside the release, and every script parses.
+# The one exception is the reading-aloud worker: it runs in the client alone
+# and fetches its runtime and voices from jsDelivr and Hugging Face, every
+# file pinned by its SHA256.
+if grep -rnE --exclude=tts-worker.js 'https?://[a-z0-9.-]+\.[a-z]{2,}' mag-room/web/index.html mag-room/web/app; then
+  echo 'web: external URL in the page or its scripts' >&2; exit 1
+fi
+if grep -oE 'https?://[a-z0-9.-]+' mag-room/web/app/tts-worker.js | grep -vqxE 'https://(cdn\.jsdelivr\.net|huggingface\.co)'; then
+  echo 'web: the reading-aloud worker fetches from somewhere else' >&2; exit 1
+fi
+if command -v node >/dev/null; then
+  for f in mag-room/web/app/*.js mag-room/web/sw.js; do node --check "$f"; done
+fi
+# The VM panel stays on the realtime link: the browser picture over WebRTC/UDP
+# and xterm.js on the PTY. Pictures over HTTPS and single commands are only
+# its fallback; xterm.js stays the published 5.5.0, byte for byte.
+for word in '/api/browser-live/offer' "createDataChannel('control'" 'terminal_input' 'new Terminal('; do
+  grep -Fq -- "$word" mag-room/web/app/live.js || { echo "live.js: the realtime VM view is gone ($word)" >&2; exit 1; }
+done
+sha256sum --quiet -c <<'SUMS'
+1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495  mag-room/web/static/xterm.js
+ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6  mag-room/web/static/xterm.css
+bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089  mag-room/web/static/xterm-addon-fit.js
+SUMS
+echo 'static checks ok'
+ ops/models/run-mi50.sh
+grep -Fq -- 'if [[ $device_ids == *,* ]]; then' ops/models/run-mi50.sh
+grep -Fq -- '--device "$device_names" --n-gpu-layers all --fit off' ops/models/run-mi50.sh
 # The bots' sites stay inside the tailnet and are read-only.
 grep -Fq 'deny all;' ops/bots/mag-bots.nginx.in
 grep -Fq 'limit_except GET { deny all; }' ops/bots/mag-bots.nginx.in

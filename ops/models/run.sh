@@ -49,6 +49,8 @@ mkdir -p "$SLOTS"
 # projector are in use.
 printf '%s draft=%s mmproj=%s\n' "$("$(dirname "$CONF")/mag-modeld" --config "$CONF" spec-hash "$bot")" "${#draft_args[@]}" "${#vision_args[@]}" > "$SLOTS/.spec" 2>/dev/null || :
 
+# systemd AllowedCPUs/AllowedMemoryNodes enforce the physical boundary;
+# numactl establishes the initial affinity and allocation policy.
 # Physical cores of one socket only; the hyperthread siblings 28-55 stay free
 # for builds, VMs and Idol. Memory is bound to the same node before the
 # weights are read (load-mode mlock: private, node-local, never swapped).

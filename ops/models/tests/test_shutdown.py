@@ -52,7 +52,9 @@ def test_shutdown(binary, model):
                 else:
                     raise AssertionError("llama-server did not report an in-flight prefill")
             log.seek(0)
-            assert b"stop processing:" in log.read(), "active slot was not released"
+            output = log.read()
+            assert b"error: Server shutting down" in output, "prefill finished before shutdown"
+            assert b"stop processing:" in output, "active slot was not released"
         except Exception:
             log.seek(0)
             print(log.read().decode(errors="replace"), file=sys.stderr)

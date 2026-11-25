@@ -4,11 +4,13 @@
 #   mag-model@<bot>       Dedicated llama.cpp server per bot
 #   mag-model-fetch@<bot> resumable download
 # Never waits for a model, never restarts a running one and never deletes a
-# model file. Retired model units are stopped and their unit files moved to
-# /var/backups/mag-legacy-units (the GGUFs stay where they are).
+# model file.
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'run as root' >&2; exit 1; }
 SOURCE="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
+if [[ ${1:-} != --units-installed ]]; then
+  bash "$SOURCE/ops/models/install-units.sh"
+fi
 BIN="${MAG_MODELD_BIN:-$SOURCE/build/mag-modeld}"
 [[ -x $BIN ]] || BIN=/opt/mag-stack/current/bin/mag-modeld
 [[ -x $BIN ]] || { echo 'mag-modeld binary missing (build first)' >&2; exit 1; }
@@ -21,6 +23,8 @@ jq -e '.bots | length > 0' "$SOURCE/ops/models/models.json" >/dev/null
 
 # --- files ---------------------------------------------------------------
 install -d -m 0755 "$LIB"
+exec 9>"$LIB/.install.lock"
+flock 9
 install -d -m 0755 "$STATE"
 install -d -m 0755 -o "$MAG_OWNER" -g "$MAG_OWNER" "$STATE/slots"
 # The room (magbot) drops control verbs here; it cannot list or read others.
@@ -29,14 +33,28 @@ if getent group magbot >/dev/null; then
 else
   install -d -m 0700 "$STATE/control"
 fi
-for f in run.sh run-mi50.sh gpu-guard.py mi50-mtp.py fetch.sh build-draft.sh; do install -m 0755 "$SOURCE/ops/models/$f" "$LIB/$f"; done
+pending="$LIB/.supervisor-restart"
+install_if_changed() {
+  local src=$1 dest=$2 mode=$3
+  if cmp -s "$src" "$dest"; then return; fi
+  install -m "$mode" "$src" "$dest.next"
+  touch "$pending"
+  mv -f "$dest.next" "$dest"
+}
+for f in run.sh run-mi50.sh gpu-guard.py mi50-mtp.py fetch.sh build-draft.sh; do
+  install_if_changed "$SOURCE/ops/models/$f" "$LIB/$f" 0755
+done
 # Paths and the unit's user follow this host's owner (ops/host.env).
 # A software deploy must not silently change local model selection.
 # Replace the retired uncensored default once, or on explicit operator request.
 if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e '.bots | to_entries | any((.value.model.path // "") | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
   mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
   chmod 0644 "$LIB/models.json.next"
-  mv -f "$LIB/models.json.next" "$LIB/models.json"
+  if ! cmp -s "$LIB/models.json.next" "$LIB/models.json"; then
+    touch "$pending"
+    mv -f "$LIB/models.json.next" "$LIB/models.json"
+  fi
+  rm -f "$LIB/models.json.next"
 fi
 # Add Qwen on older installs and backfill defaults for the existing Q6 model.
 mag_render "$SOURCE/ops/models/models.json" |
@@ -56,22 +74,22 @@ mag_render "$SOURCE/ops/models/models.json" |
   ' > "$LIB/models.json.next"
 if [[ -s $LIB/models.json.next ]]; then
   chmod 0644 "$LIB/models.json.next"
+  touch "$pending"
   mv -f "$LIB/models.json.next" "$LIB/models.json"
 else
   rm -f "$LIB/models.json.next"
 fi
-install -m 0755 "$BIN" "$LIB/mag-modeld.next"
-mv -f "$LIB/mag-modeld.next" "$LIB/mag-modeld"
-for unit in mag-modeld.service mag-model@.service mag-model-fetch@.service mag-model-hip-build.service; do
-  mag_render "$SOURCE/ops/models/$unit" > "/etc/systemd/system/$unit.next"
-  chmod 0644 "/etc/systemd/system/$unit.next"
-  mv -f "/etc/systemd/system/$unit.next" "/etc/systemd/system/$unit"
-done
-install -D -m 0644 "$SOURCE/ops/models/mag-model-qwen.conf" /etc/systemd/system/mag-model@qwen.service.d/20-mi50.conf
-systemctl daemon-reload
+install_if_changed "$BIN" "$LIB/mag-modeld" 0755
 systemctl enable mag-modeld.service >/dev/null
-# The supervisor is stateless: restarting it never touches a running model.
-systemctl restart mag-modeld.service
+# Only the supervisor needs to reread changed launch inputs. Model instances
+# remain under its management with the same process and slot.
+if [[ -e $pending ]]; then
+  systemctl restart mag-modeld.service
+  rm -f "$pending"
+else
+  systemctl start mag-modeld.service
+fi
+systemctl start --no-block mag-model-cpu-build.service
 if [[ -x $MAG_IDOL_BASE/rocm-6.3.4/current/lib/llvm/bin/clang++ ]]; then
   systemctl start --no-block mag-model-hip-build.service
 fi

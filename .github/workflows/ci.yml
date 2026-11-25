@@ -143,6 +143,29 @@ jobs:
           python3 ops/scene/tests/test_worker.py
       - name: Phone control daemon (not part of a release; the room's phone tools are tested against it)
         run: python3 devices/s23/tests/test_s23ctl.py
+  llama-shutdown:
+    name: Model shutdown
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get install -y --no-install-recommends ninja-build jq libssl-dev
+      - name: SIGTERM during llama-server prefill
+        run: |
+          rev=$(jq -r '.runtime.rev' ops/models/models.json)
+          runtime=$(mktemp -d)
+          git -C "$runtime" init -q
+          git -C "$runtime" fetch -q --depth=1 https://github.com/ggml-org/llama.cpp.git "$rev"
+          git -C "$runtime" checkout -q FETCH_HEAD
+          git -C "$runtime" apply "$PWD/ops/models/llama-server-shutdown.patch"
+          cmake -S "$runtime" -B "$runtime/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+          cmake --build "$runtime/build" -j "$(nproc)" --target llama-server test-llama-archs
+          mkdir "$runtime/models-test"
+          "$runtime/build/bin/test-llama-archs" -a llama -s 1 -o "$runtime/models-test"
+          python3 ops/models/tests/test_shutdown.py "$runtime/build/bin/llama-server" "$runtime/models-test/llama-dense.gguf"
   secrets:
     name: No secrets
     runs-on: ubuntu-24.04

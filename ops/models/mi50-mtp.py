@@ -4,6 +4,7 @@ import http.client
 import os
 from pathlib import Path
 import re
+import signal
 import struct
 import subprocess
 import sys
@@ -78,20 +79,34 @@ def serve(port, spec, draft_count, command):
     active_spec = spec.read_text()
     if " draft=0 " in active_spec:
         os.execv(normal[0], normal)
+    stopped = False
+
+    def stop(_signum, _frame):
+        nonlocal stopped
+        stopped = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     try:
         child = subprocess.Popen(command)
     except OSError as error:
         print(f"MTP launch failed: {error}", file=sys.stderr)
     else:
-        while True:
+        was_ready = False
+        while not stopped:
             try:
-                child.wait(timeout=0.2)
+                code = child.wait(timeout=0.2)
+                if was_ready:
+                    return code if code > 0 else 1
                 break
             except subprocess.TimeoutExpired:
-                if ready(port):
-                    # Once it served traffic, normal supervisor restart rules apply.
-                    code = child.wait()
-                    return code if code > 0 else 1
+                was_ready = was_ready or ready(port)
+        if stopped and child.poll() is None:
+            # Also cover a child spawned concurrently with the group signal.
+            child.terminate()
+            child.wait()
+    if stopped:
+        return 0
     print("MTP startup failed, retrying llama-server without MTP", file=sys.stderr)
     pending = spec.with_suffix(".spec.next")
     pending.write_text(active_spec.replace(f" draft={draft_count} ", " draft=0 ", 1))

@@ -1,0 +1,12 @@
+[Unit]
+Description=Build the pinned MAG llama.cpp CPU runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+ExecStart=/usr/bin/bash /opt/mag-stack/current/ops/models/build-runtime.sh cpu
+Nice=19

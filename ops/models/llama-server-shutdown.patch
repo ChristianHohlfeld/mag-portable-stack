@@ -1,0 +1,291 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 9377e3c..f1ea3b0 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1317,6 +1317,9 @@ private:
+             return false;
+         }
+
++        if (stop_callback) {
++            llama_set_abort_callback(ctx_tgt, stop_callback, nullptr);
++        }
+         vocab = llama_model_get_vocab(model_tgt);
+
+         try {
+@@ -1356,6 +1359,9 @@ private:
+                     return false;
+                 }
+
++                if (stop_callback) {
++                    llama_set_abort_callback(ctx_dft, stop_callback, nullptr);
++                }
+                 params_base.speculative.draft.ctx_tgt = ctx_tgt;
+                 params_base.speculative.draft.ctx_dft = ctx_dft;
+             }
+@@ -3537,7 +3543,16 @@ private:
+         return false;
+     }
+
++    ggml_abort_callback stop_callback = nullptr;
++
++    bool stop_requested() const {
++        return stop_callback && stop_callback(nullptr);
++    }
++
+     void update_slots() {
++        if (stop_requested()) {
++            return;
++        }
+ #ifdef DEBUG_TIMINGS
+         static int64_t t_prev = 0;
+         int64_t t_start = ggml_time_us();
+@@ -3590,6 +3605,10 @@ private:
+             return;
+         }
+
++        if (stop_requested()) {
++            return;
++        }
++
+         // note: TTS slots bypass the shared batch entirely
+         try {
+             process_tts_slots();
+@@ -3629,7 +3648,7 @@ private:
+
+         int32_t off_next = 0;
+         int32_t n_batch = llama_n_batch(ctx_tgt);
+-        for (int32_t off = 0; off < batch.size(); off = off_next) {
++        for (int32_t off = 0; off < batch.size() && !stop_requested(); off = off_next) {
+             const int32_t n_tokens = std::min(n_batch, batch.size() - off);
+             try {
+                 scoped_timer t(t_decode, n_decode);
+@@ -3637,6 +3656,9 @@ private:
+
+                 batch.render(off, n_tokens);
+                 bool ok = decode(n_batch, off);
++                if (stop_requested()) {
++                    return;
++                }
+ #ifdef DEBUG_TIMINGS
+                 llama_synchronize(ctx_tgt);
+ #endif
+@@ -4696,6 +4718,9 @@ private:
+             }
+         });
+
++        if (stop_requested()) {
++            return false;
++        }
+         if (ret != 0) {
+             {
+                 std::string err;
+@@ -5202,7 +5227,19 @@ bool server_context::load_model(common_params & params) {
+
+ void server_context::start_loop() {
+     auto & params = impl->params_base;
+-    impl->queue_tasks.start_loop(params.sleep_idle_seconds * 1000);
++    impl->queue_tasks.start_loop(params.sleep_idle_seconds * 1000, [this]() { return impl->stop_requested(); });
++    if (impl->stop_requested()) {
++        impl->abort_all_slots("Server shutting down");
++        impl->queue_results.terminate();
++    }
++}
++
++void server_context::set_stop_callback(ggml_abort_callback callback) {
++    impl->stop_callback = callback;
++    llama_set_abort_callback(impl->ctx_tgt, callback, nullptr);
++    if (impl->ctx_dft) {
++        llama_set_abort_callback(impl->ctx_dft, callback, nullptr);
++    }
+ }
+
+ void server_context::terminate() {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index d283c91..b9e7ad0 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -72,6 +72,7 @@ struct server_context {
+
+     // this function will block main thread until termination
+     void start_loop();
++    void set_stop_callback(ggml_abort_callback callback);
+
+     // terminate main loop (will unblock start_loop)
+     void terminate();
+diff --git a/tools/server/server-queue.cpp b/tools/server/server-queue.cpp
+index c4ce907..d6636cf 100644
+--- a/tools/server/server-queue.cpp
++++ b/tools/server/server-queue.cpp
+@@ -275,7 +275,7 @@ void server_queue::yield_to_queue(std::function<void()> && work) {
+     }
+ }
+
+-void server_queue::start_loop(int64_t idle_sleep_ms) {
++void server_queue::start_loop(int64_t idle_sleep_ms, const std::function<bool()> & stop_requested) {
+     running = true;
+     time_last_task = ggml_time_ms();
+
+@@ -296,7 +296,7 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
+         return (now - time_last_task) >= idle_sleep_ms;
+     };
+
+-    while (true) {
++    while (!stop_requested()) {
+         QUE_DBG("%s", "processing new tasks\n");
+         if (process_new_tasks(false)) {
+             break; // terminate
+@@ -319,7 +319,7 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
+         QUE_DBG("%s", "waiting for new tasks\n");
+         while (true) {
+             std::unique_lock<std::mutex> lock(mutex_tasks);
+-            if (!running || !queue_tasks.empty()) {
++            if (stop_requested() || !running || !queue_tasks.empty()) {
+                 break; // go back to process new tasks or terminate
+             }
+
+@@ -333,10 +333,12 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
+                 }
+                 req_stop_sleeping = false;
+                 // wait until we are requested to exit sleeping state
+-                condition_tasks.wait(lock, [&]{
+-                    return (!running || req_stop_sleeping);
+-                });
+-                if (!running) { // may changed during sleep
++                while (running && !req_stop_sleeping && !stop_requested()) {
++                    condition_tasks.wait_for(lock, max_wait_time);
++                }
++                if (!running || stop_requested()) {
++                    sleeping = false;
++                    condition_tasks.notify_all(); // may changed during sleep
+                     break; // terminate
+                 }
+                 QUE_INF("%s", "exiting sleeping state\n");
+@@ -427,13 +429,10 @@ void server_response::remove_waiting_task_ids(const std::unordered_set<int> & id
+ server_task_result_ptr server_response::recv(const std::unordered_set<int> & id_tasks) {
+     while (true) {
+         std::unique_lock<std::mutex> lock(mutex_results);
+-        condition_results.wait(lock, [&]{
+-            if (!running) {
+-                RES_DBG("%s : queue result stop\n", "recv");
+-                std::terminate(); // we cannot return here since the caller is HTTP code
+-            }
+-            return !queue_results.empty();
+-        });
++        condition_results.wait(lock, [&]{ return !running || !queue_results.empty(); });
++        if (!running) {
++            return nullptr;
++        }
+
+         for (size_t i = 0; i < queue_results.size(); i++) {
+             if (id_tasks.find(queue_results[i]->id) != id_tasks.end()) {
+@@ -460,12 +459,7 @@ server_task_result_ptr server_response::recv_with_timeout(const std::unordered_s
+             }
+         }
+
+-        std::cv_status cr_res = condition_results.wait_until(lock, deadline);
+-        if (!running) {
+-            RES_DBG("%s : queue result stop\n", __func__);
+-            std::terminate(); // we cannot return here since the caller is HTTP code
+-        }
+-        if (cr_res == std::cv_status::timeout) {
++        if (!running || condition_results.wait_until(lock, deadline) == std::cv_status::timeout) {
+             return nullptr;
+         }
+     }
+@@ -504,7 +498,13 @@ void server_response::broadcast(server_task_result_ptr && result) {
+     condition_results.notify_all();
+ }
+
++bool server_response::is_running() {
++    std::lock_guard<std::mutex> lock(mutex_results);
++    return running;
++}
++
+ void server_response::terminate() {
++    std::lock_guard<std::mutex> lock(mutex_results);
+     running = false;
+     condition_results.notify_all();
+ }
+@@ -553,6 +553,13 @@ server_task_result_ptr server_response_reader::next(const std::function<bool()>
+         server_task_result_ptr result = queue_results.recv_with_timeout(id_tasks, polling_interval_seconds);
+         if (result == nullptr) {
+             // timeout, check stop condition
++            if (!queue_results.is_running()) {
++                auto error = std::make_unique<server_task_result_error>();
++                error->err_type = ERROR_TYPE_SERVER;
++                error->err_msg = "Server shutting down";
++                stop();
++                return error;
++            }
+             if (should_stop()) {
+                 return nullptr;
+             }
+diff --git a/tools/server/server-queue.h b/tools/server/server-queue.h
+index 692255e..93be713 100644
+--- a/tools/server/server-queue.h
++++ b/tools/server/server-queue.h
+@@ -92,7 +92,7 @@ public:
+      * - Call callback_sleeping_state(false)
+      * - Exit sleeping state
+      */
+-    void start_loop(int64_t idle_sleep_ms = -1);
++    void start_loop(int64_t idle_sleep_ms = -1, const std::function<bool()> & stop_requested = [] { return false; });
+
+     // while waiting for work() to finish, run process_new_tasks on the worker thread
+     // returns once work() is done (may throw exceptions)
+@@ -193,6 +193,8 @@ public:
+     // (used by router mode)
+     void broadcast(server_task_result_ptr && result);
+
++    bool is_running();
++
+     // terminate the waiting loop
+     void terminate();
+ };
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 8b1d426..d22f13b 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -24,6 +24,10 @@
+ #endif
+
+ static std::function<void(int)> shutdown_handler;
++// The standalone instance handles signals without taking any locks in the
++// handler. The inference loop and the CPU backend observe this flag.
++static_assert(std::atomic<bool>::is_always_lock_free, "signal handler requires lock-free atomic");
++static std::atomic<bool> instance_stop{false};
+ static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
+
+ static inline void signal_handler(int signal) {
+@@ -315,15 +319,16 @@ static bool server_setup_features(
+     return true;
+ }
+
+-static void server_install_signal_handlers() {
++static void server_install_signal_handlers(void (*handler)(int) = signal_handler) {
+ #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
+     struct sigaction sigint_action;
+-    sigint_action.sa_handler = signal_handler;
++    sigint_action.sa_handler = handler;
+     sigemptyset (&sigint_action.sa_mask);
+     sigint_action.sa_flags = 0;
+     sigaction(SIGINT, &sigint_action, NULL);
+     sigaction(SIGTERM, &sigint_action, NULL);
+ #elif defined (_WIN32)
++    (void) handler;
+     auto console_ctrl_handler = +[](DWORD ctrl_type) -> BOOL {
+         return (ctrl_type == CTRL_C_EVENT) ? (signal_handler(SIGINT), true) : false;
+     };
+@@ -688,7 +693,12 @@ static int server_run_instance(common_params & params, server_role & role, commo
+     };
+
+     if (opts.install_signal_handlers) {
++#ifndef _WIN32
++        ctx_server.set_stop_callback([](void *) { return instance_stop.load(std::memory_order_relaxed); });
++        server_install_signal_handlers([](int) { instance_stop.store(true, std::memory_order_relaxed); });
++#else
+         server_install_signal_handlers();
++#endif
+     }
+
+     server_connect connect_proc;

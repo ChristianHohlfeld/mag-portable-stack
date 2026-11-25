@@ -31,7 +31,14 @@ case "$variant" in
     [[ $device_ids =~ ^[0-9]+(,[0-9]+)?$ ]] || exit 78
     if [[ $device_ids == *,* ]]; then
       [[ ${device_ids%,*} != "${device_ids#*,}" ]] || exit 78
-      [[ $(q '.gfx906_experiment.native_p2p_verified // false') == true ]] || { echo "Verify native P2P before selecting two GPUs" >&2; exit 78; }
+      # Both transport cases are intentional: false permits the baseline on
+      # hardware without verified P2P; true records measured native P2P.
+      # This is an attestation, not a switch controlling HIP peer transfers.
+      case $(q '.gfx906_experiment.native_p2p_verified | if type == "boolean" then . else "missing" end') in
+        true) echo "model $bot: dual MI50 with verified native P2P" >&2 ;;
+        false) echo "model $bot: dual MI50 baseline, native P2P not verified" >&2 ;;
+        *) echo "Set native_p2p_verified explicitly to true or false" >&2; exit 78 ;;
+      esac
       device_names=ROCm0,ROCm1
       split_args=(--split-mode tensor --main-gpu 0 --pipeline-parallel off)
     fi

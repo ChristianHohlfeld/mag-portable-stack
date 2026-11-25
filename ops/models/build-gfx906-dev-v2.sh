@@ -10,9 +10,10 @@ source "$ROOT/ops/host.sh"
 REV=36e84ddb7e5792af6994ee79e12452ba4c918e63
 URL=https://github.com/AlwaysLearning-dev/gfx906-llama-cpp.git
 PATCH="$ROOT/ops/models/gfx906-dev-v2-shutdown.patch"
-ROCM=$(readlink -f "${1:?usage: bash build-gfx906-dev-v2.sh /absolute/path/to/isolated/rocm-7.1.1}")
-[[ -x $ROCM/lib/llvm/bin/clang++ && -r $ROCM/.info/version ]] || { echo "ROCm compiler/version missing" >&2; exit 4; }
-grep -qE '^7\.1\.1([.-]|$)' "$ROCM/.info/version" || { echo "Use isolated ROCm 7.1.1; do not replace MAG ROCm 6.3.4" >&2; exit 4; }
+# Reuse the existing MAG ROCm installation; no second distribution.
+[[ $# == 0 ]] || { echo "Usage: bash $0 (uses MAG ROCm)" >&2; exit 4; }
+ROCM=$(readlink -f "$MAG_IDOL_BASE/rocm-6.3.4/current")
+[[ -x $ROCM/lib/llvm/bin/clang++ ]] || { echo 'Existing MAG ROCm 6.3.4 missing (ops/video/h3/rocm.sh)' >&2; exit 4; }
 find "$ROCM/lib/rocblas/library" -iname '*gfx906*' -print -quit | grep -q gfx906 || { echo "rocBLAS lacks gfx906" >&2; exit 4; }
 export ROCM_PATH="$ROCM" HIP_PATH="$ROCM" HIP_PLATFORM=amd PATH="$ROCM/bin:$PATH"
 DIR=$(mag_render "$ROOT/ops/models/models.json" | jq -r '.runtime.dir')

@@ -391,17 +391,20 @@ inline std::string error_text(const http::ClientResult &r) {
   return "HTTP " + std::to_string(r.status);
 }
 
+inline Val model_status(const Backend &be) {
+  const Val status = read_json(env("MAG_MODELS_STATUS", "/run/mag-models/status.json"));
+  const Val *bots = status.find("bots");
+  const Val *entry = bots && bots->isObj() ? bots->find(be.bot) : nullptr;
+  return entry && entry->isObj() ? *entry : Val();
+}
+
 // Mistral Small 4's Jinja chat template requires alternating user/assistant
 // messages (tool calls/results are the exception). The MAG room deliberately
 // has an append-only wire log with extra local user cues, so adapt the outgoing
 // request only. Never rewrite persisted chat history or change other models.
-inline bool is_mistral_small4(const Backend &be) {
-  const Val status = read_json(env("MAG_MODELS_STATUS", "/run/mag-models/status.json"));
-  const Val *bots = status.find("bots");
-  const Val *entry = bots && bots->isObj() ? bots->find(be.bot) : nullptr;
-  if (!entry || !entry->isObj()) return false;
-  const std::string file = lower(jstr(*entry, "file"));
-  const std::string label = lower(jstr(*entry, "label"));
+inline bool is_mistral_small4(const Val &entry) {
+  const std::string file = lower(jstr(entry, "file"));
+  const std::string label = lower(jstr(entry, "label"));
   return file.find("mistral-small-4") != std::string::npos ||
          label.find("mistral small 4") != std::string::npos ||
          label.find("mistral-small-4") != std::string::npos;
@@ -486,7 +489,12 @@ inline void prepare_mistral_request(Val &body) {
 inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const ChatCallbacks &cb,
                        int budget_s = 3600) {
   ChatResult out;
-  if (is_mistral_small4(be)) prepare_mistral_request(body);
+  const Val model = model_status(be);
+  if (is_mistral_small4(model)) {
+    prepare_mistral_request(body);
+  } else if (lower(jstr(model, "file")) == "daisyrose-27b-q6_k") {
+    body["chat_template_kwargs"]["reasoning_effort"] = "medium";
+  }
   body["model"] = be.bot;
   body["stream"] = true;
   Val so = Val::object();

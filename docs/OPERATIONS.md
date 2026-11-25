@@ -95,7 +95,57 @@ sudo /usr/local/lib/mag-models/mag-modeld ctl lena restart  # start | stop | res
   loading, ready, frozen, stopped, failed. Downloads resume on their own
   (`mag-model-fetch@<bot>-<kind>.service`).
 - To change a model or its arguments, edit `ops/models/models.json` in a
-  pull request, deploy, then `mag-modeld ctl <bot> restart`.
+  pull request and deploy. Install just that bot's spec with
+  `MAG_REPLACE_MODEL_CONFIG=<bot>` and use `mag-modeld ctl` to apply it.
+
+### Noah to DaisyRose
+
+Deploy the release first so the room and model supervisor understand DaisyRose.
+Then run the following on the model host after Noah's current turn, if any.
+Keep the printed manifest backup for rollback.
+
+```bash
+lib=/usr/local/lib/mag-models
+modeld="$lib/mag-modeld"
+backup=$(sudo mktemp /var/backups/mag-noah-model.XXXXXX)
+sudo cp "$lib/models.json" "$backup"
+printf 'Previous model manifest: %s\n' "$backup"
+sudo "$modeld" ctl noah stop
+```
+
+Wait until `"$modeld" status | jq -r '.bots.noah.state'` reports `stopped`.
+Then install the scoped spec and release the stop flag so the supervisor can
+verify the two local weights and start Noah.
+
+```bash
+sudo env MAG_REPLACE_MODEL_CONFIG=noah \
+  bash /opt/mag-stack/current/ops/models/install.sh --units-installed &&
+  sudo "$modeld" ctl noah start
+```
+
+Check `"$modeld" status` for Noah's `DaisyRose-27B-Q6_K` file, `ready`,
+`mmproj.active: true` and `restart_pending: false`. Check port 8192 with a
+text and an image request. Compare Blake's and Qwen's unit
+`InvocationID` values from before and after the cutover. If an earlier setup
+left a `noah.mmproj.off` flag, move it aside before starting DaisyRose.
+
+To roll back, stop Noah through modeld and wait for the unit to become
+inactive. Merge the backed-up Noah entry into the current manifest and
+atomically replace it. Restart the supervisor to load it, then start Noah
+through modeld. The Mistral weights remain in their original directory.
+
+```bash
+sudo "$modeld" ctl noah stop
+# After mag-model@noah.service is inactive:
+sudo bash -c 'set -e
+  next=$(mktemp "$1/models.json.XXXXXX")
+  jq -e --slurpfile previous "$2" \
+    ".bots.noah = \$previous[0].bots.noah" "$1/models.json" > "$next"
+  chmod 0644 "$next"
+  mv -f "$next" "$1/models.json"
+  systemctl restart mag-modeld.service' bash "$lib" "$backup" &&
+  sudo "$modeld" ctl noah start
+```
 
 A deploy installs the model units and reloads the systemd manager while the
 instances stay up. The runtime builders publish new binaries atomically for

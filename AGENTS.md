@@ -48,10 +48,10 @@ output; read only the configuration needed for a specific operation.
 Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
 Blake (internal ID lena) on NUMA0 (cores 0-13, :8191) runs original Gemma 4
 26B-A4B-it QAT UD-Q4_K_XL with MTP and vision; Noah on NUMA1 (cores 14-27,
-:8192) runs Mistral Small 4 119B UD-Q4_K_M with vision. The model layer makes
+:8192) runs DaisyRose 27B Q6_K with embedded MTP and vision. The model layer makes
 no automatic replacements or downloads. Normal deploys preserve the installed
 CPU specs in models.json. An explicit model change uses
-`MAG_REPLACE_MODEL_CONFIG=1` with ops/models/install.sh. A drafter only guesses ahead,
+`MAG_REPLACE_MODEL_CONFIG=<bot>` with ops/models/install.sh to update one bot. A drafter only guesses ahead,
 the bot's model checks every token, so it changes speed, never words.
 Qwen (ID qwen, :8193) uses a separate gfx906 HIP runtime and a single local
 Q6 GGUF in `/home/chris/models/qwen3.8-27b`. Idol holds a shared demand lock

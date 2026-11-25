@@ -51,7 +51,7 @@
       ]
     },
     "noah": {
-      "label": "Mistral Small 4 119B · UD-Q4_K_M",
+      "label": "DaisyRose 27B · Q6_K",
       "numa": 1,
       "cpus": "14-27",
       "threads": 14,
@@ -59,34 +59,28 @@
       "ctx": 65536,
       "thinking_control": "toggle",
       "model": {
-        "path": "/home/chris/models/mistral-small-4/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003.gguf",
-        "url": "https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF/resolve/main/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00001-of-00003.gguf",
-        "parts": [
-          {
-            "path": "/home/chris/models/mistral-small-4/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00002-of-00003.gguf",
-            "url": "https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF/resolve/main/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00002-of-00003.gguf"
-          },
-          {
-            "path": "/home/chris/models/mistral-small-4/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00003-of-00003.gguf",
-            "url": "https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF/resolve/main/UD-Q4_K_M/Mistral-Small-4-119B-2603-UD-Q4_K_M-00003-of-00003.gguf"
-          }
-        ]
+        "path": "/home/chris/models/daisyrose-27b/DaisyRose-27B-Q6_K.gguf",
+        "local": true,
+        "sha256": "b483e2369b376f63bb85ebc0ff7a27fc5fef7f2d1e3890a58951343d9670e3d8"
       },
       "mmproj": {
-        "path": "/home/chris/models/mistral-small-4/mmproj-F16.gguf",
-        "url": "https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF/resolve/main/mmproj-F16.gguf"
+        "path": "/home/chris/models/daisyrose-27b/mmproj-DaisyRose-27B-BF16.gguf",
+        "local": true,
+        "required": true,
+        "sha256": "eee068e5186499b834ac5d0876a268a2fd560eeb7598d1b9e2a8e00ad1838617"
       },
       "args": [
-        "--temp",
-        "1.0",
-        "--top-k",
-        "64",
-        "--top-p",
-        "0.95",
-        "--min-p",
-        "0.0",
-        "--repeat-penalty",
-        "1.0"
+        "--batch-size", "2048",
+        "--cache-type-k", "f16",
+        "--cache-type-v", "f16",
+        "--flash-attn", "on",
+        "--chat-template-kwargs", "{\"reasoning_effort\":\"medium\"}",
+        "--temp", "1.0",
+        "--top-p", "0.95",
+        "--top-k", "20",
+        "--min-p", "0.0",
+        "--spec-type", "draft-mtp",
+        "--spec-draft-n-max", "3"
       ]
     },
     "qwen": {

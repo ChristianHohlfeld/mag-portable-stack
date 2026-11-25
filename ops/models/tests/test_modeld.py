@@ -395,6 +395,32 @@ esac
         gpu_state.write_text("running 5678\n")
         assert wait("qwen", "ready")["since"] == 5678
         assert path.read_bytes() == good
+
+        # The Noah cutover requires both pinned local files. Reloading modeld
+        # must adopt the already running Blake and Qwen processes.
+        proc.terminate()
+        proc.communicate(timeout=10)
+        noah_model = models / "DaisyRose-27B-Q6_K.gguf"
+        noah_projector = models / "mmproj-DaisyRose-27B-BF16.gguf"
+        noah_model.write_bytes(good)
+        conf["bots"]["noah"].update(
+            model={"path": str(noah_model), "local": True, "sha256": hashlib.sha256(good).hexdigest()},
+            mmproj={"path": str(noah_projector), "local": True, "required": True,
+                    "sha256": hashlib.sha256(mmproj).hexdigest()},
+        )
+        file.write_text(json.dumps(conf))
+        lena_since = status("lena")["since"]
+        proc = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)
+        end = time.time() + 20
+        while not status("noah").get("model", {}).get("ok") and time.time() < end:
+            time.sleep(0.2)
+        assert status("noah")["model"]["ok"] and status("noah")["state"] == "missing"
+        assert "start --no-block mag-model@noah.service" not in calls()
+        noah_projector.write_bytes(mmproj)
+        assert wait("noah", "loading")["mmproj"]["ok"]
+        assert "start --no-block mag-model@noah.service" in calls()
+        assert status("lena")["since"] == lena_since
+        assert status("qwen")["since"] == 5678
         print("ok")
     finally:
         proc.terminate()

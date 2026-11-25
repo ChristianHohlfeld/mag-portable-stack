@@ -17,6 +17,7 @@ def test_shutdown(binary, model):
         server = subprocess.Popen(
             [binary, "--model", model, "--host", "127.0.0.1", "--port", str(port),
              "--ctx-size", "16384", "--parallel", "1", "--threads", "1",
+             "--override-kv", "llama.context_length=int:16384",
              "--batch-size", "128", "--ubatch-size", "128", "--no-warmup", "--no-ui"],
             stdout=log, stderr=subprocess.STDOUT,
         )

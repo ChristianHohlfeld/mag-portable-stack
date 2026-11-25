@@ -113,7 +113,7 @@ index d283c91..b9e7ad0 100644
      // terminate main loop (will unblock start_loop)
      void terminate();
 diff --git a/tools/server/server-queue.cpp b/tools/server/server-queue.cpp
-index c4ce907..81e89a1 100644
+index c4ce907..d6636cf 100644
 --- a/tools/server/server-queue.cpp
 +++ b/tools/server/server-queue.cpp
 @@ -275,7 +275,7 @@ void server_queue::yield_to_queue(std::function<void()> && work) {
@@ -206,15 +206,20 @@ index c4ce907..81e89a1 100644
      running = false;
      condition_results.notify_all();
  }
-@@ -553,7 +553,7 @@ server_task_result_ptr server_response_reader::next(const std::function<bool()>
+@@ -553,6 +553,13 @@ server_task_result_ptr server_response_reader::next(const std::function<bool()>
          server_task_result_ptr result = queue_results.recv_with_timeout(id_tasks, polling_interval_seconds);
          if (result == nullptr) {
              // timeout, check stop condition
--            if (should_stop()) {
-+            if (!queue_results.is_running() || should_stop()) {
++            if (!queue_results.is_running()) {
++                auto error = std::make_unique<server_task_result_error>();
++                error->err_type = ERROR_TYPE_SERVER;
++                error->err_msg = "Server shutting down";
++                stop();
++                return error;
++            }
+             if (should_stop()) {
                  return nullptr;
              }
-         } else {
 diff --git a/tools/server/server-queue.h b/tools/server/server-queue.h
 index 692255e..93be713 100644
 --- a/tools/server/server-queue.h
@@ -238,7 +243,7 @@ index 692255e..93be713 100644
      void terminate();
  };
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 8b1d426..c3e3dd0 100644
+index 8b1d426..d22f13b 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
 @@ -24,6 +24,10 @@
@@ -271,8 +276,8 @@ index 8b1d426..c3e3dd0 100644
      auto console_ctrl_handler = +[](DWORD ctrl_type) -> BOOL {
          return (ctrl_type == CTRL_C_EVENT) ? (signal_handler(SIGINT), true) : false;
      };
-@@ -581,7 +586,12 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
-     }
+@@ -688,7 +693,12 @@ static int server_run_instance(common_params & params, server_role & role, commo
+     };
 
      if (opts.install_signal_handlers) {
 +#ifndef _WIN32

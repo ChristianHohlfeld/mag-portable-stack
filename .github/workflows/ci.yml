@@ -160,7 +160,8 @@ jobs:
           git -C "$runtime" checkout -q FETCH_HEAD
           git -C "$runtime" apply "$PWD/ops/models/llama-server-shutdown.patch"
           cmake -S "$runtime" -B "$runtime/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
           cmake --build "$runtime/build" -j "$(nproc)" --target llama-server test-llama-archs
           mkdir "$runtime/models-test"
           "$runtime/build/bin/test-llama-archs" -a llama -s 1 -o "$runtime/models-test"

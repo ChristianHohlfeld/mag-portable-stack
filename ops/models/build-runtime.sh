@@ -61,7 +61,8 @@ for arch in GEMMA4 OPENAI_MOE; do
 done
 git -C "$SRC" apply "$PATCH"
 cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON \
-  -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=OFF -DGGML_CUDA=OFF "${flags[@]}"
+  -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=OFF -DGGML_CUDA=OFF \
+  -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF "${flags[@]}"
 cmake --build "$BUILD" -j 8 --target llama-server
 "$BUILD/bin/llama-server" --version
 mkdir -p "$BINDIR"

@@ -18,4 +18,9 @@ for unit in mag-modeld.service mag-model@.service mag-model-fetch@.service mag-m
   install_unit "$unit" "$units/$unit"
 done
 install_unit mag-model-qwen.conf "$units/mag-model@qwen.service.d/20-mi50.conf"
+# The launcher sets a NUMA policy, but a runtime may widen sched affinity.
+# A cgroup cpuset is the hard boundary, including every worker thread.
+for bot in lena noah; do
+  install_unit "mag-model-$bot.conf" "$units/mag-model@$bot.service.d/20-cpu-numa.conf"
+done
 systemctl daemon-reload

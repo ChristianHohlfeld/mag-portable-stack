@@ -44,6 +44,14 @@ def test_unit_refresh():
         assert "TimeoutStopSec=5min" in template.read_text()
         assert f"User={env['MAG_OWNER']}" in template.read_text()
         assert "KillMode=mixed" in (units / "mag-model@qwen.service.d/20-mi50.conf").read_text()
+        for bot, cpus, node in (("lena", "0-13", 0), ("noah", "14-27", 1)):
+            spec = json.loads((ROOT / "ops/models/models.json").read_text())["bots"][bot]
+            dropin = units / f"mag-model@{bot}.service.d/20-cpu-numa.conf"
+            assert spec["cpus"] == cpus and spec["numa"] == node
+            assert dropin.read_text() == (
+                f"[Service]\nCPUAffinity={cpus}\nAllowedCPUs={cpus}\nAllowedMemoryNodes={node}\n"
+            )
+        assert not (units / "mag-model@qwen.service.d/20-cpu-numa.conf").exists()
         assert calls.read_text() == "daemon-reload\n"
 
 

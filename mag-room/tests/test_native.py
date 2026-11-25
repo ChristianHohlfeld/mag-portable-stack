@@ -3928,8 +3928,12 @@ class RoomContract(unittest.TestCase):
                      "mmproj": {"active": True}},
         }}
         pathlib.Path(r.env["MAG_MODELS_STATUS"]).write_text(json.dumps(status))
-        noah = next(bot for bot in r.state()["bots"] if bot["id"] == "noah")
-        self.assertEqual(noah["model"]["label"], "DaisyRose 27B · Q6_K")
+        def noah_status():
+            return next(bot for bot in r.state()["bots"] if bot["id"] == "noah")
+
+        r.wait(lambda: noah_status()["model"]["label"] == "DaisyRose 27B · Q6_K",
+               "room picks up DaisyRose label from modeld")
+        noah = noah_status()
         self.assertEqual(noah["model"]["thinking_control"], "toggle")
         self.assertTrue(noah["vision"])
         for thinking in (False, True):

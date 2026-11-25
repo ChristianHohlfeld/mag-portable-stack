@@ -8,6 +8,8 @@ spec=$(jq -ce --arg b "$bot" '.bots[$b] | select(.gpu == "mi50")' "$CONF") || ex
 q() { jq -r "$@" <<<"$spec"; }
 MODELD="$(dirname "$CONF")/mag-modeld"
 STATE=$(jq -r '.state_dir' "$CONF")
+draft_disabled=false
+if [[ -e $STATE/$bot.draft.off ]]; then draft_disabled=true; fi
 REV=$(jq -r '.runtime.rev' "$CONF")
 runtime_dir=$(jq -r '.runtime.dir' "$CONF")
 BIN="$runtime_dir/$REV/hip-gfx906/bin/llama-server"
@@ -37,13 +39,17 @@ case "$variant" in
     export GGML_CUDA_FATTN_PATH=force_convert GGML_CUDA_CUBLAS_COMPUTE_TYPE=f16
     repack=$(q '.gfx906_experiment | if has("q8_repack") then .q8_repack else true end')
     case "$repack" in true) export GGML_CUDA_Q8_REPACK=1 ;; false) export GGML_CUDA_Q8_REPACK=0 ;; *) exit 78 ;; esac
-    draft_path=$(q '.gfx906_experiment.dflash.path // empty')
-    if [[ -n $draft_path ]]; then
-      draft_sha=$(q '.gfx906_experiment.dflash.sha256 // empty')
-      [[ $draft_sha =~ ^[a-f0-9]{64}$ && -f $draft_path && ! -L $draft_path ]] || exit 78
-      printf '%s  %s\n' "$draft_sha" "$draft_path" | sha256sum --check --status || exit 78
-      export LLAMA_DFLASH_MIRROR_OUTPUT=1
-      dflash_args=(-md "$draft_path" --spec-type draft-dflash --spec-draft-n-max 4 --spec-draft-override-tensor '.*=ROCm0' --spec-draft-device ROCm0 -ngld 99)
+    if [[ $draft_disabled == true ]]; then
+      unset LLAMA_DFLASH_MIRROR_OUTPUT
+    else
+      draft_path=$(q '.gfx906_experiment.dflash.path // empty')
+      if [[ -n $draft_path ]]; then
+        draft_sha=$(q '.gfx906_experiment.dflash.sha256 // empty')
+        [[ $draft_sha =~ ^[a-f0-9]{64}$ && -f $draft_path && ! -L $draft_path ]] || exit 78
+        printf '%s  %s\n' "$draft_sha" "$draft_path" | sha256sum --check --status || exit 78
+        export LLAMA_DFLASH_MIRROR_OUTPUT=1
+        dflash_args=(-md "$draft_path" --spec-type draft-dflash --spec-draft-n-max 4 --spec-draft-override-tensor '.*=ROCm0' --spec-draft-device ROCm0 -ngld 99)
+      fi
     fi
     ;;
   *) echo "Unknown GPU runtime variant: $variant" >&2; exit 78 ;;
@@ -70,7 +76,7 @@ fi
 mapfile -d '' -t extra < <(q -j '.args[]? | ., "\u0000"')
 mapfile -d '' -t mtp_args < <(q -j '.mtp_args[]? | ., "\u0000"')
 here=$(dirname "$0")
-if [[ -e $STATE/$bot.draft.off ]]; then
+if [[ $draft_disabled == true ]]; then
   mtp_args=()
   dflash_args=()
 elif ((${#dflash_args[@]})); then

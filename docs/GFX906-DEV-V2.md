@@ -4,11 +4,11 @@ Pinned source: https://github.com/AlwaysLearning-dev/gfx906-llama-cpp/tree/36e84
 The production CPU and HIP runtime revision is unchanged. No model files, BIOS, kernel, ROCm packages or systemd units are changed by the experimental build. Do not deploy this branch before review and acceptance.
 
 ## Build
-As MAG owner, with a separately provisioned ROCm 7.1.1 containing gfx906 rocBLAS and HIP:
+As MAG owner, reuse the existing MAG ROCm 6.3.4 installation:
 ```sh
-bash ops/models/build-gfx906-dev-v2.sh /absolute/path/to/isolated/rocm-7.1.1
+bash ops/models/build-gfx906-dev-v2.sh
 ```
-The fork's reference build used ROCm 7.1.1; compatibility with MAG's existing isolated 6.3.4 has not been established. Do not upgrade the system ROCm or Idol runtime. The build checks the exact source revision, applies the ported MAG shutdown patch with git apply --check, builds in a fresh directory and checks the CLI flags. Binaries are staged under the separate pinned runtime directory. No install or activation happens automatically.
+The build uses the same ROCm 6.3.4 path as the existing MAG HIP runtime. The fork's reference build used ROCm 7.1.1; compatibility with 6.3.4 is not yet established. If compilation fails, investigate the specific incompatibility before considering a single shared ROCm upgrade. Do not install a second ROCm distribution or change Idol. The build checks the exact source revision, applies the ported MAG shutdown patch with git apply --check, builds in a fresh directory and checks the CLI flags. Binaries are staged under the separate pinned runtime directory. No install or activation happens automatically.
 
 ## Acceptance procedure
 * On the branch run `bash -n ops/models/build-gfx906-dev-v2.sh ops/models/run-mi50.sh` and the existing MAG CI suite; build the experimental runtime. A successful source-context comparison is not a build.

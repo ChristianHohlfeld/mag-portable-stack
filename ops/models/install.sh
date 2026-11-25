@@ -47,7 +47,22 @@ done
 # Paths and the unit's user follow this host's owner (ops/host.env).
 # A software deploy must not silently change local model selection.
 # Replace the retired uncensored default once, or on explicit operator request.
-if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e '.bots | to_entries | any((.value.model.path // "") | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
+replace=${MAG_REPLACE_MODEL_CONFIG:-0}
+if [[ $replace != 0 && $replace != 1 ]]; then
+  # Merge only the selected bot into the installed manifest.
+  candidate="$LIB/models.json.merge"
+  if ! mag_render "$SOURCE/ops/models/models.json" |
+    jq -e --arg bot "$replace" --slurpfile installed "$LIB/models.json" '
+      .bots[$bot] as $spec | $installed[0] |
+      if $spec != null and (.bots | has($bot)) then .bots[$bot] = $spec
+      else error("unknown model: " + $bot) end
+    ' > "$candidate"; then
+    rm -f "$candidate"
+    exit 1
+  fi
+  install_if_changed "$candidate" "$LIB/models.json" 0644
+  rm -f "$candidate"
+elif [[ ! -f "$LIB/models.json" || $replace == 1 ]] || jq -e '.bots | to_entries | any((.value.model.path // "") | contains("/gemma4-26b-a4b-uncensored/"))' "$LIB/models.json" >/dev/null; then
   mag_render "$SOURCE/ops/models/models.json" > "$LIB/models.json.next"
   chmod 0644 "$LIB/models.json.next"
   if ! cmp -s "$LIB/models.json.next" "$LIB/models.json"; then
@@ -57,27 +72,29 @@ if [[ ! -f "$LIB/models.json" || ${MAG_REPLACE_MODEL_CONFIG:-0} == 1 ]] || jq -e
   rm -f "$LIB/models.json.next"
 fi
 # Add Qwen on older installs and backfill defaults for the existing Q6 model.
-mag_render "$SOURCE/ops/models/models.json" |
-  jq --slurpfile installed "$LIB/models.json" '
-    .bots.qwen as $qwen | $installed[0] |
-    if (.bots | has("qwen") | not) then .bots.qwen = $qwen
-    elif (.bots.qwen | .gpu == "mi50" and .model.local_dir == $qwen.model.local_dir)
-    then .bots.qwen |= (
-      .mmproj //= $qwen.mmproj |
-      .mtp_args //= $qwen.mtp_args |
-      .args = (reduce range(0; ($qwen.args | length); 2) as $i (.args // [];
-        if any(.[]; split("=")[0] == $qwen.args[$i] or split("=")[0] == (
-          {"--flash-attn":"-fa","-ctk":"--cache-type-k","-ctv":"--cache-type-v"}[$qwen.args[$i]]
-        )) then . else . + $qwen.args[$i:$i+2] end))
-    )
-    end | select(. != $installed[0])
-  ' > "$LIB/models.json.next"
-if [[ -s $LIB/models.json.next ]]; then
-  chmod 0644 "$LIB/models.json.next"
-  touch "$pending"
-  mv -f "$LIB/models.json.next" "$LIB/models.json"
-else
-  rm -f "$LIB/models.json.next"
+if [[ $replace == 0 || $replace == 1 ]]; then
+  mag_render "$SOURCE/ops/models/models.json" |
+    jq --slurpfile installed "$LIB/models.json" '
+      .bots.qwen as $qwen | $installed[0] |
+      if (.bots | has("qwen") | not) then .bots.qwen = $qwen
+      elif (.bots.qwen | .gpu == "mi50" and .model.local_dir == $qwen.model.local_dir)
+      then .bots.qwen |= (
+        .mmproj //= $qwen.mmproj |
+        .mtp_args //= $qwen.mtp_args |
+        .args = (reduce range(0; ($qwen.args | length); 2) as $i (.args // [];
+          if any(.[]; split("=")[0] == $qwen.args[$i] or split("=")[0] == (
+            {"--flash-attn":"-fa","-ctk":"--cache-type-k","-ctv":"--cache-type-v"}[$qwen.args[$i]]
+          )) then . else . + $qwen.args[$i:$i+2] end))
+      )
+      end | select(. != $installed[0])
+    ' > "$LIB/models.json.next"
+  if [[ -s $LIB/models.json.next ]]; then
+    chmod 0644 "$LIB/models.json.next"
+    touch "$pending"
+    mv -f "$LIB/models.json.next" "$LIB/models.json"
+  else
+    rm -f "$LIB/models.json.next"
+  fi
 fi
 install_if_changed "$BIN" "$LIB/mag-modeld" 0755
 systemctl enable mag-modeld.service >/dev/null
@@ -89,8 +106,10 @@ if [[ -e $pending ]]; then
 else
   systemctl start mag-modeld.service
 fi
-systemctl start --no-block mag-model-cpu-build.service
-if [[ -x $MAG_IDOL_BASE/rocm-6.3.4/current/lib/llvm/bin/clang++ ]]; then
-  systemctl start --no-block mag-model-hip-build.service
+if [[ $replace == 0 || $replace == 1 ]]; then
+  systemctl start --no-block mag-model-cpu-build.service
+  if [[ -x $MAG_IDOL_BASE/rocm-6.3.4/current/lib/llvm/bin/clang++ ]]; then
+    systemctl start --no-block mag-model-hip-build.service
+  fi
 fi
 echo 'Model layer installed: mag-modeld supervises Blake (:8191), Noah (:8192) and Qwen (:8193)'

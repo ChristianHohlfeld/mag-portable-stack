@@ -3919,6 +3919,36 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("Zitrone", sent)
         self.assertNotIn("Hallo von Lena.", sent)
 
+    def test_daisyrose_keeps_noah_thinking_toggle_and_uses_medium_effort(self):
+        r = self.room
+        status = {"updated": time.time(), "bots": {
+            "lena": {"state": "ready", "file": "gemma-4-26B", "since": 1},
+            "noah": {"state": "ready", "file": "DaisyRose-27B-Q6_K", "since": 2,
+                     "label": "DaisyRose 27B · Q6_K", "thinking_control": "toggle",
+                     "mmproj": {"active": True}},
+        }}
+        pathlib.Path(r.env["MAG_MODELS_STATUS"]).write_text(json.dumps(status))
+        def noah_status():
+            return next(bot for bot in r.state()["bots"] if bot["id"] == "noah")
+
+        r.wait(lambda: noah_status()["model"]["label"] == "DaisyRose 27B · Q6_K",
+               "room picks up DaisyRose label from modeld")
+        noah = noah_status()
+        self.assertEqual(noah["model"]["thinking_control"], "toggle")
+        self.assertTrue(noah["vision"])
+        for thinking in (False, True):
+            self.assertEqual(r.api("PUT", "/api/bot/noah", {"thinking": thinking})[0], 200)
+            r.say(f"@Noah Thinking {thinking}")
+            r.idle()
+            req = r.noah.chats()[-1]
+            self.assertIs(req["chat_template_kwargs"]["enable_thinking"], thinking)
+            self.assertEqual(req["chat_template_kwargs"]["reasoning_effort"], "medium")
+            self.assertTrue(req["cache_prompt"])
+            self.assertEqual(req["id_slot"], 0)
+        r.say("@Lena kontrolliere Gemma")
+        r.idle()
+        self.assertNotIn("reasoning_effort", r.lena.chats()[-1]["chat_template_kwargs"])
+
     def test_mistral_small4_chat_roles_and_effort_without_touching_gemma(self):
         r = self.room
         # A live modeld status identifies the current model; bot IDs are NOT

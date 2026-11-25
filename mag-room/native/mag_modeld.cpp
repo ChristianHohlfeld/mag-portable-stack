@@ -230,7 +230,7 @@ struct Artifact {
   std::string kind, path, url, pinned_sha, local_dir;
   bool built = false; // no GGUF published: fetch.sh converts the pinned weights (build-draft.sh)
   uint64_t pinned_size = 0;
-  bool configured = false, local_file = false;
+  bool configured = false, local_file = false, required = false;
 
   Remote remote;
   Clock::time_point remote_checked{};
@@ -361,7 +361,7 @@ static void verify_async(const std::string &bot, Artifact &a) {
 }
 
 // True when a stamp records exactly this file (size and mtime).
-static bool stamp_matches(const std::string &path, const Artifact &a) {
+static bool stamp_matches(const std::string &path, const Artifact &a, bool verified) {
   std::istringstream in(read_file(path, 256));
   uint64_t size = 0;
   long long mtime = 0;
@@ -370,7 +370,8 @@ static bool stamp_matches(const std::string &path, const Artifact &a) {
   std::string hash, file;
   in >> hash;
   std::getline(in >> std::ws, file);
-  return file == a.path;
+  return file == a.path &&
+         (!verified || a.pinned_sha.empty() || hash == a.pinned_sha);
 }
 
 // ---------------------------------------------------------------------- bots
@@ -459,7 +460,7 @@ static void track(const std::string &bot, Artifact &a) {
   observe(a);
   const auto now = Clock::now();
   // Remote facts are needed only while the file is not known to be good.
-  const bool stamped = a.exists && stamp_matches(stamp_path(bot, a, "ok"), a);
+  const bool stamped = a.exists && stamp_matches(stamp_path(bot, a, "ok"), a, true);
   if (stamped) {
     a.verify = Artifact::OK;
     return;
@@ -493,7 +494,7 @@ static void track(const std::string &bot, Artifact &a) {
     if (a.size == a.verify_size && a.mtime == a.verify_mtime) return;
     a.verify = Artifact::UNKNOWN;
   }
-  if (a.exists && stamp_matches(stamp_path(bot, a, "bad"), a)) {
+  if (a.exists && stamp_matches(stamp_path(bot, a, "bad"), a, false)) {
     a.verify = Artifact::BAD;
     a.verify_size = a.size;
     a.verify_mtime = a.mtime;
@@ -652,8 +653,8 @@ static void step(Bot &b) {
       // Change the next launch only while systemd is waiting after an actual
       // failure. A restart counter on a running unit describes past failures.
       if (b.observed_start && !b.ever_ready && u.result != "success" &&
-          (b.draft_active || b.mmproj_active)) {
-        const char *part = b.mmproj_active ? "mmproj.off" : "draft.off";
+          (b.draft_active || (b.mmproj_active && !b.mmproj.required))) {
+        const char *part = b.mmproj_active && !b.mmproj.required ? "mmproj.off" : "draft.off";
         if (!flag(b.id, part)) {
           logf(b.id + ": startup failed; disabling " + part + " for the next launch");
           set_flag(b.id, part, true);
@@ -711,6 +712,12 @@ static void step(Bot &b) {
   }
   // Give a provisioned local projector time to get its stamp on first start.
   const Artifact &p = b.mmproj;
+  if (p.required && (p.verify != Artifact::OK || flag(b.id, "mmproj.off"))) {
+    b.state = p.verify == Artifact::BAD ? "corrupt" : p.exists ? "verifying" : "missing";
+    if (flag(b.id, "mmproj.off")) b.state = "failed";
+    b.detail = "Benötigter Vision-Projektor ist nicht verfügbar";
+    return;
+  }
   if (p.local_file && p.exists && (p.verify == Artifact::UNKNOWN || p.verify == Artifact::RUNNING) &&
       !flag(b.id, "mmproj.off") && now - b.model_verified_at < std::chrono::seconds(20)) {
     b.state = "verifying";
@@ -773,6 +780,7 @@ static Artifact artifact_from(const Val *v, const char *kind) {
   a.path = s("path");
   a.local_dir = s("local_dir");
   if (auto local = v->find("local")) a.local_file = local->asBool();
+  if (auto required = v->find("required")) a.required = required->asBool();
   a.url = s("url");
   a.pinned_sha = s("sha256");
   if (auto p = v->find("size")) a.pinned_size = (uint64_t)p->asNum();
